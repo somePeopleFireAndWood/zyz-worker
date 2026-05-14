@@ -1,0 +1,40 @@
+{
+  "name": "zyz-worker",
+  "version": "0.1.0",
+  "description": "A worker plugin scaffold for agent CLIs such as Codex and Claude Code.",
+  "author": {
+    "name": "yu",
+    "email": "",
+    "url": "https://github.com/somePeopleFireAndWood"
+  },
+  "homepage": "https://github.com/somePeopleFireAndWood/zyz-worker",
+  "repository": "https://github.com/somePeopleFireAndWood/zyz-worker",
+  "license": "MIT",
+  "keywords": [
+    "agent-cli",
+    "codex",
+    "claude-code",
+    "developer-tools"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "zyz-worker",
+    "shortDescription": "Developer workflow helpers for agent CLIs.",
+    "longDescription": "zyz-worker is an early plugin scaffold intended to help agent CLI users develop, program, and work more effectively.",
+    "developerName": "yu",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/somePeopleFireAndWood/zyz-worker",
+    "privacyPolicyURL": "https://github.com/somePeopleFireAndWood/zyz-worker",
+    "termsOfServiceURL": "https://github.com/somePeopleFireAndWood/zyz-worker",
+    "defaultPrompt": [
+      "Help me plan the next development task.",
+      "Review this repo and suggest a focused workflow.",
+      "Turn this goal into concrete implementation steps."
+    ],
+    "brandColor": "#2563EB"
+  }
+}
