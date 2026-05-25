@@ -4,7 +4,6 @@
   "description": "A worker plugin scaffold for agent CLIs such as Codex and Claude Code.",
   "author": {
     "name": "yu",
-    "email": "",
     "url": "https://github.com/somePeopleFireAndWood"
   },
   "homepage": "https://github.com/somePeopleFireAndWood/zyz-worker",

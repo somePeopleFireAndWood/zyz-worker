@@ -18,6 +18,7 @@
 - 插件声明文件位于 `.codex-plugin/plugin.json`
 - 占位 Skill 位于 `skills/zyz-worker/SKILL.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
+- 工程结构约定位于 `docs/conventions/project-structure.md`
 - 暂未实现真实功能
 
 ## 初步概念
@@ -42,15 +43,44 @@
 ├── .codex-plugin/
 │   └── plugin.json
 ├── assets/
+│   └── README.md
 ├── docs/
+│   ├── conventions/
+│   │   └── project-structure.md
 │   └── design/
 │       └── initial-design.md
+├── hooks/
+│   └── README.md
+├── scripts/
+│   └── README.md
 ├── skills/
+│   ├── README.md
 │   └── zyz-worker/
-│       └── SKILL.md
+│       ├── SKILL.md
+│       ├── references/
+│       │   └── README.md
+│       └── templates/
+│           └── README.md
+├── subagents/
+│   └── README.md
 ├── LICENSE
 └── README.md
 ```
+
+## 目录约定
+
+第一版保持轻量结构，不提前引入运行时。约定如下：
+
+- `.codex-plugin/` 保存 Codex 插件声明。
+- `skills/` 保存可被 Agent 加载的能力，每个 Skill 独立一个目录。
+- `skills/<skill-name>/references/` 保存按需加载的参考资料。
+- `skills/<skill-name>/templates/` 保存可复用的输出模板。
+- `subagents/` 预留给后续角色化 Agent 定义。
+- `hooks/` 预留给后续生命周期自动化。
+- `scripts/` 保存本仓库的校验、打包、测试等自动化脚本。
+- `docs/conventions/` 保存跨目录的工程约定。
+
+Codex 侧当前通过 `.codex-plugin/plugin.json` 表达。Claude Code 侧先在 Skill、Subagent 或 Hook 文档中记录兼容说明，等具体发布/加载方式明确后再增加专门配置。
 
 ## 后续开发方向
 
