@@ -16,6 +16,9 @@
 ## 当前状态
 
 - 插件声明文件位于 `.codex-plugin/plugin.json`
+- Claude Code 项目说明位于 `CLAUDE.md`
+- Claude Code 项目命令位于 `.claude/commands/code-development.md`
+- Claude Code 项目 SubAgent 位于 `.claude/agents/`
 - 占位 Skill 位于 `skills/zyz-worker/SKILL.md`
 - 代码开发 Skill 位于 `skills/code-development/SKILL.md`
 - 代码开发主控提示词位于 `skills/code-development/prompts/main-agent.md`
@@ -46,6 +49,13 @@
 .
 ├── .codex-plugin/
 │   └── plugin.json
+├── .claude/
+│   ├── agents/
+│   │   ├── coding-agent.md
+│   │   ├── review-agent.md
+│   │   └── test-agent.md
+│   └── commands/
+│       └── code-development.md
 ├── assets/
 │   └── README.md
 ├── docs/
@@ -80,6 +90,7 @@
 │   ├── coding-agent.md
 │   ├── review-agent.md
 │   └── test-agent.md
+├── CLAUDE.md
 ├── LICENSE
 └── README.md
 ```
@@ -89,6 +100,8 @@
 第一版保持轻量结构，不提前引入运行时。约定如下：
 
 - `.codex-plugin/` 保存 Codex 插件声明。
+- `.claude/agents/` 保存 Claude Code 项目级 SubAgent 定义。
+- `.claude/commands/` 保存 Claude Code 项目级 slash command。
 - `skills/` 保存可被 Agent 加载的能力，每个 Skill 独立一个目录。
 - `skills/<skill-name>/references/` 保存按需加载的参考资料。
 - `skills/<skill-name>/prompts/` 保存当前 Skill 内部使用的主控提示词或辅助提示词。
@@ -98,7 +111,7 @@
 - `scripts/` 保存本仓库的校验、打包、测试等自动化脚本。
 - `docs/conventions/` 保存跨目录的工程约定。
 
-Codex 侧当前通过 `.codex-plugin/plugin.json` 表达。Claude Code 侧先在 Skill、Subagent 或 Hook 文档中记录兼容说明，等具体发布/加载方式明确后再增加专门配置。
+Codex 侧当前通过 `.codex-plugin/plugin.json` 表达。Claude Code 侧通过 `CLAUDE.md`、`.claude/commands/code-development.md` 和 `.claude/agents/` 表达。
 
 ## 后续开发方向
 

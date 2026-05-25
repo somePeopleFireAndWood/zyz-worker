@@ -9,11 +9,38 @@ Use this skill to help a user complete a code development task. The workflow is 
 
 This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for codingAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation.
 
+## Main Agent Loading
+
+When this skill is used, the current user-facing conversation agent is the main agent.
+
+First load and follow the full main-agent controller prompt from:
+
+```text
+prompts/main-agent.md
+```
+
+That file is not a subagent. It defines how the current conversation agent coordinates the workflow and talks with the user.
+
+If the full prompt cannot be loaded, continue with these built-in main-agent rules:
+
+- Stay user-facing and coordinate the task through design, coding, testing, review, and delivery.
+- Lead a user-driven design process and maintain a Markdown design document.
+- Maintain a task status file throughout the workflow.
+- Dispatch or simulate codingAgent, testAgent, and reviewAgent with the design document path and current status summary.
+- Monitor role progress and restart or re-issue role prompts when a role is stuck, interrupted, or silent for too long.
+- Use currently installed skills, plugins, or tools when they improve design documents, status files, or final reports, but never require missing optional capabilities.
+- Do not write implementation code.
+- Do not modify implementation code.
+- Do not write or modify test code.
+- Do not run tests.
+- Do not perform review yourself.
+- If role boundaries cannot be enforced technically, enforce them procedurally and clearly label role handoffs.
+
 ## Prompt Files
 
 Load these files only when their role is needed:
 
-- Main agent controller prompt: `prompts/main-agent.md`
+- Main agent controller prompt: `prompts/main-agent.md` (load first when the skill starts)
 - codingAgent: `../../subagents/coding-agent.md`
 - testAgent: `../../subagents/test-agent.md`
 - reviewAgent: `../../subagents/review-agent.md`

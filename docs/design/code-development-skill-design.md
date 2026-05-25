@@ -30,6 +30,8 @@
 
 其中主agent 不是 subAgent。主agent 是当前与用户对话的 Agent 在执行该 Skill 时采用的主控角色；codingAgent、testAgent、reviewAgent 才是可被调度或模拟的提示词式 subAgent。
 
+`skills/code-development/SKILL.md` 必须内置主agent 的核心规则，并明确完整主控提示词位于 `skills/code-development/prompts/main-agent.md`。这样即使执行环境没有自动读取额外 prompt 文件，主agent 也能遵守基本职责边界；当环境支持读取引用文件时，应优先加载完整主控提示词。
+
 ### 主agent
 
 主agent 是用户的主要交互对象，负责任务组织、文档维护和子 Agent 调度。
@@ -466,6 +468,13 @@ coding 环节：
 ## 后续实现建议
 
 第一版实现将该 Skill 表达为一个 `SKILL.md` 工作流，并提供主控提示词和提示词式 subAgent 定义，而不是立即实现真实 subAgent 运行时。
+
+Claude Code 适配：
+
+- `CLAUDE.md` 作为项目级说明，会在 Claude Code 启动项目时加载。
+- `.claude/commands/code-development.md` 提供 `/code-development` 项目命令，用于启动该工作流。
+- `.claude/agents/coding-agent.md`、`.claude/agents/test-agent.md`、`.claude/agents/review-agent.md` 是 Claude Code 原生项目级 subAgent 定义。
+- 主agent 不放入 `.claude/agents/`，因为主agent 是当前与用户对话的控制角色。
 
 建议演进顺序：
 

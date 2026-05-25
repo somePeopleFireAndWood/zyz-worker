@@ -8,6 +8,9 @@ This repository is an agent plugin project. It starts with Codex plugin support 
 .
 ├── .codex-plugin/
 │   └── plugin.json
+├── .claude/
+│   ├── agents/
+│   └── commands/
 ├── assets/
 ├── docs/
 │   ├── conventions/
@@ -31,6 +34,15 @@ This repository is an agent plugin project. It starts with Codex plugin support 
 Codex plugin metadata lives here. Keep `.codex-plugin/plugin.json` focused on capabilities that are actually implemented.
 
 Do not add hooks, MCP servers, apps, or other runtime declarations to `plugin.json` until the matching files and behavior exist.
+
+### `.claude/`
+
+Claude Code project-level integration lives here.
+
+- `.claude/agents/` stores Claude Code project subagents with YAML frontmatter.
+- `.claude/commands/` stores Claude Code project slash commands.
+
+Keep Claude Code subagents standalone enough to be loaded directly by Claude Code. Shared cross-agent prompt sources may still live in `subagents/`, but Claude Code does not automatically register files from that directory.
 
 ### `skills/`
 
@@ -57,9 +69,9 @@ Use `templates/` for reusable output shapes and `references/` for supporting mat
 
 ### `subagents/`
 
-Subagent definitions belong here when the project starts modeling separate roles such as product analysis, technical design, implementation, or testing.
+Shared prompt-only subagent definitions belong here when the project starts modeling separate roles such as product analysis, technical design, implementation, or testing.
 
-For the first version, prefer expressing the workflow in one skill unless a separate subagent removes real complexity.
+For Claude Code native registration, mirror supported project subagents into `.claude/agents/`.
 
 ### `hooks/`
 
@@ -90,6 +102,6 @@ Keep generated or large binary assets out of the repository unless they are need
 
 Codex-specific metadata belongs in `.codex-plugin/`.
 
-Claude Code compatibility should be represented in the relevant skill, subagent, or hook documentation until this repository introduces a dedicated Claude Code manifest or packaging convention.
+Claude Code compatibility belongs in `CLAUDE.md`, `.claude/commands/`, and `.claude/agents/`.
 
 Shared workflows should stay agent-neutral by default. Add agent-specific sections only when behavior, file placement, or runtime expectations differ.
