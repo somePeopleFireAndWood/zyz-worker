@@ -28,6 +28,97 @@
 - 工程结构约定位于 `docs/conventions/project-structure.md`
 - 暂未实现 hooks、脚本、MCP server 或真实 SubAgent 运行时
 
+## 安装与使用
+
+当前 `zyz-worker` 还没有发布到 Codex 或 Claude Code 的官方 marketplace。现阶段推荐按本地插件/项目配置方式安装。
+
+### Codex
+
+Codex 通过 `.codex-plugin/plugin.json` 和 `skills/` 识别本插件。
+
+本地安装建议放到个人插件目录：
+
+```bash
+mkdir -p ~/plugins
+git clone https://github.com/somePeopleFireAndWood/zyz-worker.git ~/plugins/zyz-worker
+```
+
+如果已经有本地 checkout，也可以使用符号链接：
+
+```bash
+mkdir -p ~/plugins
+ln -s /path/to/zyz-worker ~/plugins/zyz-worker
+```
+
+然后在个人 marketplace 文件 `~/.agents/plugins/marketplace.json` 中加入插件条目。新建文件时可以使用下面的完整示例；如果该文件已经存在，只需要把 `zyz-worker` 这一项追加到 `plugins` 数组中。
+
+```json
+{
+  "name": "personal",
+  "interface": {
+    "displayName": "Personal"
+  },
+  "plugins": [
+    {
+      "name": "zyz-worker",
+      "source": {
+        "source": "local",
+        "path": "./plugins/zyz-worker"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
+```
+
+完成后，在 Codex 的插件界面中搜索并安装 `zyz-worker`。如果插件没有立即出现，重启或刷新 Codex 后再检查插件列表。
+
+安装后，`code-development` Skill 会通过 `skills/code-development/SKILL.md` 生效。
+
+### Claude Code
+
+Claude Code 当前使用项目级配置生效：
+
+- `CLAUDE.md`：项目级说明，会被 Claude Code 作为项目记忆加载。
+- `.claude/commands/code-development.md`：项目 slash command。
+- `.claude/agents/`：项目级 SubAgent 定义。
+
+在本仓库中使用时：
+
+```bash
+git clone https://github.com/somePeopleFireAndWood/zyz-worker.git
+cd zyz-worker
+claude
+```
+
+进入 Claude Code 后运行：
+
+```text
+/code-development <你的开发任务描述>
+```
+
+如果要在其他项目中使用当前这套工作流，在目标项目中复制这些文件和目录：
+
+```text
+CLAUDE.md
+.claude/commands/code-development.md
+.claude/agents/
+skills/code-development/
+subagents/
+```
+
+然后在目标项目根目录启动 Claude Code，并使用：
+
+```text
+/code-development <你的开发任务描述>
+```
+
+说明：主agent 不是 Claude Code SubAgent。主agent 是当前与用户对话的 Agent 在执行 `/code-development` 时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `.claude/agents/` 下的 `coding-agent`、`test-agent` 和 `review-agent`。
+
 ## 初步概念
 
 `zyz-worker` 计划模拟一个小型 Agent Team，用于辅助软件交付。当用户给出一个已经确认的开发任务后，插件应帮助 Agent 产出从需求到测试所需的中间结果，并推动任务向完成状态前进。
