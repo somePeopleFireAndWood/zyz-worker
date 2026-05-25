@@ -17,9 +17,13 @@
 
 - 插件声明文件位于 `.codex-plugin/plugin.json`
 - 占位 Skill 位于 `skills/zyz-worker/SKILL.md`
+- 代码开发 Skill 位于 `skills/code-development/SKILL.md`
+- 代码开发主控提示词位于 `skills/code-development/prompts/main-agent.md`
+- 提示词式 SubAgent 定义位于 `subagents/`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
+- 代码开发 Skill 设计文档位于 `docs/design/code-development-skill-design.md`
 - 工程结构约定位于 `docs/conventions/project-structure.md`
-- 暂未实现真实功能
+- 暂未实现 hooks、脚本、MCP server 或真实 SubAgent 运行时
 
 ## 初步概念
 
@@ -48,6 +52,7 @@
 │   ├── conventions/
 │   │   └── project-structure.md
 │   └── design/
+│       ├── code-development-skill-design.md
 │       └── initial-design.md
 ├── hooks/
 │   └── README.md
@@ -55,6 +60,15 @@
 │   └── README.md
 ├── skills/
 │   ├── README.md
+│   ├── code-development/
+│   │   ├── SKILL.md
+│   │   ├── prompts/
+│   │   │   └── main-agent.md
+│   │   └── templates/
+│   │       ├── design-doc.md
+│   │       ├── final-report.md
+│   │       ├── review-report.md
+│   │       └── task-status.md
 │   └── zyz-worker/
 │       ├── SKILL.md
 │       ├── references/
@@ -62,7 +76,10 @@
 │       └── templates/
 │           └── README.md
 ├── subagents/
-│   └── README.md
+│   ├── README.md
+│   ├── coding-agent.md
+│   ├── review-agent.md
+│   └── test-agent.md
 ├── LICENSE
 └── README.md
 ```
@@ -74,8 +91,9 @@
 - `.codex-plugin/` 保存 Codex 插件声明。
 - `skills/` 保存可被 Agent 加载的能力，每个 Skill 独立一个目录。
 - `skills/<skill-name>/references/` 保存按需加载的参考资料。
+- `skills/<skill-name>/prompts/` 保存当前 Skill 内部使用的主控提示词或辅助提示词。
 - `skills/<skill-name>/templates/` 保存可复用的输出模板。
-- `subagents/` 预留给后续角色化 Agent 定义。
+- `subagents/` 保存可被主控 Agent 调度的提示词式子角色定义；当前不实现真实 SubAgent 运行时。
 - `hooks/` 预留给后续生命周期自动化。
 - `scripts/` 保存本仓库的校验、打包、测试等自动化脚本。
 - `docs/conventions/` 保存跨目录的工程约定。
