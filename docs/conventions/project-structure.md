@@ -1,16 +1,20 @@
 # Project Structure Convention
 
-This repository is an agent plugin project. It starts with Codex plugin support and keeps the structure open for Claude Code compatibility, skills, subagents, hooks, scripts, templates, and assets.
+This repository is a multi-CLI agent plugin. It targets both Codex and Claude Code with a single set of shared assets and per-CLI manifests.
 
 ## Root Layout
 
 ```text
 .
+├── .claude-plugin/
+│   └── plugin.json
 ├── .codex-plugin/
 │   └── plugin.json
 ├── .claude/
-│   ├── agents/
-│   └── commands/
+│   ├── agents/   -> ../agents (symlink)
+│   └── commands/ -> ../commands (symlink)
+├── agents/
+├── commands/
 ├── assets/
 ├── docs/
 │   ├── conventions/
@@ -23,30 +27,43 @@ This repository is an agent plugin project. It starts with Codex plugin support 
 │       ├── references/
 │       └── templates/
 ├── subagents/
+├── CLAUDE.md
 ├── LICENSE
 └── README.md
 ```
 
 ## Directory Responsibilities
 
+### `.claude-plugin/`
+
+Claude Code plugin manifest. `.claude-plugin/plugin.json` is required for Claude Code to recognize this directory as an installable plugin. Keep it minimal: name, description, version, author, repository, license, keywords.
+
+Other plugin components (skills, agents, commands, hooks) live at the repository root, **not** inside `.claude-plugin/`.
+
 ### `.codex-plugin/`
 
-Codex plugin metadata lives here. Keep `.codex-plugin/plugin.json` focused on capabilities that are actually implemented.
-
-Do not add hooks, MCP servers, apps, or other runtime declarations to `plugin.json` until the matching files and behavior exist.
+Codex plugin manifest. `.codex-plugin/plugin.json` describes the plugin to Codex. Keep it focused on capabilities that are actually implemented; do not add hooks, MCP servers, or apps until the matching files and behavior exist.
 
 ### `.claude/`
 
-Claude Code project-level integration lives here.
+Project-level Claude Code integration for using this repository **as a project** (running `claude` inside the repo and invoking `/code-development`).
 
-- `.claude/agents/` stores Claude Code project subagents with YAML frontmatter.
-- `.claude/commands/` stores Claude Code project slash commands.
+- `.claude/agents` is a symlink to the root `agents/` directory.
+- `.claude/commands` is a symlink to the root `commands/` directory.
 
-Keep Claude Code subagents standalone enough to be loaded directly by Claude Code. Shared cross-agent prompt sources may still live in `subagents/`, but Claude Code does not automatically register files from that directory.
+The symlinks let Claude Code see the same files in two places: as project-level definitions when running inside this repo, and as plugin components when this repository is loaded via `claude --plugin-dir`.
+
+### `agents/`
+
+Root-level subagent definitions consumed by Claude Code when this repository is loaded as a plugin. Each agent is a Markdown file with YAML frontmatter.
+
+### `commands/`
+
+Root-level slash command definitions consumed by Claude Code when this repository is loaded as a plugin. Command files should reference plugin-internal resources via `${CLAUDE_PLUGIN_ROOT}/...` so they resolve regardless of the current working directory.
 
 ### `skills/`
 
-Each skill gets its own directory:
+Shared skills consumed by both Codex and Claude Code. Each skill gets its own directory:
 
 ```text
 skills/
@@ -71,7 +88,7 @@ Use `templates/` for reusable output shapes and `references/` for supporting mat
 
 Shared prompt-only subagent definitions belong here when the project starts modeling separate roles such as product analysis, technical design, implementation, or testing.
 
-For Claude Code native registration, mirror supported project subagents into `.claude/agents/`.
+These are sources of truth for the role prompts. Claude Code native subagents in `agents/` may copy or extend these definitions.
 
 ### `hooks/`
 
@@ -100,8 +117,10 @@ Keep generated or large binary assets out of the repository unless they are need
 
 ## Agent Compatibility
 
-Codex-specific metadata belongs in `.codex-plugin/`.
+This repository follows the multi-CLI plugin pattern: shared assets at the root, per-CLI manifests in dotted directories.
 
-Claude Code compatibility belongs in `CLAUDE.md`, `.claude/commands/`, and `.claude/agents/`.
+- Claude Code reads `.claude-plugin/plugin.json` and looks for `agents/`, `commands/`, `skills/`, `hooks/` at the repository root.
+- Codex reads `.codex-plugin/plugin.json` and looks for `skills/` at the repository root.
+- The repository can also be used as a Claude Code project (without plugin install) via `CLAUDE.md` and the `.claude/` symlinks.
 
 Shared workflows should stay agent-neutral by default. Add agent-specific sections only when behavior, file placement, or runtime expectations differ.

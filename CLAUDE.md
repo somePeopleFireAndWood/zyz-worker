@@ -18,7 +18,7 @@ The workflow is defined by:
 
 The current conversation agent is the main agent. It remains user-facing and coordinates the workflow.
 
-Project-level Claude Code subagents are available in `.claude/agents/`:
+Project-level Claude Code subagents are available in `agents/` (also reachable as `.claude/agents/` via symlink):
 
 - `coding-agent`
 - `test-agent`

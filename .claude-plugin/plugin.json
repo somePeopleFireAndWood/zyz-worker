@@ -1,0 +1,20 @@
+{
+  "name": "zyz-worker",
+  "description": "Design-first code development workflow for Claude Code: requirements, design doc, implementation, tests, and review via dedicated subagents.",
+  "version": "0.1.0",
+  "author": {
+    "name": "yu",
+    "url": "https://github.com/somePeopleFireAndWood"
+  },
+  "homepage": "https://github.com/somePeopleFireAndWood/zyz-worker",
+  "repository": "https://github.com/somePeopleFireAndWood/zyz-worker",
+  "license": "MIT",
+  "keywords": [
+    "agent-cli",
+    "claude-code",
+    "codex",
+    "code-development",
+    "workflow",
+    "developer-tools"
+  ]
+}

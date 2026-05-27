@@ -11,18 +11,18 @@ $ARGUMENTS
 
 Load and follow the main controller prompt:
 
-@skills/code-development/prompts/main-agent.md
+@${CLAUDE_PLUGIN_ROOT}/skills/code-development/prompts/main-agent.md
 
 Use the workflow definition and templates:
 
-@skills/code-development/SKILL.md
+@${CLAUDE_PLUGIN_ROOT}/skills/code-development/SKILL.md
 
 Available task templates:
 
-- @skills/code-development/templates/design-doc.md
-- @skills/code-development/templates/task-status.md
-- @skills/code-development/templates/final-report.md
-- @skills/code-development/templates/review-report.md
+- @${CLAUDE_PLUGIN_ROOT}/skills/code-development/templates/design-doc.md
+- @${CLAUDE_PLUGIN_ROOT}/skills/code-development/templates/task-status.md
+- @${CLAUDE_PLUGIN_ROOT}/skills/code-development/templates/final-report.md
+- @${CLAUDE_PLUGIN_ROOT}/skills/code-development/templates/review-report.md
 
 Use the project subagents when their role is needed:
 

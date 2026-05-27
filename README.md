@@ -15,10 +15,12 @@
 
 ## 当前状态
 
-- 插件声明文件位于 `.codex-plugin/plugin.json`
+- Claude Code 插件清单位于 `.claude-plugin/plugin.json`
+- Codex 插件清单位于 `.codex-plugin/plugin.json`
 - Claude Code 项目说明位于 `CLAUDE.md`
-- Claude Code 项目命令位于 `.claude/commands/code-development.md`
-- Claude Code 项目 SubAgent 位于 `.claude/agents/`
+- Slash command 位于 `commands/code-development.md`
+- SubAgent 位于 `agents/`
+- `.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，方便在本仓库内直接以项目模式使用 Claude Code
 - 占位 Skill 位于 `skills/zyz-worker/SKILL.md`
 - 代码开发 Skill 位于 `skills/code-development/SKILL.md`
 - 代码开发主控提示词位于 `skills/code-development/prompts/main-agent.md`
@@ -81,13 +83,34 @@ ln -s /path/to/zyz-worker ~/plugins/zyz-worker
 
 ### Claude Code
 
-Claude Code 当前使用项目级配置生效：
+`zyz-worker` 是符合 Claude Code 插件规范的项目，可以作为插件被加载，也可以作为项目直接使用。
 
-- `CLAUDE.md`：项目级说明，会被 Claude Code 作为项目记忆加载。
-- `.claude/commands/code-development.md`：项目 slash command。
-- `.claude/agents/`：项目级 SubAgent 定义。
+#### 方式 1：作为插件加载（推荐用于多项目复用）
 
-在本仓库中使用时：
+最快的方式是使用 `--plugin-dir` 直接加载本地 checkout：
+
+```bash
+git clone https://github.com/somePeopleFireAndWood/zyz-worker.git ~/plugins/zyz-worker
+claude --plugin-dir ~/plugins/zyz-worker
+```
+
+进入 Claude Code 后运行：
+
+```text
+/zyz-worker:code-development <你的开发任务描述>
+```
+
+也可以一次加载多个插件，比如和 superpowers 一起使用：
+
+```bash
+claude --plugin-dir ~/plugins/zyz-worker --plugin-dir ~/plugins/superpowers
+```
+
+如果希望持久启用（无需每次加 `--plugin-dir`），可以将本仓库声明为本地 marketplace 并通过 `/plugin` 安装。具体步骤参考 [Claude Code 插件文档](https://code.claude.com/docs/en/plugins)。
+
+#### 方式 2：作为项目直接使用
+
+在本仓库内启动 Claude Code，会通过 `CLAUDE.md`、`.claude/agents`、`.claude/commands` 直接生效（后两者是指向根级 `agents/`、`commands/` 的符号链接）：
 
 ```bash
 git clone https://github.com/somePeopleFireAndWood/zyz-worker.git
@@ -95,29 +118,29 @@ cd zyz-worker
 claude
 ```
 
-进入 Claude Code 后运行：
+然后运行：
 
 ```text
 /code-development <你的开发任务描述>
 ```
 
-如果要在其他项目中使用当前这套工作流，在目标项目中复制这些文件和目录：
+#### 方式 3：复制到目标项目（不推荐）
+
+如果只想在某个目标项目中使用这套工作流，可以复制以下内容到目标项目根：
 
 ```text
 CLAUDE.md
-.claude/commands/code-development.md
 .claude/agents/
+.claude/commands/
 skills/code-development/
 subagents/
 ```
 
-然后在目标项目根目录启动 Claude Code，并使用：
+注意：复制方式不再共享后续更新，建议优先选择方式 1。
 
-```text
-/code-development <你的开发任务描述>
-```
+#### 关于主 Agent 与 SubAgent
 
-说明：主agent 不是 Claude Code SubAgent。主agent 是当前与用户对话的 Agent 在执行 `/code-development` 时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `.claude/agents/` 下的 `coding-agent`、`test-agent` 和 `review-agent`。
+主 agent 不是 Claude Code SubAgent。主 agent 是当前与用户对话的 Agent 在执行 `/code-development`（或 `/zyz-worker:code-development`）时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `agents/` 下的 `coding-agent`、`test-agent` 和 `review-agent`。
 
 ## 初步概念
 
@@ -138,15 +161,19 @@ subagents/
 
 ```text
 .
+├── .claude-plugin/
+│   └── plugin.json
 ├── .codex-plugin/
 │   └── plugin.json
 ├── .claude/
-│   ├── agents/
-│   │   ├── coding-agent.md
-│   │   ├── review-agent.md
-│   │   └── test-agent.md
-│   └── commands/
-│       └── code-development.md
+│   ├── agents/   -> ../agents   (symlink)
+│   └── commands/ -> ../commands (symlink)
+├── agents/
+│   ├── coding-agent.md
+│   ├── review-agent.md
+│   └── test-agent.md
+├── commands/
+│   └── code-development.md
 ├── assets/
 │   └── README.md
 ├── docs/
@@ -190,10 +217,12 @@ subagents/
 
 第一版保持轻量结构，不提前引入运行时。约定如下：
 
+- `.claude-plugin/` 保存 Claude Code 插件清单。
 - `.codex-plugin/` 保存 Codex 插件声明。
-- `.claude/agents/` 保存 Claude Code 项目级 SubAgent 定义。
-- `.claude/commands/` 保存 Claude Code 项目级 slash command。
-- `skills/` 保存可被 Agent 加载的能力，每个 Skill 独立一个目录。
+- `agents/` 保存 Claude Code 插件级 SubAgent 定义。
+- `commands/` 保存 Claude Code 插件级 slash command；引用插件内资源时使用 `${CLAUDE_PLUGIN_ROOT}/...`。
+- `.claude/agents/` 与 `.claude/commands/` 是指向根级目录的符号链接，便于以项目模式直接使用本仓库。
+- `skills/` 保存可被两端共用的能力，每个 Skill 独立一个目录。
 - `skills/<skill-name>/references/` 保存按需加载的参考资料。
 - `skills/<skill-name>/prompts/` 保存当前 Skill 内部使用的主控提示词或辅助提示词。
 - `skills/<skill-name>/templates/` 保存可复用的输出模板。
@@ -202,7 +231,7 @@ subagents/
 - `scripts/` 保存本仓库的校验、打包、测试等自动化脚本。
 - `docs/conventions/` 保存跨目录的工程约定。
 
-Codex 侧当前通过 `.codex-plugin/plugin.json` 表达。Claude Code 侧通过 `CLAUDE.md`、`.claude/commands/code-development.md` 和 `.claude/agents/` 表达。
+多端清单是关键：Claude Code 通过 `.claude-plugin/plugin.json` 识别本仓库，Codex 通过 `.codex-plugin/plugin.json` 识别本仓库，两端共享根级的 `skills/` 与 `subagents/`。
 
 ## 后续开发方向
 
