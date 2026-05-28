@@ -61,6 +61,23 @@ Use these templates when creating task artifacts:
 - Maintain a task status file for the full workflow: design, coding, testing, review, and delivery.
 - Use existing installed skills, plugins, or tools when they improve document or code quality, but never require the user to install missing optional capabilities.
 - Prefer continuing through non-blocking ambiguity with documented assumptions. Stop and ask the user only when continuing would risk data loss, irreversible changes, or a serious mismatch with the design.
+- The design document and the final report default to the same language as the user in this conversation. Other artifacts (task status, review reports, prompt files) stay in their current language.
+
+## Automatic Execution Policy
+
+By default, do not ask the user. Inside the workflow loops, each role decides for itself:
+
+- During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
+- During coding review, the role responsible for the changed artifact (coding-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Code Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
+- When a test fails, coding-agent decides whether the failure is an implementation bug or an invalid test, then coding-agent fixes implementation bugs and test-agent fixes invalid tests.
+
+Escalate to the user only when:
+
+- the decision would cause data loss, an irreversible change, or a serious deviation from the agreed Goals / Acceptance Criteria;
+- the design phase reaches the final human approval step (one explicit user touch before coding starts);
+- the same finding flips between accept and reject across three or more automated iterations without convergence.
+
+The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed. Only §2 step 8 (final human approval before coding) is a user touch.
 
 ## Role Boundaries
 
@@ -88,37 +105,73 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 1. Work with the user to produce a Markdown design document from `templates/design-doc.md`.
 2. Ask the user about unclear requirements, constraints, non-goals, acceptance criteria, risky implementation details, and important tests.
 3. When the design draft is ready, use reviewAgent to review it.
-4. Present every review suggestion to the user.
-5. Let the user accept the suggestion or reject it with a reason.
-6. Update the design document and status file.
+4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals. Do not present findings to the user.
+5. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
+6. Update the design document and status file. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
 7. Repeat review until reviewAgent says no changes are needed.
+   This loop runs automatically without user input; only step 8 below is a user touch.
 8. Ask the user for final human approval before coding.
 
 Do not enter coding until both reviewAgent and the user approve the design.
 
 ### 3. Coding And Testing
 
-1. Provide codingAgent and testAgent with the design document path and task status summary.
-2. Have codingAgent implement the engineering changes.
-3. Have testAgent write or update tests from the design document.
-4. If codingAgent finds missing test points, it reports them to the main agent.
-5. The main agent updates the design document and asks testAgent to add the tests.
-6. After implementation and tests are ready, codingAgent runs the tests.
-7. If tests fail, codingAgent decides whether the failure is an implementation bug or an invalid test.
-8. codingAgent fixes implementation bugs.
-9. testAgent fixes invalid or incomplete tests.
-10. Repeat until tests pass or a blocking issue requires the user.
+#### 3.0 Decide whether to split
 
-### 4. Review
+The main agent decides on its own whether to split the task into SubTasks. Splitting is optional; do not ask the user. Consider splitting when:
 
-1. After tests pass, use reviewAgent to review implementation and test changes.
-2. codingAgent handles implementation review findings.
-3. testAgent handles test review findings.
-4. If a role rejects a review finding, it must provide a concrete reason.
-5. Run tests again after any implementation or test change.
-6. Repeat review until reviewAgent says no changes are needed.
+- the change spans 3 or more directories or layers;
+- the Implementation Plan lists 4 or more steps;
+- the task includes independently verifiable sub-capabilities.
 
-### 5. Deliver
+Not splitting is also valid for simple tasks.
+
+#### 3.A No-split path
+
+When the task is not split, run a single iteration:
+
+1. coding-agent implements the engineering changes.
+2. test-agent writes or updates tests from the design document.
+3. coding-agent runs the tests.
+4. If tests fail, coding-agent classifies the failure; coding-agent fixes implementation bugs and test-agent fixes invalid tests.
+5. After tests pass, review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
+6. Repeat 3-5 until tests pass and review-agent reports no changes.
+
+Then proceed to §3.C aggregate testing and aggregate review.
+
+#### 3.B Split path
+
+When split, the main agent records SubTasks in the status file `## SubTasks` section. For each SubTask:
+
+1. coding-agent implements that SubTask's engineering changes.
+2. test-agent writes or updates tests for that SubTask.
+3. coding-agent runs that SubTask's tests.
+4. If tests fail, coding-agent classifies and the responsible role fixes; loop until tests pass.
+5. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Code Review > Rejected Suggestions`.
+6. Loop 3-5 until tests pass and review-agent reports no changes for this SubTask.
+7. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
+   - `Coded: true` when implementation is complete.
+   - `Tested: true` when this SubTask's tests pass.
+   - `Reviewed: true` when review-agent reports no changes for this SubTask (rejected findings allowed if reasons are recorded).
+
+Do not start SubTask N+1 until SubTask N has all three flags true, unless the main agent records SubTask N as "blocked, deferred" with all of the following:
+
+- a written rationale showing no later SubTask has a static dependency on SubTask N's code path (per the design's Implementation Plan and Files To Change);
+- an entry added to `## Progress > Blocked` and the SubTask's `Notes`.
+
+SubTasks default to sequential execution. Parallel SubTask execution is allowed only when the main agent records explicit no-dependency rationale in `## SubTasks > Notes`.
+
+#### 3.C Aggregate testing and aggregate review
+
+When all SubTasks (or the single no-split iteration) are complete, run:
+
+1. Aggregate testing by coding-agent, covering at minimum: unit tests, end-to-end tests, regression tests. Add pressure tests when the design's `## Risks` calls out performance or capacity risk. Record the executed categories and result in the status file `## Final Aggregate Testing`.
+2. Aggregate review by review-agent across all SubTasks for consistency, contracts, and regression. Each role decides accept-or-reject for findings affecting its artifact; rejections recorded as in §3.B. Record the verdict in the status file `## Final Aggregate Review`.
+3. Loop aggregate test and aggregate review until both converge.
+
+The final report's `## Tests` section must enumerate the aggregate categories actually executed (unit / e2e / regression / pressure if applicable). The final report's `## Review Result` section must record the aggregate review verdict separately from per-SubTask verdicts when SubTasks were used.
+
+### 4. Deliver
 
 1. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
 2. Produce a final report from `templates/final-report.md`.

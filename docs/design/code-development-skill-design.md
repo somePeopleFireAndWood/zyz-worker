@@ -138,7 +138,7 @@ reviewAgent 负责独立审查，避免主agent 自审带来的偏袒性和倾�
 - 在设计环节审查设计文档。
 - 在 coding 环节审查工程内容，包括代码、提示词、静态文件、配置文件等。
 - 在 coding 环节审查测试代码。
-- 根据用户、codingAgent、testAgent 对审查意见的修改或拒绝原因，执行新的 review。
+- 根据主 agent、codingAgent、testAgent 对审查意见的修改或拒绝原因，执行新的 review。
 
 设计文档审查标准：
 
@@ -158,8 +158,8 @@ reviewAgent 负责独立审查，避免主agent 自审带来的偏袒性和倾�
 
 Review 循环：
 
-- 用户、codingAgent、testAgent 可能接受审查意见并修改。
-- 用户、codingAgent、testAgent 也可能拒绝审查意见，并给出拒绝原因。
+- 主 agent、codingAgent、testAgent 可能接受审查意见并修改。
+- 主 agent、codingAgent、testAgent 也可能拒绝审查意见，并给出拒绝原因。
 - 接受和拒绝可能同时存在。
 - reviewAgent 必须基于修改后的文档或代码，以及拒绝修改的原因，执行新的 review。
 - 只有当 reviewAgent 判断无需修改时，当前 review 循环结束。
@@ -192,9 +192,9 @@ Review 循环：
 3. 如果有不清楚的点，主agent 反问用户。
 4. 设计文档初稿完成后，主agent 启动独立 reviewAgent 审查设计文档。
 5. reviewAgent 按设计文档审查标准检查是否存在错误、模糊、遗漏、冲突或不完备。
-6. 如果 reviewAgent 有任何改动建议，主agent 将建议反馈给用户。
-7. 用户决定接受改动，或给出拒绝改动的原因。
-8. 主agent 根据用户决定更新设计文档，或记录拒绝原因。
+6. 主agent 自行决定接受或拒绝 reviewAgent 的每条建议（默认不询问用户）。
+7. 接受时主agent 更新设计文档；拒绝时主agent 在设计文档的 `## Review History` 与 task status 的 `## Design Review > Rejected Suggestions` 记录拒绝原因。
+8. 仅当 reviewAgent 的建议会改动 Goals 或 Acceptance Criteria 时，主agent 才回到用户征求决策。
 9. reviewAgent 基于修改后的文档和拒绝原因执行新的 review。
 10. 当 reviewAgent 判断无需修改时，设计 review 循环结束。
 11. 主agent 提醒用户进行人工审查。
@@ -210,7 +210,7 @@ coding 环节由主agent 调度 codingAgent、testAgent、reviewAgent 完成。
 - testAgent 根据设计文档开发测试代码。
 - codingAgent 与 testAgent 可以并行工作。
 - 如果 codingAgent 在开发中发现设计文档遗漏的重要测试点，应通知主agent。
-- 主agent 更新设计文档并通知 testAgent 补充对应测试代码。
+- 主agent 在设计文档 `## Review History` 与 task status 中追加 "discovered during coding" 条目，并通知 testAgent 补充测试代码；仅当新测试点暗示 Goals 或 Acceptance Criteria 变更时，才重新触发设计评审或回到用户。
 
 #### 测试执行
 
@@ -446,7 +446,7 @@ coding 环节可能执行很长时间，且中途可能不稳定。
 设计环节：
 
 - 如果需求、约束或验收标准不清楚，主agent 可以向用户提问。
-- 设计文档 review 中的任何修改建议，都应交给用户决定是否接受。
+- 设计文档 review 中的修改建议由主agent 自行决定接受或拒绝；只在涉及 Goals / Acceptance Criteria 时才回到用户。
 
 coding 环节：
 
