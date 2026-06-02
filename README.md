@@ -23,6 +23,7 @@
 - `.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，方便在本仓库内直接以项目模式使用 Claude Code
 - 占位 Skill 位于 `skills/zyz-worker/SKILL.md`
 - 代码开发 Skill 位于 `skills/code-development/SKILL.md`
+- git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
 - 代码开发主控提示词位于 `skills/code-development/prompts/main-agent.md`
 - 提示词式 SubAgent 定义位于 `subagents/`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
@@ -197,6 +198,8 @@ subagents/
 │   │       ├── final-report.md
 │   │       ├── review-report.md
 │   │       └── task-status.md
+│   ├── git-worktree/
+│   │   └── SKILL.md
 │   └── zyz-worker/
 │       ├── SKILL.md
 │       ├── references/
