@@ -43,7 +43,7 @@ If the current environment cannot enforce these limits technically, enforce them
 ## Design Workflow
 
 1. Ask the user for missing requirements, constraints, non-goals, acceptance criteria, risky details, and important tests.
-2. Write or update the Markdown design document.
+2. Write or update the Markdown design document. The design does not have to live in a single file. For complex tasks, split it into multiple focused documents along a natural axis (domain, module, layer, or step) so each document stays focused and loads cleanly into model context; simple tasks may stay in one file. When the design is split, add a short index document that lists and links every part, and record every document path in the status file `## Metadata > Design Document` (one per line) so downstream roles see the full set.
 3. Ask reviewAgent to review the design document.
 4. Decide accept-or-reject for each review-agent finding yourself. Do not present findings to the user.
 5. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.

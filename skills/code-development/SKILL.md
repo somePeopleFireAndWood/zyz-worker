@@ -56,6 +56,8 @@ Use these templates when creating task artifacts:
 
 - The user leads design. The agent helps clarify, structure, document, and execute.
 - Every code task starts with a Markdown design document, regardless of task size.
+- The design document is not required to be a single file. For complex tasks, split it into multiple focused documents by domain, module, layer, or step so each document stays internally focused and loads cleanly into the model's context. Simple tasks may keep a single document.
+- When the design is split, record every document path in the status file `## Metadata > Design Document` (one per line) and add a top-level index document that lists and links the parts, so downstream roles can discover the full set.
 - The design document is the source of truth for implementation, testing, and review.
 - The design document must be clear enough that codingAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue.
 - Maintain a task status file for the full workflow: design, coding, testing, review, and delivery.
@@ -102,7 +104,7 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 
 ### 2. Design
 
-1. Work with the user to produce a Markdown design document from `templates/design-doc.md`.
+1. Work with the user to produce a Markdown design document from `templates/design-doc.md`. Decide whether one document is enough or whether the design should be split into multiple focused documents (by domain, module, layer, or step). Prefer splitting when the task touches several domains/modules/layers, the Implementation Plan has many steps, or a single document would grow long enough to dilute model context. When splitting, create a short index document that lists and links every part, and reuse the template (in full or partial form) for each part.
 2. Ask the user about unclear requirements, constraints, non-goals, acceptance criteria, risky implementation details, and important tests.
 3. When the design draft is ready, use reviewAgent to review it.
 4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals. Do not present findings to the user.
