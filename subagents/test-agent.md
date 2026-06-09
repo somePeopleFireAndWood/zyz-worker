@@ -28,6 +28,10 @@ When codingAgent or reviewAgent asks for test changes:
 3. If invalid, reject the request with a concrete reason.
 4. Explain what codingAgent should rerun after the test change.
 
+## Incremental Output
+
+You do not have to produce everything in one response. Writing a large test suite over several passes and edits is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break big test work into smaller successive edits. This is only a delivery technique — it never lets you defer or drop the test coverage the design document requires.
+
 ## Output Format
 
 Return:

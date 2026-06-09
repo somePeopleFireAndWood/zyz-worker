@@ -4,6 +4,8 @@
 
 ## Goals
 
+<!-- Capture the user's full, final target. The overall task must end fully meeting it; do not narrow, defer, or substitute a placeholder for any part at the overall-task level. -->
+
 ## Non-Goals
 
 ## User Requirements

@@ -1,5 +1,7 @@
 # Task Status
 
+This is the single mandatory overall task status file. Each SubTask may optionally keep its own SubTask-status file; this overall file must always exist and stay current.
+
 ## Metadata
 
 - Task ID:
@@ -8,6 +10,10 @@
 - Current Phase:
 - Created At:
 - Updated At:
+
+## Total Goal
+
+(Record the user's full, final target verbatim or as a faithful summary. The overall task must end fully meeting this. Do not narrow, defer, or replace any part of it with a placeholder at the overall-task level.)
 
 ## Progress
 
@@ -43,6 +49,8 @@
 
 (Fill only when the main agent splits the task into SubTasks. Leave empty otherwise.)
 
+Each SubTask may optionally have its own SubTask-status file tracking its coding, test, review, and auto-fix progress. Record that file's path in the SubTask's `Notes` when one exists. Update this scoreboard whenever a SubTask completes — do not leave progress only in the conversation.
+
 Per-SubTask scoreboard:
 
 - SubTask ID:
@@ -50,6 +58,8 @@ Per-SubTask scoreboard:
 - Coded: (true once implementation is complete)
 - Tested: (true once this SubTask's tests pass)
 - Reviewed: (true once review-agent reports no changes for this SubTask; rejected findings allowed if reasons are recorded)
+- Committed: (commit sha for this SubTask's autonomous commit, or the failure reason if the commit/push failed — failure is non-blocking)
+- SubTask Status File: (path if this SubTask keeps its own status file; optional)
 - Rejected Suggestions: (list each rejection with reason, one per line)
 - Notes:
 

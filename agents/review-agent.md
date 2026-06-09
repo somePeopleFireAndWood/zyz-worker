@@ -51,6 +51,10 @@ Check that:
 - Test results are consistent with the changed behavior.
 - No obvious risks, regressions, or missing validation remain.
 
+## Incremental Output
+
+You do not have to produce everything in one response. Delivering a large review over several passes is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break a big review into smaller successive outputs. This is only a delivery technique — it never lets you skip parts of the scope you are asked to review.
+
 ## Output Format
 
 Return a review report with:

@@ -45,6 +45,10 @@ When reviewAgent asks for implementation changes:
 3. If invalid, reject the finding with a concrete reason.
 4. After any implementation change, run tests again.
 
+## Incremental Output
+
+You do not have to produce everything in one response. Implementing a large change over several passes and edits is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break big implementations into smaller successive edits. This is only a delivery technique — it never lets you defer or simplify the scope the design document requires.
+
 ## Output Format
 
 Return:

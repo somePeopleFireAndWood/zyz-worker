@@ -55,12 +55,15 @@ Use these templates when creating task artifacts:
 ## Core Rules
 
 - The user leads design. The agent helps clarify, structure, document, and execute.
+- The user's stated requirements are always the final, complete target. The overall task must end fully meeting that target, however large, heavy, or broad it is.
 - Every code task starts with a Markdown design document, regardless of task size.
 - The design document is not required to be a single file. For complex tasks, split it into multiple focused documents by domain, module, layer, or step so each document stays internally focused and loads cleanly into the model's context. Simple tasks may keep a single document.
 - When the design is split, record every document path in the status file `## Metadata > Design Document` (one per line) and add a top-level index document that lists and links the parts, so downstream roles can discover the full set.
 - The design document is the source of truth for implementation, testing, and review.
 - The design document must be clear enough that codingAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue.
 - Maintain a task status file for the full workflow: design, coding, testing, review, and delivery.
+- There must always be exactly one overall task status file that records overall state and progress. Each SubTask may optionally keep its own SubTask-status file recording that SubTask's coding, test, review, and auto-fix progress, but the single overall status file is mandatory.
+- Status and progress must be persisted to the status files. Do not report progress only in the conversation. Whenever a SubTask completes (or any phase changes), write the update into the overall task status file and the relevant SubTask-status file (if one exists) before moving on.
 - Use existing installed skills, plugins, or tools when they improve document or code quality, but never require the user to install missing optional capabilities.
 - Prefer continuing through non-blocking ambiguity with documented assumptions. Stop and ask the user only when continuing would risk data loss, irreversible changes, or a serious mismatch with the design.
 - The design document and the final report default to the same language as the user in this conversation. Other artifacts (task status, review reports, prompt files) stay in their current language.
@@ -81,6 +84,33 @@ Escalate to the user only when:
 
 The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed. Only §2 step 8 (final human approval before coding) is a user touch.
 
+## Total Goal Fidelity
+
+The user always describes the final, complete target. The final deliverable of the overall task must satisfy that target in full.
+
+- Do not unilaterally narrow, simplify, defer, or substitute an "experimental placeholder" for any part of the user's stated goal at the overall-task level.
+- Phrases like "deferred to next milestone", "in-memory only for now, replace later", "experimental placeholder", or "ship a simplified version first and iterate" describe intermediate states only. They may appear inside SubTask execution, never as the final state of the overall task.
+- SubTasks may be implemented step by step or via TODO-style staging. That is expected. But once all SubTasks are done, the overall task must completely fulfill the user's goal.
+- To prevent the overall goal from being forgotten or drifting, record it explicitly. Write the user's full target into the design document `## Goals` and copy a concise statement of it into the status file `## Total Goal`. Every phase checks final output against this record before delivery.
+- If genuinely fulfilling the full goal is impossible (true blocker, contradiction, or it would cause data loss / irreversible change), escalate to the user instead of silently shipping a reduced version.
+
+## Incremental Output
+
+Agents (the main agent and every subagent) do not have to produce a complete result in a single response. Producing a large artifact over multiple passes and edits is allowed and encouraged.
+
+- Split large implementation, test, document, or report writing into several smaller outputs or successive edits rather than one oversized response.
+- This improves model and API stability, reduces the chance of truncated or failed responses, and avoids context anxiety from trying to emit everything at once.
+- Multi-pass output is a delivery technique, not a license to defer scope. It does not relax Total Goal Fidelity: the final state must still completely fulfill the user's goal.
+
+## Version Control
+
+zyz-worker is designed to complete the whole task autonomously from the design document, so version-control steps run on their own and never block the workflow.
+
+- Commit autonomously. Create a commit after each completed SubTask, and a final commit for the overall task. Do not stop to ask the user whether to commit.
+- Push autonomously when a remote/upstream is configured. Do not stop to ask the user whether to push.
+- Commit and push are non-blocking. If a commit or push fails (no remote, auth, hook, conflict, or any other reason), record the failure in the status file and continue the task. A failed commit or push is never a blocker and must not interrupt or pause the workflow.
+- Still respect destructive-action safety: do not force-push, reset --hard, or rewrite published history on your own. Autonomy here covers ordinary `git commit` and `git push`, not destructive operations.
+
 ## Role Boundaries
 
 The main agent is the current user-facing conversation agent. It coordinates and records. It must not directly write implementation code, modify tests, run tests, or perform review.
@@ -99,8 +129,9 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 
 1. Create or identify a task id.
 2. Create a task directory, preferably `.zyz-worker/tasks/<task-id>/`.
-3. Create a status file from `templates/task-status.md`.
+3. Create a status file from `templates/task-status.md`. This is the single mandatory overall task status file.
 4. Record the task name, phase, known inputs, open questions, and current assumptions.
+5. Record the user's full, final goal in the status file `## Total Goal` so the overall target cannot drift later (see Total Goal Fidelity).
 
 ### 2. Design
 
@@ -128,16 +159,19 @@ The main agent decides on its own whether to split the task into SubTasks. Split
 
 Not splitting is also valid for simple tasks.
 
+#### 3.0.1 Coding and testing run in parallel by default
+
+In most cases coding-agent and test-agent can work at the same time: both derive their work from the approved design document, so test-agent does not need to wait for the implementation to exist before writing tests. Dispatch them together (in a single batch) unless the design makes the tests depend on a concrete implementation detail that is not yet settled. Their outputs still converge at the test-run step (coding-agent runs tests after both finish).
+
 #### 3.A No-split path
 
 When the task is not split, run a single iteration:
 
-1. coding-agent implements the engineering changes.
-2. test-agent writes or updates tests from the design document.
-3. coding-agent runs the tests.
-4. If tests fail, coding-agent classifies the failure; coding-agent fixes implementation bugs and test-agent fixes invalid tests.
-5. After tests pass, review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
-6. Repeat 3-5 until tests pass and review-agent reports no changes.
+1. coding-agent implements the engineering changes, and test-agent writes or updates tests from the design document. Run these two in parallel by default (see §3.0.1).
+2. coding-agent runs the tests.
+3. If tests fail, coding-agent classifies the failure; coding-agent fixes implementation bugs and test-agent fixes invalid tests.
+4. After tests pass, review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
+5. Repeat 2-4 until tests pass and review-agent reports no changes.
 
 Then proceed to §3.C aggregate testing and aggregate review.
 
@@ -145,16 +179,17 @@ Then proceed to §3.C aggregate testing and aggregate review.
 
 When split, the main agent records SubTasks in the status file `## SubTasks` section. For each SubTask:
 
-1. coding-agent implements that SubTask's engineering changes.
-2. test-agent writes or updates tests for that SubTask.
-3. coding-agent runs that SubTask's tests.
-4. If tests fail, coding-agent classifies and the responsible role fixes; loop until tests pass.
-5. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Code Review > Rejected Suggestions`.
-6. Loop 3-5 until tests pass and review-agent reports no changes for this SubTask.
-7. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
+1. coding-agent implements that SubTask's engineering changes, and test-agent writes or updates tests for that SubTask. Run these two in parallel by default (see §3.0.1).
+2. coding-agent runs that SubTask's tests.
+3. If tests fail, coding-agent classifies and the responsible role fixes; loop until tests pass.
+4. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Code Review > Rejected Suggestions`.
+5. Loop 2-4 until tests pass and review-agent reports no changes for this SubTask.
+6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
    - `Coded: true` when implementation is complete.
    - `Tested: true` when this SubTask's tests pass.
    - `Reviewed: true` when review-agent reports no changes for this SubTask (rejected findings allowed if reasons are recorded).
+7. Update the overall task status file (and this SubTask's status file, if one exists) to reflect the completed SubTask before moving on. Do not leave the progress only in the conversation.
+8. After a SubTask is complete, autonomously create one git commit for that SubTask's changes (one commit per completed SubTask). See Version Control — commit and push without asking, and never let a commit or push failure interrupt the task.
 
 Do not start SubTask N+1 until SubTask N has all three flags true, unless the main agent records SubTask N as "blocked, deferred" with all of the following:
 
@@ -175,9 +210,11 @@ The final report's `## Tests` section must enumerate the aggregate categories ac
 
 ### 4. Deliver
 
-1. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
-2. Produce a final report from `templates/final-report.md`.
-3. Ask the user whether to delete the task status files.
+1. Verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`). Confirm nothing from the user's stated target was silently narrowed, deferred, or replaced with a placeholder. If any gap remains, either close it or escalate to the user — do not deliver a reduced version as final.
+2. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
+3. Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
+4. Produce a final report from `templates/final-report.md`.
+5. Ask the user whether to delete the task status files.
 
 ## Long-Running Work
 
