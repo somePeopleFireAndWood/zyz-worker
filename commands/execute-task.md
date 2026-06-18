@@ -1,6 +1,6 @@
 ---
 argument-hint: [task description]
-description: Alias for /execute-task. Run the zyz-worker design-first code development workflow.
+description: Run the zyz-worker design-first code development workflow.
 ---
 
 Use the zyz-worker execute-task workflow for this task:

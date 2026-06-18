@@ -483,3 +483,5 @@ Claude Code 适配：
 3. 增加 subAgent 规格文档。
 4. 在有稳定执行模式后，再考虑 hooks、脚本或真实 subAgent 运行时。
 5. 根据 Codex 和 Claude Code 的实际加载方式，补充 agent-specific 适配说明。
+
+> 注：该 skill 已于 2026-06 更名为 `execute-task`；本文档保留作历史记录。

@@ -1,8 +1,12 @@
 # zyz-worker
 
-`zyz-worker` 是一个面向 Codex、Claude Code 等 Agent CLI 的插件工程。
+我是周钰喆，一名光荣的工人，隶属于伟大的工人阶级。我会和同志们一起解放全人类，最后解放我自己。
 
-这个插件的目标是帮助用户完成一条完整的工作链路。当前版本先聚焦一个场景：**完成一个已经确认的代码开发任务**。
+这个插件是我实际工作时用到的工作方法、工作技能。
+
+zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一事实源**，上下文负责执行、文件负责记忆。详见 [docs/conventions/long-running-state.md](docs/conventions/long-running-state.md)。
+
+`zyz-worker` 是一个面向 Codex、Claude Code 等 Agent CLI 的插件工程。当前版本先聚焦一个场景：**执行一个已经确认的代码开发任务**（execute-task）。
 
 规划中的基础流程是：
 
@@ -11,23 +15,23 @@
 3. 编码实现
 4. 测试验证
 
-当前仓库只是初始化脚手架。具体的工作流、提示词、脚本、Agent 分工和运行行为会在后续版本中继续补充。
+后续会增加一层多任务调度（计划中的 `orchestration-scheduling-task` skill），把每个 worker 委托给本插件的 execute-task skill 来跑。
 
 ## 当前状态
 
 - Claude Code 插件清单位于 `.claude-plugin/plugin.json`
 - Codex 插件清单位于 `.codex-plugin/plugin.json`
 - Claude Code 项目说明位于 `CLAUDE.md`
-- Slash command 位于 `commands/code-development.md`
+- Slash command 位于 `commands/execute-task.md`（主名）与 `commands/code-development.md`（alias，与主名内容等价）
 - SubAgent 位于 `agents/`
 - `.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，方便在本仓库内直接以项目模式使用 Claude Code
-- 占位 Skill 位于 `skills/zyz-worker/SKILL.md`
-- 代码开发 Skill 位于 `skills/code-development/SKILL.md`
+- Execute Task Skill 位于 `skills/execute-task/SKILL.md`
 - git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
-- 代码开发主控提示词位于 `skills/code-development/prompts/main-agent.md`
+- Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
 - 提示词式 SubAgent 定义位于 `subagents/`
+- 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
-- 代码开发 Skill 设计文档位于 `docs/design/code-development-skill-design.md`
+- 代码开发 Skill 设计文档位于 `docs/design/code-development-skill-design.md`（历史文档，描述对象现名为 execute-task）
 - 工程结构约定位于 `docs/conventions/project-structure.md`
 - 暂未实现 hooks、脚本、MCP server 或真实 SubAgent 运行时
 
@@ -80,7 +84,7 @@ ln -s /path/to/zyz-worker ~/plugins/zyz-worker
 
 完成后，在 Codex 的插件界面中搜索并安装 `zyz-worker`。如果插件没有立即出现，重启或刷新 Codex 后再检查插件列表。
 
-安装后，`code-development` Skill 会通过 `skills/code-development/SKILL.md` 生效。
+安装后，`execute-task` Skill 会通过 `skills/execute-task/SKILL.md` 生效。
 
 ### Claude Code
 
@@ -98,8 +102,10 @@ claude --plugin-dir ~/plugins/zyz-worker
 进入 Claude Code 后运行：
 
 ```text
-/zyz-worker:code-development <你的开发任务描述>
+/zyz-worker:execute-task <你的开发任务描述>
 ```
+
+`/zyz-worker:code-development` 仍然可用，作为别名调起同一套工作流。
 
 也可以一次加载多个插件，比如和 superpowers 一起使用：
 
@@ -122,8 +128,10 @@ claude
 然后运行：
 
 ```text
-/code-development <你的开发任务描述>
+/execute-task <你的开发任务描述>
 ```
+
+`/code-development` 仍然可用，作为别名调起同一套工作流。
 
 #### 方式 3：复制到目标项目（不推荐）
 
@@ -133,7 +141,7 @@ claude
 CLAUDE.md
 .claude/agents/
 .claude/commands/
-skills/code-development/
+skills/execute-task/
 subagents/
 ```
 
@@ -141,7 +149,7 @@ subagents/
 
 #### 关于主 Agent 与 SubAgent
 
-主 agent 不是 Claude Code SubAgent。主 agent 是当前与用户对话的 Agent 在执行 `/code-development`（或 `/zyz-worker:code-development`）时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `agents/` 下的 `coding-agent`、`test-agent` 和 `review-agent`。
+主 agent 不是 Claude Code SubAgent。主 agent 是当前与用户对话的 Agent 在执行 `/execute-task`（或 `/zyz-worker:execute-task`，以及别名 `/code-development` / `/zyz-worker:code-development`）时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `agents/` 下的 `coding-agent`、`test-agent` 和 `review-agent`。
 
 ## 初步概念
 
@@ -174,11 +182,13 @@ subagents/
 │   ├── review-agent.md
 │   └── test-agent.md
 ├── commands/
+│   ├── execute-task.md
 │   └── code-development.md
 ├── assets/
 │   └── README.md
 ├── docs/
 │   ├── conventions/
+│   │   ├── long-running-state.md
 │   │   └── project-structure.md
 │   └── design/
 │       ├── code-development-skill-design.md
@@ -189,7 +199,7 @@ subagents/
 │   └── README.md
 ├── skills/
 │   ├── README.md
-│   ├── code-development/
+│   ├── execute-task/
 │   │   ├── SKILL.md
 │   │   ├── prompts/
 │   │   │   └── main-agent.md
@@ -198,14 +208,8 @@ subagents/
 │   │       ├── final-report.md
 │   │       ├── review-report.md
 │   │       └── task-status.md
-│   ├── git-worktree/
-│   │   └── SKILL.md
-│   └── zyz-worker/
-│       ├── SKILL.md
-│       ├── references/
-│       │   └── README.md
-│       └── templates/
-│           └── README.md
+│   └── git-worktree/
+│       └── SKILL.md
 ├── subagents/
 │   ├── README.md
 │   ├── coding-agent.md
@@ -223,7 +227,7 @@ subagents/
 - `.claude-plugin/` 保存 Claude Code 插件清单。
 - `.codex-plugin/` 保存 Codex 插件声明。
 - `agents/` 保存 Claude Code 插件级 SubAgent 定义。
-- `commands/` 保存 Claude Code 插件级 slash command；引用插件内资源时使用 `${CLAUDE_PLUGIN_ROOT}/...`。
+- `commands/` 保存 Claude Code 插件级 slash command；引用插件内资源时使用 `${CLAUDE_PLUGIN_ROOT}/...`。例如 `commands/execute-task.md`。
 - `.claude/agents/` 与 `.claude/commands/` 是指向根级目录的符号链接，便于以项目模式直接使用本仓库。
 - `skills/` 保存可被两端共用的能力，每个 Skill 独立一个目录。
 - `skills/<skill-name>/references/` 保存按需加载的参考资料。
@@ -245,3 +249,4 @@ subagents/
 - 产品需求拆解文档模板
 - 技术实现设计文档模板
 - 如有明确需要，再增加 hooks、MCP server 或 app manifest
+- 计划中的 `orchestration-scheduling-task` skill——多任务并行调度、tmux 分发、状态聚合（独立任务跟踪中）

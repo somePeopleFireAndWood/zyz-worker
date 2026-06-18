@@ -1,11 +1,11 @@
 ---
-name: code-development
-description: Use when the user wants help completing a code development task with a design-first workflow, a user-facing main agent, prompt-only subagents, task status tracking, implementation, tests, review, and final delivery.
+name: execute-task
+description: Use when the user wants help executing a single confirmed development task with a design-first workflow, a user-facing main agent, prompt-only subagents, task status tracking, implementation, tests, review, and final delivery.
 ---
 
-# Code Development
+# Execute Task
 
-Use this skill to help a user complete a code development task. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
+Use this skill to help a user execute a single confirmed code development task — design through delivery. This is zyz-worker's "execute one task" skill; higher-level multi-task orchestration belongs to the planned `orchestration-scheduling-task` skill and is out of scope here. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
 
 This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for codingAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation.
 
@@ -67,6 +67,7 @@ Use these templates when creating task artifacts:
 - Use existing installed skills, plugins, or tools when they improve document or code quality, but never require the user to install missing optional capabilities.
 - Prefer continuing through non-blocking ambiguity with documented assumptions. Stop and ask the user only when continuing would risk data loss, irreversible changes, or a serious mismatch with the design.
 - The design document and the final report default to the same language as the user in this conversation. Other artifacts (task status, review reports, prompt files) stay in their current language.
+- Long-running tasks must persist progress, decisions, blockers, and the next step into the task status file; the conversation context is for execution only. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
 
 ## Automatic Execution Policy
 
@@ -221,6 +222,8 @@ The final report's `## Tests` section must enumerate the aggregate categories ac
 During long coding phases, the main agent should keep the status file current. Record the active role, latest output, blocked items, next action, and restart notes.
 
 If a subagent is stuck, interrupted, or silent for too long, the main agent should restart that role if the platform supports it. If no real subagent runtime exists, resume from the status file and re-issue the relevant role prompt with the latest design and status summary.
+
+See also [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md) — long-running tasks must persist state to files, not context.
 
 ## Optional Skills And Plugins
 

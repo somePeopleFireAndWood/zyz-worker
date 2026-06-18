@@ -119,3 +119,7 @@ Run `git worktree repair [<path>...]` to fix the bidirectional links between the
 - **Not inside a git work tree.** `git rev-parse --show-toplevel` exits non-zero. Abort and tell the user to `cd` into a git working tree before retrying. Do not fall back to `pwd`.
 - **Bare repository.** `git rev-parse --show-toplevel` also exits non-zero in a bare repo (stderr contains `fatal: this operation must be run in a work tree`). In this case, ask the user to supply an explicit target path instead of relying on the default rule.
 - **Illegal branch name.** Branch names containing characters that git itself rejects are not sanitized by this skill. `git worktree add` will surface the underlying git error. Note that `mkdir -p` may already have created harmless intermediate directories (for example `<project>/..`) before git rejects the branch name; this is an expected side effect, not a bug.
+
+## Long-Running Considerations
+
+A git worktree provides an isolated execution checkout; it is not a place to track task state. Persist task progress, decisions, and blockers in the task status file under `.zyz-worker/tasks/<task-id>/` (or the path provided by the dispatching agent). See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).

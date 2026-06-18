@@ -46,7 +46,7 @@ Codex plugin manifest. `.codex-plugin/plugin.json` describes the plugin to Codex
 
 ### `.claude/`
 
-Project-level Claude Code integration for using this repository **as a project** (running `claude` inside the repo and invoking `/code-development`).
+Project-level Claude Code integration for using this repository **as a project** (running `claude` inside the repo and invoking `/execute-task` (or its alias `/code-development`)).
 
 - `.claude/agents` is a symlink to the root `agents/` directory.
 - `.claude/commands` is a symlink to the root `commands/` directory.
@@ -124,3 +124,7 @@ This repository follows the multi-CLI plugin pattern: shared assets at the root,
 - The repository can also be used as a Claude Code project (without plugin install) via `CLAUDE.md` and the `.claude/` symlinks.
 
 Shared workflows should stay agent-neutral by default. Add agent-specific sections only when behavior, file placement, or runtime expectations differ.
+
+## Cross-cutting Conventions
+
+- Long-running task state lives in files. See [long-running-state.md](./long-running-state.md).
