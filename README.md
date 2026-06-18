@@ -15,7 +15,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 3. 编码实现
 4. 测试验证
 
-后续会增加一层多任务调度（计划中的 `orchestration-scheduling-task` skill），把每个 worker 委托给本插件的 execute-task skill 来跑。
+后续会增加一层多任务调度（`orchestration-scheduling-task` skill），把每个 worker 委托给本插件的 execute-task skill 来跑。
 
 ## 当前状态
 
@@ -23,17 +23,21 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - Codex 插件清单位于 `.codex-plugin/plugin.json`
 - Claude Code 项目说明位于 `CLAUDE.md`
 - Slash command 位于 `commands/execute-task.md`（主名）与 `commands/code-development.md`（alias，与主名内容等价）
+- 多任务调度 Slash command 位于 `commands/orchestrate-tasks.md`
 - SubAgent 位于 `agents/`
 - `.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，方便在本仓库内直接以项目模式使用 Claude Code
 - Execute Task Skill 位于 `skills/execute-task/SKILL.md`
+- Orchestration Scheduling Task Skill 位于 `skills/orchestration-scheduling-task/SKILL.md`
 - git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
 - Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
+- Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
+- Orchestration bash helpers 位于 `scripts/orch-*.sh`
 - 提示词式 SubAgent 定义位于 `subagents/`
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
 - 代码开发 Skill 设计文档位于 `docs/design/code-development-skill-design.md`（历史文档，描述对象现名为 execute-task）
 - 工程结构约定位于 `docs/conventions/project-structure.md`
-- 暂未实现 hooks、脚本、MCP server 或真实 SubAgent 运行时
+- 暂未实现 hooks、MCP server 或真实 SubAgent 运行时
 
 ## 安装与使用
 
@@ -183,7 +187,8 @@ subagents/
 │   └── test-agent.md
 ├── commands/
 │   ├── execute-task.md
-│   └── code-development.md
+│   ├── code-development.md
+│   └── orchestrate-tasks.md
 ├── assets/
 │   └── README.md
 ├── docs/
@@ -196,7 +201,13 @@ subagents/
 ├── hooks/
 │   └── README.md
 ├── scripts/
-│   └── README.md
+│   ├── README.md
+│   ├── orch-scan-tasks.sh
+│   ├── orch-spawn-worker.sh
+│   ├── orch-check-worker.sh
+│   ├── orch-heartbeat-daemon.sh
+│   ├── orch-cleanup-worker.sh
+│   └── orch-merge-and-cleanup.sh
 ├── skills/
 │   ├── README.md
 │   ├── execute-task/
@@ -208,6 +219,14 @@ subagents/
 │   │       ├── final-report.md
 │   │       ├── review-report.md
 │   │       └── task-status.md
+│   ├── orchestration-scheduling-task/
+│   │   ├── SKILL.md
+│   │   ├── prompts/
+│   │   │   └── main-agent.md
+│   │   └── templates/
+│   │       ├── master-list-task-entry.md
+│   │       ├── worker-status.md
+│   │       └── question-answer.md
 │   └── git-worktree/
 │       └── SKILL.md
 ├── subagents/
@@ -249,4 +268,3 @@ subagents/
 - 产品需求拆解文档模板
 - 技术实现设计文档模板
 - 如有明确需要，再增加 hooks、MCP server 或 app manifest
-- 计划中的 `orchestration-scheduling-task` skill——多任务并行调度、tmux 分发、状态聚合（独立任务跟踪中）

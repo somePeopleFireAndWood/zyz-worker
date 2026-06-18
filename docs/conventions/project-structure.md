@@ -102,6 +102,25 @@ Repository-local automation belongs here. Good candidates include validation, fo
 
 Scripts should be safe to run repeatedly and should not depend on user-specific absolute paths unless documented.
 
+**Orchestration helpers (`scripts/orch-*.sh`).** The `orchestration-scheduling-task` skill calls a small fixed set of bash helpers — `orch-scan-tasks.sh`, `orch-spawn-worker.sh`, `orch-check-worker.sh`, `orch-heartbeat-daemon.sh`, `orch-cleanup-worker.sh`, `orch-merge-and-cleanup.sh`. They live in this directory and follow these conventions:
+
+- `#!/usr/bin/env bash` + `set -euo pipefail` + an in-file contract block at the top.
+- All `task-id` inputs are validated against `^[A-Za-z0-9_-]+$`; invalid → exit 2.
+- Missing required external commands (`tmux`, `git`) → exit 3.
+- Output structured `key=value` lines on stdout; human messages on stderr.
+- `chmod +x` on every helper so the orchestrator can call them directly.
+- The orchestrator prompt invokes these helpers; do not re-implement their logic in prompt text.
+
+### `<list-dir>/runtime/<task-id>/`
+
+When the orchestration scheduler dispatches a worker, per-task runtime state lives under `<list-dir>/runtime/<task-id>/`. The convention is:
+
+- `worker-status.md` — worker-written orchestrator-facing snapshot.
+- `heartbeat` — single-line ISO timestamp, refreshed by the in-pane heartbeat daemon.
+- `question.md` / `answer.md` — async user↔worker Q&A; consumed answers are renamed `answer.md.consumed.<question-id>`.
+
+`<list-dir>` itself defaults to `.zyz-worker/orchestration/<list-name>/` and is the orchestrator's single source of truth (master entries under `<list-dir>/tasks/<task-id>.md`, plus `<list-dir>/SUMMARY.md`, `<list-dir>/.orchestrator.lock`, and the runtime subtree above). See `skills/orchestration-scheduling-task/SKILL.md` for the full file protocol.
+
 ### `docs/`
 
 Design notes, conventions, and implementation plans belong here.

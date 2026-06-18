@@ -65,3 +65,16 @@ Return a review report with:
 ## Long-Running State
 
 For any long-running work, write progress, decisions, blockers, and the next step into the task status file path provided by the main agent (default `.zyz-worker/tasks/<task-id>/status.md`). The conversation context handles execution only — never long-term memory. Before any suspend, handoff, or context switch, flush state first. See [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md).
+
+## Orchestrated Mode Hook
+
+If `ZYZ_WORKER_STATUS_FILE` is set in the environment, this role is running under an orchestrator (the `orchestration-scheduling-task` skill). Before suspending or before returning a final result, write a minimal status snapshot to that file path. The fields are:
+
+- `phase` — one of `design | coding | testing | review | delivery | done | error`
+- `phase-since` — ISO timestamp of when the current `phase` was entered
+- `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
+- `waiting-reason` — free text; non-empty only when `wait-state != none`
+- `expected-resume-by` — ISO timestamp; non-empty only when `wait-state != none`
+- `last-flush` — ISO timestamp of this write
+
+Write atomically (tmpfile + rename). Never edit the file in place. Treat `phase` as monotonically furthest-reached — never roll back. The orchestrator only sees what this file says; in-context memory does not count. See also [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md).

@@ -24,9 +24,11 @@ For tasks executed under the `execute-task` skill, the default status file path 
 
 The `execute-task` skill already follows this layout. When a subagent is dispatched, the dispatching agent provides the concrete status file path; subagents must not invent their own path.
 
-## Relationship to Future Orchestration
+## Relationship to Orchestration
 
-The planned `orchestration-scheduling-task` skill will dispatch many `execute-task` workers (for example, one per tmux pane) and aggregate their status. The orchestrator and each worker communicate through the status files defined here — the file is the channel. This convention is therefore a prerequisite for the orchestration layer: if a worker's progress lives only in its own context window, the orchestrator cannot see it, recover from it, or restart it.
+The `orchestration-scheduling-task` skill dispatches many `execute-task` workers (one per tmux pane) and aggregates their status. The orchestrator and each worker communicate exclusively through files defined by this convention — the file is the channel. This convention is therefore a hard prerequisite for the orchestration layer: if a worker's progress lives only in its own context window, the orchestrator cannot see it, recover from it, or restart it.
+
+The concrete file-protocol for orchestrator↔worker (master entry, `worker-status.md`, `heartbeat`, `question.md`/`answer.md`) is documented in `skills/orchestration-scheduling-task/SKILL.md` and built directly on top of the rules above.
 
 ## Anti-Pattern
 
@@ -38,5 +40,6 @@ This relies on conversation context as memory. The moment the context is compact
 
 - `skills/execute-task/SKILL.md` — the execute-task workflow uses this convention end-to-end.
 - `skills/execute-task/prompts/main-agent.md` — the main-agent prompt enforces the convention.
-- `subagents/*.md` and `agents/*.md` — subagent prompts include a short hard-constraint block referring back here.
+- `skills/orchestration-scheduling-task/SKILL.md` — the orchestration layer's file protocol (master entry, worker-status, heartbeat, question/answer) is built on top of this convention.
+- `subagents/*.md` and `agents/*.md` — subagent prompts include a short hard-constraint block referring back here, plus an `## Orchestrated Mode Hook` section for the orchestrator-facing snapshot.
 - `skills/git-worktree/SKILL.md` — worktree is execution isolation; status file is still the source of truth.

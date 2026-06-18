@@ -5,7 +5,7 @@ description: Use when the user wants help executing a single confirmed developme
 
 # Execute Task
 
-Use this skill to help a user execute a single confirmed code development task — design through delivery. This is zyz-worker's "execute one task" skill; higher-level multi-task orchestration belongs to the planned `orchestration-scheduling-task` skill and is out of scope here. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
+Use this skill to help a user execute a single confirmed code development task — design through delivery. This is zyz-worker's "execute one task" skill; higher-level multi-task orchestration belongs to the `orchestration-scheduling-task` skill in this same plugin and is out of scope here. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
 
 This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for codingAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation.
 
@@ -238,3 +238,46 @@ Examples:
 Do not block, fail, or ask the user to install anything when these optional capabilities are unavailable.
 
 When optional capabilities are used, record them briefly in the task status file or final report.
+
+## Orchestrated Mode
+
+When the environment variable `ZYZ_WORKER_STATUS_FILE` is set, this skill runs in orchestrated mode — i.e. it has been dispatched by the `orchestration-scheduling-task` skill into its own tmux session. In this mode the main agent (and every subagent through it) MUST flush a small status snapshot to that file path so the orchestrator can see what this worker is doing.
+
+The required fields in `worker-status.md` are:
+
+- `phase` — one of `design | coding | testing | review | delivery | done | error`
+- `phase-since` — ISO timestamp of when the current `phase` was entered
+- `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
+- `waiting-reason` — free text, non-empty only when `wait-state != none`
+- `expected-resume-by` — ISO timestamp, non-empty only when `wait-state != none`
+- `last-flush` — ISO timestamp of this write
+
+Hard rules in orchestrated mode:
+
+- **Flush before any suspend.** Before suspending, before dispatching a subagent, after receiving a subagent result, and on entering any new workflow phase, write `ZYZ_WORKER_STATUS_FILE` atomically (tmpfile + rename). Never edit the file in place.
+- **`phase` is monotonically furthest-reached.** Treat `phase` as monotonically furthest-reached: once written as `phase=coding`, never roll back to `phase=design`; once written as `phase=review`, never roll back to `phase=coding` even when the review loop iterates the implementation; once written as `phase=delivery`, never roll back.
+- **`wait-state` is orthogonal to `phase`.** Set `wait-state` independently from `phase`. Set `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource` with a non-empty `waiting-reason` before suspending; set `wait-state=none` immediately on resume.
+- **Async user Q&A goes through files.** Use `ZYZ_QUESTION_FILE` and `ZYZ_ANSWER_FILE` when the user is not attached to the tmux pane. After consuming an `answer.md`, rename it to `answer.md.consumed.<question-id>`.
+- **Two status files, not one.** Orchestrated mode keeps the existing `.zyz-worker/tasks/<task-id>/status.md` as the worker's detailed task status (used by execute-task workflow), and adds `worker-status.md` at the path in `ZYZ_WORKER_STATUS_FILE` as the orchestrator-facing snapshot. The two files do not replace each other.
+
+Phase mapping (when each phase value must be written to `worker-status.md`):
+
+| execute-task workflow position | phase to write | flush moment |
+|---|---|---|
+| §1 Start Task | `design` | when initializing the task status file |
+| §2 Design (all of it, including review loops) | `design` | once on entry; on each return to main agent |
+| §3.A step 1 / §3.B step 1 — coding-agent dispatched | `coding` | before dispatching the subagent |
+| §3.A step 2 / §3.B step 2 — test-agent / running tests | `testing` | before dispatching / before running |
+| §3.A step 5 / §3.B step 5 — review-agent dispatched | `review` | before dispatching |
+| §3.B step 6 — review → coding revisions loop | `review` (held; do not roll back) | no flush |
+| §3.C aggregate testing | `testing` | on entry |
+| §3.C aggregate review | `review` | on entry |
+| §4 Deliver | `delivery` | on entry |
+| final report shipped | `done` | last write |
+| unrecoverable error | `error` (set `wait-state=none`) | immediately |
+
+If `ZYZ_WORKER_STATUS_FILE` is unset, ignore this entire section — the skill runs in standalone mode and behaves exactly as the rest of the document describes.
+
+### Maintenance note
+
+This section is coupled to the `orchestration-scheduling-task` skill's contract. If the execute-task workflow gains a new phase, extend the `phase` enum here and in `skills/orchestration-scheduling-task/templates/worker-status.md`, and extend the phase mapping table here in lockstep.
