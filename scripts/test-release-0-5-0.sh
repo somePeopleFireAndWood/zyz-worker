@@ -259,28 +259,35 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
 #    ### Added / ### Changed / ### Removed / ### Fixed
 # ---------------------------------------------------------------------------
 
-# extract_section <file> <heading-regex>
-# Echoes lines from the first line matching <heading-regex> up to (but not
-# including) the next `^## ` heading.  Used to scope sub-heading checks to
-# a single version section.
+# extract_section <file> <heading-literal>
+# Echoes lines AFTER the first line whose start equals <heading-literal>
+# (literal prefix match via awk `index($0, target) == 1`) up to (but not
+# including) the next `^## ` heading.  Used to scope sub-heading checks
+# to a single version section.
+#
+# Rationale: awk's `-v re=...` assignment processes backslash escapes in
+# the value (e.g. `\[` -> `[`, `\.` -> `.`), so passing an ERE through -v
+# silently breaks bracketed headings like `## [0.5.0]` (it would parse
+# `[0.5.0]` as a character class instead of literal brackets).  Using a
+# literal heading + `index() == 1` sidesteps regex escaping entirely.
 extract_section() {
     local file="$1"
-    local heading_re="$2"
-    awk -v re="$heading_re" '
-        $0 ~ re { in_section = 1; print; next }
-        in_section && /^## / { exit }
-        in_section { print }
+    local heading_literal="$2"
+    awk -v target="$heading_literal" '
+        !started && index($0, target) == 1 { started = 1; next }
+        started && /^## / { exit }
+        started { print }
     ' "$file"
 }
 
-# check_section_has_subheading <file> <version-display> <section-heading-re>
+# check_section_has_subheading <file> <version-display> <section-heading-literal>
 # Asserts the extracted section has at least one of the 4 sub-headings.
 check_section_has_subheading() {
     local file="$1"
     local version_display="$2"
-    local section_re="$3"
+    local section_literal="$3"
     local body
-    body="$(extract_section "$file" "$section_re")"
+    body="$(extract_section "$file" "$section_literal")"
     if [ -z "$body" ]; then
         fail "T3 CHANGELOG.md section '$version_display' is empty (no body extracted)"
         return
@@ -326,8 +333,11 @@ run_T3() {
     fi
 
     # Per-version-section sub-heading presence.
-    check_section_has_subheading "$cl" "[0.5.0]" '^## \[0\.5\.0\]'
-    check_section_has_subheading "$cl" "[0.4.0]" '^## \[0\.4\.0\]'
+    # NOTE: pass LITERAL heading strings to check_section_has_subheading;
+    # extract_section uses awk's index($0, target)==1 for prefix match,
+    # not regex, so brackets and dots are taken as literal characters.
+    check_section_has_subheading "$cl" "[0.5.0]" '## [0.5.0]'
+    check_section_has_subheading "$cl" "[0.4.0]" '## [0.4.0]'
 }
 
 # ---------------------------------------------------------------------------
