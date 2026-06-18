@@ -50,6 +50,7 @@ Use these templates when creating master-list artifacts:
 ## Core Rules
 
 - **Long-running state lives in files.** The master list directory `<list-dir>` is the single source of truth. Conversation context never replaces a file. Every orchestrator decision must be derivable from disk content; if a fact is not on disk, it does not exist. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
+- **The orchestrator is cwd-independent; each task carries its own `source-repo`.** The orchestrator may be started from `~/` or any directory (not necessarily a git repo). Each master entry's `source-repo:` frontmatter field is mandatory and points at the absolute path of that task's project git work tree; all git operations for the task are scoped to `git -C "$SOURCE_REPO"`. One master list can therefore dispatch workers across multiple repos.
 - **Only one orchestrator at a time per master list.** The orchestrator acquires `<list-dir>/.orchestrator.lock` via `flock` at startup. Starting a second orchestrator against the same list fails. The lock guards orchestrator-vs-orchestrator concurrency; user edits to master entries are guarded procedurally (user must `Ctrl-C` the orchestrator first — see below).
 - **Master entries are co-written with the user.** The orchestrator writes via `tmpfile + rename`. **Before the user edits a master entry in an external editor, the user must `Ctrl-C` the orchestrator** so the flock releases. Restart the orchestrator once the edit is saved.
 - **Each worker writes only its own runtime files.** A worker writes `worker-status.md`, `question.md`, and uses `heartbeat` via the daemon. The orchestrator reads but never writes a worker's runtime files (except for archival during cleanup). The orchestrator writes the master entry; the worker never writes the master entry.
@@ -95,7 +96,8 @@ The lock guards only orchestrator-vs-orchestrator concurrency. User-vs-orchestra
 
 ```yaml
 task-id: <task-id>            # immutable
-project: <project name>       # user maintained
+project: <project name>       # user maintained; label only; default = basename source-repo when omitted
+source-repo: ~/workspace/<repo>  # required; absolute path or ~/-prefixed; supports ~/ expansion
 state: not-analyzed           # not-analyzed | blocked | ready | in-progress | paused | completed
 priority: normal              # low | normal | high
 branch: task/<task-id>        # default; user can override

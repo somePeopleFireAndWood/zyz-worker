@@ -2,20 +2,9 @@
 
 我是周钰喆，一名光荣的工人，隶属于伟大的工人阶级。我会和同志们一起解放全人类，最后解放我自己。
 
-这个插件是我实际工作时用到的工作方法、工作技能。
+这个插件是我实际工作时用到的方法、技能。希望能帮助到同志们的生产、工作。
 
 zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一事实源**，上下文负责执行、文件负责记忆。详见 [docs/conventions/long-running-state.md](docs/conventions/long-running-state.md)。
-
-`zyz-worker` 是一个面向 Codex、Claude Code 等 Agent CLI 的插件工程。当前版本先聚焦一个场景：**执行一个已经确认的代码开发任务**（execute-task）。
-
-规划中的基础流程是：
-
-1. 产品需求拆解
-2. 技术实现设计文档
-3. 编码实现
-4. 测试验证
-
-后续会增加一层多任务调度（`orchestration-scheduling-task` skill），把每个 worker 委托给本插件的 execute-task skill 来跑。
 
 ## 当前状态
 
@@ -38,6 +27,16 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 代码开发 Skill 设计文档位于 `docs/design/code-development-skill-design.md`（历史文档，描述对象现名为 execute-task）
 - 工程结构约定位于 `docs/conventions/project-structure.md`
 - 暂未实现 hooks、MCP server 或真实 SubAgent 运行时
+
+## 多项目 orchestration（multi-project orchestration）
+
+`orchestration-scheduling-task` skill 与 `/orchestrate-tasks` 支持单一 orchestrator 同时调度跨多个项目的任务（multi-project orchestration）。要点：
+
+- orchestrator 可以在任意 cwd 启动，包括 `~/` 或任何非 git 目录；它不假设自己 cwd 在被调度项目的 git repo 内。
+- 一份 master list（`<list-dir>/tasks/*.md`）里可以混合来自不同项目的 task，每个 task 各自在自己的 master entry frontmatter 里声明 `source-repo: <绝对路径或 ~/ 开头的路径>`。
+- `source-repo` 是**必须**字段，由用户写；orchestrator 不自动推断。`~/workspace/foo` 与 `~/workspace/bar` 这种跨 repo 调度由此原生支持。
+- spawn helper 会对 `source-repo` 做 4 道校验：缺字段、非绝对路径、路径不存在、不是 git work tree —— 任何一道失败都直接以 exit 5 + 精确诊断字符串退出，task 留在 `not-analyzed`。
+- 软警示：**不要**把某个 task 的 `source-repo:` 指向 zyz-worker 插件仓库自身，除非你的本意就是在插件源码内派发一个 worker。无意中指向插件 repo 会导致 worker 在插件仓库里建分支与 worktree，与正常项目开发混淆。
 
 ## 安装与使用
 

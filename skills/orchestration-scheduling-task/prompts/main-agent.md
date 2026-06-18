@@ -26,6 +26,7 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
 - **The user must `Ctrl-C` the orchestrator before editing a master entry in an external editor.** The orchestrator's `tmpfile + rename` writes can race with the user's `:w`; the procedural rule is the user releases the flock first, edits, then restarts the orchestrator.
 - **Never run destructive git operations on the base branch.** No `git reset --hard`, `git push --force`, `gh pr close`, or `git commit --amend` against the base. The merge helper handles a single non-destructive `git merge --no-ff` (or `gh pr merge --merge`).
 - **`task-id` whitelist.** All helper scripts already enforce `^[a-zA-Z0-9_-]+$`; if a master entry's `task-id` contains anything else, reject it during scan and ask the user to rename.
+- **The orchestrator does not assume its cwd is inside any task's source repo.** The orchestrator may be started from `~/` or any directory. Each task's git operations are scoped to its master-entry `source-repo:` field; the spawn helper enforces this.
 
 ## Inputs
 
@@ -66,6 +67,8 @@ For each `not-analyzed` task:
 - Decide the next state:
   - If `blocked-by` is empty (or all referenced tasks are `completed`) → `state: ready`.
   - Else → `state: blocked`.
+
+For each `not-analyzed` task whose master entry has missing `source-repo:`, or `source-repo:` that is not absolute after `~/` expansion, or points at a directory that is not a git work tree: write `needs source-repo: <reason>` into the `## Orchestrator Analysis` section. **Do not** change `state:` — leave it `not-analyzed`. Do not dispatch.
 
 ### plan
 

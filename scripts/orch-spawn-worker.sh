@@ -27,15 +27,24 @@
 #     session-name=<tmux-session>
 #     worktree=<worktree>
 #     auto-start=true|false
+#     source-repo=<expanded-absolute-path>
 #
 #   Exit codes:
 #     0  success
 #     2  argument error / invalid task-id
 #     3  missing dependency (tmux / git)
 #     4  <list-dir>/tasks/<task-id>.md missing or unreadable
-#     5  worktree path conflict OR runtime dir conflict
+#     5  worktree path conflict OR runtime dir conflict OR source-repo
+#        missing / non-absolute / non-existent / not a git work tree
 #     6  tmux session name conflict
 #     7  `git worktree add` failed
+#
+#   Exit-code precedence (evaluated in this order):
+#     2  argv shape / task-id charset
+#     4  master entry file missing
+#     5  source-repo missing / invalid (validated before tmux/git)
+#     3  tmux / git not on PATH
+#     5/6/7  remaining collision / git-worktree-add checks
 #
 set -euo pipefail
 
@@ -77,14 +86,6 @@ if [ -z "$LIST_DIR" ]; then
     exit 2
 fi
 
-# Dependencies.
-for dep in tmux git; do
-    if ! command -v "$dep" >/dev/null 2>&1; then
-        echo "error: missing dependency: $dep" >&2
-        exit 3
-    fi
-done
-
 MASTER_ENTRY="$LIST_DIR/tasks/$TASK_ID.md"
 if [ ! -f "$MASTER_ENTRY" ] || [ ! -r "$MASTER_ENTRY" ]; then
     echo "error: master entry not found or unreadable: $MASTER_ENTRY" >&2
@@ -117,9 +118,56 @@ fm_field() {
     ' "$file"
 }
 
+# source-repo validation. Runs BEFORE the tmux/git dependency check so that
+# the negative spawn cases (T4' in scripts/test-orchestration-helpers.sh)
+# fire even on hosts without tmux. The order matters: argv (2) → master
+# entry missing (4) → source-repo invalid (5) → tmux/git missing (3) →
+# rest.
+SOURCE_REPO="$(fm_field "$MASTER_ENTRY" source-repo)"
+if [ -z "$SOURCE_REPO" ]; then
+    echo "error: master entry has no source-repo field: $MASTER_ENTRY" >&2
+    exit 5
+fi
+# Expand a leading `~/` if present (bash does not expand ~ inside a
+# variable). Pattern matches §Important Details > `~/` 展开 in design.md.
+case "$SOURCE_REPO" in
+    "~/"*) SOURCE_REPO="$HOME/${SOURCE_REPO#~/}" ;;
+esac
+# After expansion, the path must be absolute. Reject everything that is
+# neither `/...` nor a `~/...` that just got expanded. (`~` alone with no
+# trailing `/` also lands here — see §Important Details > Quoting and `~`.)
+case "$SOURCE_REPO" in
+    /*) : ;;
+    *)
+        echo "error: source-repo must be an absolute path or start with ~/: $SOURCE_REPO" >&2
+        exit 5
+        ;;
+esac
+if [ ! -e "$SOURCE_REPO" ]; then
+    echo "error: source-repo path does not exist: $SOURCE_REPO" >&2
+    exit 5
+fi
+if ! git -C "$SOURCE_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "error: source-repo is not a git work tree: $SOURCE_REPO" >&2
+    exit 5
+fi
+
+# Dependencies. Checked AFTER source-repo so the source-repo negative
+# tests fire even when tmux is absent. (Note: the source-repo git
+# rev-parse above requires `git`; if `git` is missing it will fall
+# through to the rev-parse failure branch above and exit 5 with the
+# "not a git work tree" message — that is acceptable because no host
+# realistically has `git` missing.)
+for dep in tmux git; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+        echo "error: missing dependency: $dep" >&2
+        exit 3
+    fi
+done
+
 # Read frontmatter; apply defaults.
 PROJECT="$(fm_field "$MASTER_ENTRY" project)"
-[ -z "$PROJECT" ] && PROJECT="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+PROJECT="${PROJECT:-$(basename "$SOURCE_REPO")}"
 
 BRANCH="$(fm_field "$MASTER_ENTRY" branch)"
 [ -z "$BRANCH" ] && BRANCH="task/$TASK_ID"
@@ -185,9 +233,9 @@ fi
 
 # Step 4: create the worktree.
 mkdir -p "$(dirname "$WORKTREE")"
-if ! git worktree add "$WORKTREE" -b "$BRANCH" "$BASE" >/dev/null 2>&1; then
+if ! git -C "$SOURCE_REPO" worktree add "$WORKTREE" -b "$BRANCH" "$BASE" >/dev/null 2>&1; then
     # Try again without -b (branch may already exist locally).
-    if ! git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1; then
+    if ! git -C "$SOURCE_REPO" worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1; then
         echo "error: git worktree add failed (branch=$BRANCH base=$BASE target=$WORKTREE)" >&2
         exit 7
     fi
@@ -275,5 +323,6 @@ fi
 printf 'session-name=%s\n' "$TMUX_SESSION"
 printf 'worktree=%s\n' "$WORKTREE"
 printf 'auto-start=%s\n' "$AUTO_START"
+printf 'source-repo=%s\n' "$SOURCE_REPO"
 
 exit 0

@@ -60,6 +60,8 @@ Pair `/orchestrate-tasks` with `/loop` for automatic periodic polling. The orche
 Key boundaries:
 
 - The master list directory `<list-dir>` is the single source of truth. Every orchestrator decision must be derivable from disk content — never from conversation context.
+- **The orchestrator can be started from `~/` or any directory (anywhere on disk), including any non-git cwd; 任意目录均可。** The orchestrator does NOT assume its cwd is inside any task's source repo. Each task's git operations are scoped to its own master-entry `source-repo:` field.
+- **Each task's master entry MUST contain a `source-repo:` frontmatter field**, holding an absolute path or a `~/`-prefixed path to the project git work tree. The spawn helper validates `source-repo:` and exits 5 with a precise diagnostic if it is missing, non-absolute, non-existent, or not a git work tree. A single master list can therefore dispatch workers across multiple repos (multi-project orchestration). Soft warning: do not point `source-repo:` at the zyz-worker plugin repo itself unless you intend to dispatch a worker inside the plugin source.
 - Only one orchestrator at a time per `<list-dir>` (enforced via `flock` on `<list-dir>/.orchestrator.lock`).
 - **Before editing a master entry in an external editor, the user MUST `Ctrl-C` the orchestrator so the flock releases.** The orchestrator's `tmpfile + rename` writes can race with an editor save otherwise. Restart the orchestrator after the edit is saved.
 - Merge and worktree cleanup require explicit user approval: write the literal token `approved` into `## Pending Merge Approval` on the master entry to authorize `scripts/orch-merge-and-cleanup.sh`. Stale-worker cleanup additionally requires `cleanup-approved` in `## Notes`.

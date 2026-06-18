@@ -36,6 +36,7 @@ Helper scripts (the orchestrator calls these — do not re-implement them):
 
 Important boundaries:
 
+- The orchestrator can be started from any cwd (`~/`, a non-git directory, or any unrelated git repo). Each task's master entry MUST contain a `source-repo:` frontmatter field pointing at the absolute path of that task's project git work tree (`~/`-prefixed paths are expanded). The spawn helper rejects entries missing or invalid `source-repo:` with exit 5.
 - The current conversation agent is the orchestrator. It schedules, dispatches, polls, and reports. It does NOT execute tasks itself — each task runs in its own tmux session under `/execute-task`.
 - The master list directory `<list-dir>` is the single source of truth. Every orchestrator decision must be derivable from disk content.
 - Only one orchestrator at a time per `<list-dir>` (enforced via `flock` on `<list-dir>/.orchestrator.lock`).

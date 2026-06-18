@@ -1,6 +1,7 @@
 ---
 task-id: <task-id>                # immutable; matches the filename without `.md`
-project: <project-name>           # user-maintained; the repo / package this task touches
+project: <project-name>           # user-maintained; label only; default = basename source-repo when omitted
+source-repo: ~/workspace/<repo>   # required; supports ~/; absolute or ~/ form
 state: not-analyzed               # not-analyzed | blocked | ready | completed
                                   # Legal user-written values are limited to the four above.
                                   # `in-progress` and `paused` are written ONLY by the orchestrator.
@@ -27,6 +28,11 @@ updated-at: <yyyy-mm-dd>
   This file is co-written by the user and the orchestrator.
   - Ownership of each frontmatter field is documented in
     `skills/orchestration-scheduling-task/SKILL.md` (Core Rules + File Protocols).
+  - `source-repo` is mandatory; the orchestrator can run from any cwd
+    (including `~/`); each task carries its own source-repo so a single
+    master list can dispatch workers across multiple repos (per-task
+    isolation). The orchestrator never assumes its cwd is inside any
+    task's source repo.
   - The orchestrator writes via tmpfile+rename.
   - The user MUST `Ctrl-C` the orchestrator before opening this file in an
     external editor; otherwise the orchestrator's write may race with the
