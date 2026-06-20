@@ -158,7 +158,9 @@ run_T2() {
         ".claude-plugin/marketplace.json"
         "README.md"
         "CLAUDE.md"
+        "CHANGELOG.md"
         "scripts/test-rename-and-conventions.sh"
+        "scripts/test-release-0-5-0.sh"
     )
 
     # Whitelist for "skills/code-development".
@@ -172,8 +174,16 @@ run_T2() {
 
     # --- (a) bare "code-development" -------------------------------------
     local out_a
-    if ! out_a="$(git ls-files -z | xargs -0 grep -nIH "code-development" 2>/dev/null)"; then
-        # grep -H returns 1 when no matches; treat empty as success.
+    # `-d skip` is essential: `git ls-files` lists the symlinks
+    # `.claude/agents` -> ../agents and `.claude/commands` -> ../commands,
+    # which grep sees as directories. Without `-d skip`, grep errors
+    # ("Is a directory"), exits non-zero, poisons the pipeline exit code,
+    # the `if !` below fires, out_a is blanked, and the whole T2(a) check
+    # silently passes — a latent bug present since stage A. `-d skip`
+    # makes grep skip symlink-to-dir entries cleanly so the real hits are
+    # captured and checked. (grep also returns 1 when there are genuinely
+    # no matches, which the blank-out_a fallback still handles correctly.)
+    if ! out_a="$(git ls-files -z | xargs -0 grep -nIH -d skip "code-development" 2>/dev/null)"; then
         out_a=""
     fi
 
@@ -200,7 +210,7 @@ EOF
 
     # --- (b) "skills/code-development" -----------------------------------
     local out_b
-    if ! out_b="$(git ls-files -z | xargs -0 grep -nIH "skills/code-development" 2>/dev/null)"; then
+    if ! out_b="$(git ls-files -z | xargs -0 grep -nIH -d skip "skills/code-development" 2>/dev/null)"; then
         out_b=""
     fi
 
@@ -222,22 +232,37 @@ EOF
         pass "T2(b) no stray 'skills/code-development' references outside whitelist"
     fi
 
-    # --- (c) "skills/zyz-worker"  -- must be zero -----------------------
+    # --- (c) "skills/zyz-worker"  -- must be zero except legit keepers --
+    # The placeholder skill skills/zyz-worker/ was removed in stage A. No
+    # live file should reference it, EXCEPT: (1) CHANGELOG.md history entry
+    # documenting the removal, and (2) this test script, which must name
+    # the string to check for its absence (self-reference). Both are
+    # legitimate keepers, not regressions.
+    local wl_zyz=(
+        "CHANGELOG.md"
+        "scripts/test-rename-and-conventions.sh"
+    )
     local out_c
-    if ! out_c="$(git ls-files -z | xargs -0 grep -nIH "skills/zyz-worker" 2>/dev/null)"; then
+    if ! out_c="$(git ls-files -z | xargs -0 grep -nIH -d skip "skills/zyz-worker" 2>/dev/null)"; then
         out_c=""
     fi
 
-    if [ -z "$out_c" ]; then
-        pass "T2(c) no 'skills/zyz-worker' references anywhere"
-    else
-        local line
+    local violations_c=0
+    if [ -n "$out_c" ]; then
+        local line file
         while IFS= read -r line; do
             [ -z "$line" ] && continue
-            fail "T2(c) forbidden 'skills/zyz-worker' hit  -->  $line"
+            file="${line%%:*}"
+            if ! is_whitelisted "$file" "${wl_zyz[@]}"; then
+                fail "T2(c) forbidden 'skills/zyz-worker' hit  -->  $line"
+                violations_c=$((violations_c + 1))
+            fi
         done <<EOF
 $out_c
 EOF
+    fi
+    if [ "$violations_c" -eq 0 ]; then
+        pass "T2(c) no stray 'skills/zyz-worker' references outside whitelist"
     fi
 }
 
