@@ -42,5 +42,5 @@ Important boundaries:
 - Only one orchestrator at a time per `<list-dir>` (enforced via `flock` on `<list-dir>/.orchestrator.lock`).
 - Before editing a master entry in an external editor, the user MUST `Ctrl-C` the orchestrator so the lock releases.
 - Merge and worktree cleanup require explicit user approval (`approved` token in `## Pending Merge Approval`; `cleanup-approved` token in `## Notes` for stale workers).
-- Use this command together with `/loop` for automatic polling: `/loop /orchestrate-tasks <list-dir>`.
+- A bare `/orchestrate-tasks <list-dir>` auto-polls by default: each tick self-schedules the next via in-session `ScheduleWakeup`. Wrapping with `/loop` (`/loop /orchestrate-tasks <list-dir>`) is an optional explicit alternative. Set `ZYZ_ORCH_ONCE=1` to run a single tick and return without self-scheduling (it forces single-shot even under `/loop`).
 - Use existing installed skills, plugins, and tools when they improve output quality, but never require the user to install missing optional capabilities.

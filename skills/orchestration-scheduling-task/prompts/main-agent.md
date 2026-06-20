@@ -36,6 +36,7 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
   - `ZYZ_HEARTBEAT_WAITING_USER_SEC` (default 900)
   - `ZYZ_MAX_PARALLEL_WORKERS` (default 3)
   - `ZYZ_AUTO_START_WORKER=1` to enable `--auto-start` in spawn.
+  - `ZYZ_ORCH_ONCE=1` — when set, the orchestrator runs a single tick and returns without self-scheduling, even under `/loop`; unset (default) means a bare `/orchestrate-tasks` enters auto-timer mode and self-schedules via `ScheduleWakeup`.
 
 ## Startup
 
@@ -134,7 +135,7 @@ For stale-worker cleanup: only invoke `scripts/orch-cleanup-worker.sh <task-id> 
 
 ## Cadence Policy
 
-When wrapped by `/loop`, each tick chooses `delaySeconds` using the decision tree below. The branch names are stable anchors and must appear in this file verbatim (the test suite greps them).
+Each tick (under `/loop` or auto-timer mode) chooses `delaySeconds` using the decision tree below; after the branch is chosen, re-schedule per §Startup Modes. The branch names are stable anchors and must appear in this file verbatim (the test suite greps them).
 
 Branches are evaluated in order; the first match wins. The 300 s mark is intentionally absent (cache-boundary avoidance).
 
@@ -168,9 +169,17 @@ else:
     delaySeconds = 120        # default — any state combo not matched above (e.g., unexpected phase=error transition, heartbeat=missing, malformed worker-status) triggers a short investigation tick
 ```
 
-After the branch is chosen, call `ScheduleWakeup(delaySeconds, prompt="/loop /orchestrate-tasks <list-dir>")` so the next tick re-enters the same controller.
+After the branch is chosen, in Loop mode call `ScheduleWakeup(delaySeconds, prompt="/loop /orchestrate-tasks <list-dir>")` so the next tick re-enters the same controller.
 
-When not wrapped by `/loop`, run a single tick and return. Do not call `ScheduleWakeup`.
+### Startup Modes
+
+After the cadence branch is chosen and the tick's §report is written, decide whether (and how) to self-schedule. Three startup modes are resolved by the following precedence; evaluate top to bottom and short-circuit on the first match:
+
+1. **Single-shot (highest priority).** If `ZYZ_ORCH_ONCE=1` is set, or the user has verbally asked for a single run, run one tick and return — do **not** call `ScheduleWakeup`. `ZYZ_ORCH_ONCE=1` forces single-shot **even under `/loop`** (it overrides Loop mode); a durable opt-out survives across wakes. A spoken "run once / single tick" request only suppresses the current tick's reschedule and does **not** survive a wake (the next wake is a fresh prompt with no conversation memory) — use `ZYZ_ORCH_ONCE=1` for a durable single-shot.
+2. **Loop mode.** Otherwise, if wrapped by `/loop` and `ZYZ_ORCH_ONCE` is unset, reschedule with `ScheduleWakeup(delaySeconds, prompt="/loop /orchestrate-tasks <list-dir>")` (unchanged behavior).
+3. **Auto-timer mode (default).** Otherwise — a bare `/orchestrate-tasks <list-dir>` invocation with `ZYZ_ORCH_ONCE` unset — reschedule with the **bare** `ScheduleWakeup(delaySeconds, prompt="/orchestrate-tasks <list-dir>")` (no `/loop` prefix). The bare prompt re-enters this same auto-timer branch on the next wake, so the orchestrator keeps polling automatically without pretending the user enabled `/loop`.
+
+Self-scheduling here lives entirely in-session via `ScheduleWakeup`; it introduces no cron, no background process, and no new files. The auto-poll loop survives only while the current Claude session is alive — closing the session stops it.
 
 ## Failure Modes
 
@@ -219,7 +228,7 @@ Keep the summary terse. Detail belongs in `SUMMARY.md` and per-task `## Notes`.
 ## Edge Cases And Tie-breakers
 
 - **Empty list** (no `*.md` in `<list-dir>/tasks/`): emit `No tasks found in <list-dir>/tasks/` to the conversation. Cadence branch=`all-ready-idle`. Do not write `SUMMARY.md` with errors.
-- **All tasks completed**: cadence branch=`all-ready-idle`. The orchestrator stays alive (waiting for new tasks) unless run as a one-shot.
+- **All tasks completed**: cadence branch=`all-ready-idle`. The orchestrator stays alive (auto-timer default, or `/loop`) waiting for new tasks, unless `ZYZ_ORCH_ONCE=1` (or an explicit single-tick request) is set.
 - **Two tasks with identical `task-id`**: scan should not see this (file names are unique), but if frontmatter `task-id` does not match the filename, reject the entry and surface to user.
 - **Master entry `state:` value is illegal user input** (e.g., `in-progress` written by hand): treat as `not-analyzed`, do not rewrite, surface the mistake to user.
 - **Worker's `worker-status.md` is missing**: report `phase=unknown wait-state=unknown` from `orch-check-worker.sh`; treat as suspect this tick.

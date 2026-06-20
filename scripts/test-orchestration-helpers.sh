@@ -308,6 +308,14 @@ run_T3() {
     check_grep_fixed "$main" "'/loop'"          "/loop"
     check_grep_fixed "$main" "'ScheduleWakeup'" "ScheduleWakeup"
 
+    # ---- T3'' (orch-auto-timer: default auto-timer + ZYZ_ORCH_ONCE opt-out) -
+    # Per design §Testing Plan (orch-auto-timer): main-agent.md must carry the
+    # new "default auto-timer self-scheduling + single-shot opt-out" semantics
+    # as positive literal anchors.  These sit beside the existing /loop +
+    # ScheduleWakeup anchors above; all of those are kept unchanged.
+    check_grep_fixed "$main" "ZYZ_ORCH_ONCE opt-out env var" "ZYZ_ORCH_ONCE"
+    check_grep_fixed "$main" "auto-timer mode anchor"        "auto-timer"
+
     # 7 cadence anchor strings
     local anchor
     for anchor in \
@@ -357,6 +365,14 @@ run_T3() {
     fi
     local cmd_orch="commands/orchestrate-tasks.md"
     check_grep_fixed "$cmd_orch" "T3' $cmd_orch mentions 'source-repo'" "source-repo"
+
+    # ---- T3'' cross-file anchor (orch-auto-timer) -----------------------
+    # Per design §Testing Plan (orch-auto-timer, F5): `ZYZ_ORCH_ONCE` must
+    # also surface in commands/orchestrate-tasks.md as the cross-file anchor
+    # for the unified "default auto-timer polling + single-shot opt-out"
+    # semantics (main-agent.md already carries it via the T3'' check above).
+    check_grep_fixed "$cmd_orch" "T3'' $cmd_orch mentions 'ZYZ_ORCH_ONCE'" "ZYZ_ORCH_ONCE"
+    check_grep_fixed "CLAUDE.md" "T3'' CLAUDE.md mentions 'ZYZ_ORCH_ONCE'" "ZYZ_ORCH_ONCE"
 }
 
 # ---------------------------------------------------------------------------

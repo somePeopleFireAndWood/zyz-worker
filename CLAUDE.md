@@ -51,9 +51,10 @@ Relationship to `/execute-task`: the orchestrator does NOT execute tasks itself.
 
 The current conversation agent is the orchestrator (main agent). It remains user-facing and runs the orchestration loop. The same project-level subagents (`implementation-agent`, `test-agent`, `review-agent`) are reused by each dispatched worker through `/execute-task`; the orchestrator itself does not need a dedicated subagent.
 
-Pair `/orchestrate-tasks` with `/loop` for automatic periodic polling. The orchestrator's main-agent prompt picks a `delaySeconds` per tick using a 7-branch cadence policy and calls `ScheduleWakeup` with the same `/loop /orchestrate-tasks <list-dir>` string:
+A bare `/orchestrate-tasks <list-dir>` auto-polls by default: each tick self-schedules the next via in-session `ScheduleWakeup`, picking a `delaySeconds` from the orchestrator's 7-branch cadence policy. The reschedule prompt for the bare (auto-timer) mode is the bare `/orchestrate-tasks <list-dir>` string. Wrapping with `/loop` is an optional explicit alternative; in Loop mode the orchestrator reschedules with the `/loop /orchestrate-tasks <list-dir>` string instead. Set `ZYZ_ORCH_ONCE=1` to run a single tick and return without self-scheduling (it forces single-shot even under `/loop`):
 
 ```text
+/orchestrate-tasks <list-dir>
 /loop /orchestrate-tasks <list-dir>
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: orchestration-scheduling-task
-description: Use when the user wants to drive a master task list — analyze dependencies, dispatch parallel tmux/git-worktree workers running execute-task, aggregate state, gate merges on user approval. Typically paired with /loop for periodic state polling.
+description: Use when the user wants to drive a master task list — analyze dependencies, dispatch parallel tmux/git-worktree workers running execute-task, aggregate state, gate merges on user approval. Polls automatically by default (in-session self-scheduling); can also be wrapped with /loop, or set to a single-shot via opt-out.
 ---
 
 # Orchestration Scheduling Task
@@ -63,7 +63,7 @@ Use these templates when creating master-list artifacts:
 
 ## Workflow
 
-The orchestrator runs a loop. Each tick (manual invocation or `/loop` wakeup) performs:
+The orchestrator runs a loop. Each tick (manual invocation, auto-timer self-schedule, or `/loop` wakeup) performs:
 
 1. **scan** — `scripts/orch-scan-tasks.sh <list-dir>` lists every task entry, its declared `state`, and (for in-progress/paused tasks) the worker-reported phase + wait-state. Missing or illegal `state` values are treated as `not-analyzed`.
 2. **analyze** — For `not-analyzed` tasks, run dependency / project / merge-with analysis. Write tentative results into the master entry `## Orchestrator Analysis` section. **If `## Description` is empty, leave `state: not-analyzed` and write `needs Description` into the analysis section; do not dispatch.**
@@ -169,7 +169,7 @@ If the orchestrator's conversation context is dropped or compacted, restarting `
 Before scanning, analyzing, dispatching, or summarizing, check whether the current agent already has relevant skills, plugins, or tools available:
 
 - Use git-related skills (e.g., the `git-worktree` skill in this plugin) to derive default worktree paths.
-- Use the `/loop` slash command (Claude Code) to drive periodic ticks with dynamic intervals; see the cadence policy in `prompts/main-agent.md`.
+- The orchestrator already auto-polls by default: each tick self-schedules the next via `ScheduleWakeup` with dynamic intervals (see the cadence policy in `prompts/main-agent.md`). Wrapping with the `/loop` slash command (Claude Code) is an optional explicit alternative; either way the same cadence policy drives the interval.
 - Use documentation, engineering workflow, or testing skills (`llmdoc`, `superpowers`, …) if available; record usage in the SUMMARY.
 
 Do not block, fail, or ask the user to install anything when these optional capabilities are unavailable.
