@@ -46,7 +46,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
-EXPECTED_VERSION="0.5.1"
+EXPECTED_VERSION="0.5.2"
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -161,11 +161,11 @@ run_T1() {
 # ---------------------------------------------------------------------------
 # T2.  Version consistency across 3 manifests
 #
-#  - .claude-plugin/plugin.json    : exactly one '"version"' line == "0.5.1"
-#  - .claude-plugin/marketplace.json: exactly one '"version"' line == "0.5.1"
+#  - .claude-plugin/plugin.json    : exactly one '"version"' line == "0.5.2"
+#  - .claude-plugin/marketplace.json: exactly one '"version"' line == "0.5.2"
 #       (no top-level version field; only plugins[0].version)
 #  - .codex-plugin/plugin.json     : exactly one '"version"' line matching
-#       "0.5.1+codex.<14 digits>"
+#       "0.5.2+codex.<14 digits>"
 # ---------------------------------------------------------------------------
 run_T2() {
     say_header "T2  Version consistency across 3 manifests"
@@ -186,11 +186,11 @@ run_T2() {
             fail "T2 .claude-plugin/plugin.json has $count '\"version\"' lines, expected 1.  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            # Exact match against "version": "0.5.1"
-            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.1"'; then
-                pass "T2 .claude-plugin/plugin.json has exactly one \"version\": \"0.5.1\" line"
+            # Exact match against "version": "0.5.2"
+            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.2"'; then
+                pass "T2 .claude-plugin/plugin.json has exactly one \"version\": \"0.5.2\" line"
             else
-                fail "T2 .claude-plugin/plugin.json '\"version\"' line is not \"0.5.1\".  Line:
+                fail "T2 .claude-plugin/plugin.json '\"version\"' line is not \"0.5.2\".  Line:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fi
         fi
@@ -213,10 +213,10 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fail "T2 .claude-plugin/marketplace.json has $count '\"version\"' lines, expected exactly 1 (no top-level version field).  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.1"'; then
-                pass "T2 .claude-plugin/marketplace.json has exactly one \"version\": \"0.5.1\" line (plugins[0].version, no top-level version)"
+            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.2"'; then
+                pass "T2 .claude-plugin/marketplace.json has exactly one \"version\": \"0.5.2\" line (plugins[0].version, no top-level version)"
             else
-                fail "T2 .claude-plugin/marketplace.json '\"version\"' line is not \"0.5.1\".  Line:
+                fail "T2 .claude-plugin/marketplace.json '\"version\"' line is not \"0.5.2\".  Line:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fi
         fi
@@ -238,11 +238,11 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fail "T2 .codex-plugin/plugin.json has $count '\"version\"' lines, expected 1.  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            # Match "0.5.1+codex.<14 digits>"
-            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.1\+codex\.[0-9]{14}"'; then
-                pass "T2 .codex-plugin/plugin.json '\"version\"' matches \"0.5.1+codex.<14 digits>\""
+            # Match "0.5.2+codex.<14 digits>"
+            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.2\+codex\.[0-9]{14}"'; then
+                pass "T2 .codex-plugin/plugin.json '\"version\"' matches \"0.5.2+codex.<14 digits>\""
             else
-                fail "T2 .codex-plugin/plugin.json '\"version\"' does NOT match \"0.5.1+codex.<14 digits>\".  Line:
+                fail "T2 .codex-plugin/plugin.json '\"version\"' does NOT match \"0.5.2+codex.<14 digits>\".  Line:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fi
         fi
@@ -355,7 +355,7 @@ run_T4() {
             "stdout contains dist= line" \
             "stdout contains size= line" \
             "stdout contains version= line" \
-            "dist/zyz-worker-0.5.1.zip exists" \
+            "dist/zyz-worker-0.5.2.zip exists" \
             "unzip -l succeeds (zip valid)" \
             "zip contains CHANGELOG.md" \
             "zip contains README.md" \

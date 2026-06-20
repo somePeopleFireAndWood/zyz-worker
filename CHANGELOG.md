@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.5.2] — 2026-06-20
+
+### Added
+- `orchestration-scheduling-task` now self-schedules by default: a bare
+  `/orchestrate-tasks <list-dir>` invocation enters "auto-timer mode" and re-arms the
+  next tick via in-session `ScheduleWakeup` using the existing 7-branch cadence policy,
+  rescheduling with the bare `/orchestrate-tasks <list-dir>` prompt. Previously a bare
+  invocation ran a single tick and stopped; only `/loop` wrapping self-scheduled.
+- `ZYZ_ORCH_ONCE=1` environment variable: explicit single-shot opt-out that runs one
+  tick and returns without self-scheduling. It overrides `/loop` (forces single-shot
+  even when wrapped).
+
+### Changed
+- Orchestrator startup is now a three-mode precedence (`ZYZ_ORCH_ONCE=1` > `/loop` >
+  bare auto-timer default). `/loop` behavior is unchanged. Docs synced across
+  `skills/orchestration-scheduling-task/SKILL.md`, `commands/orchestrate-tasks.md`,
+  `CLAUDE.md`, and the orchestrator `main-agent.md`. Cadence thresholds and the 7 branch
+  anchors are unchanged; self-scheduling uses in-session `ScheduleWakeup` only — no cron,
+  no background process, no new file protocol.
+
 ## [0.5.1] — 2026-06-20
 
 ### Changed
@@ -88,7 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split the design document into multiple files when the design is complex
   (introduced in 0.3.1, formalized here).
 
-[Unreleased]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/somePeopleFireAndWood/zyz-worker/commits/v0.4.0
