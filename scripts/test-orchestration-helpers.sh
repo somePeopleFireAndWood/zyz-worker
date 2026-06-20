@@ -157,10 +157,10 @@ HELPER_SCRIPTS=(
 )
 
 AGENT_FILES=(
-    "agents/coding-agent.md"
+    "agents/implementation-agent.md"
     "agents/test-agent.md"
     "agents/review-agent.md"
-    "subagents/coding-agent.md"
+    "subagents/implementation-agent.md"
     "subagents/test-agent.md"
     "subagents/review-agent.md"
 )
@@ -949,21 +949,21 @@ run_T5() {
     mkdir -p "$runtime"
     write_heartbeat "$hb" fresh
 
-    # Phase walkthrough: design -> coding -> coding+waiting-subagent ->
-    # coding+none -> testing -> review -> delivery -> done.
+    # Phase walkthrough: design -> implementation -> implementation+waiting-subagent ->
+    # implementation+none -> testing -> review -> delivery -> done.
     write_worker_status "$runtime" design none
     t5_assert_check "$list_dir" "foo" "phase" "design"
     t5_assert_check "$list_dir" "foo" "wait-state" "none"
 
-    write_worker_status "$runtime" coding none
-    t5_assert_check "$list_dir" "foo" "phase" "coding"
+    write_worker_status "$runtime" implementation none
+    t5_assert_check "$list_dir" "foo" "phase" "implementation"
     t5_assert_check "$list_dir" "foo" "wait-state" "none"
 
-    write_worker_status "$runtime" coding waiting-subagent "dispatched test-agent"
-    t5_assert_check "$list_dir" "foo" "phase" "coding"
+    write_worker_status "$runtime" implementation waiting-subagent "dispatched test-agent"
+    t5_assert_check "$list_dir" "foo" "phase" "implementation"
     t5_assert_check "$list_dir" "foo" "wait-state" "waiting-subagent"
 
-    write_worker_status "$runtime" coding none
+    write_worker_status "$runtime" implementation none
     t5_assert_check "$list_dir" "foo" "wait-state" "none"
 
     write_worker_status "$runtime" testing none
@@ -1265,7 +1265,7 @@ FAKEGHEOF
     resolved_gh="$(PATH="$GH_STRIPPED_PATH" command -v gh 2>/dev/null || true)"
     if [ "$resolved_gh" != "$SHADOW_DIR/gh" ]; then
         # Shadowing failed (e.g. fake gh not executable).  Continue but
-        # warn — coding-agent's real gh may execute and the test may
+        # warn — implementation-agent's real gh may execute and the test may
         # misclassify the merge as a real conflict.
         echo "  WARN  T6 fake gh shadow not active: command -v gh -> $resolved_gh"
     fi

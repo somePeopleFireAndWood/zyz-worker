@@ -7,7 +7,7 @@ description: Use when the user wants help executing a single confirmed developme
 
 Use this skill to help a user execute a single confirmed code development task — design through delivery. This is zyz-worker's "execute one task" skill; higher-level multi-task orchestration belongs to the `orchestration-scheduling-task` skill in this same plugin and is out of scope here. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
 
-This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for codingAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation.
+This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for implementationAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation.
 
 ## Main Agent Loading
 
@@ -23,10 +23,10 @@ That file is not a subagent. It defines how the current conversation agent coord
 
 If the full prompt cannot be loaded, continue with these built-in main-agent rules:
 
-- Stay user-facing and coordinate the task through design, coding, testing, review, and delivery.
+- Stay user-facing and coordinate the task through design, implementation, testing, review, and delivery.
 - Lead a user-driven design process and maintain a Markdown design document.
 - Maintain a task status file throughout the workflow.
-- Dispatch or simulate codingAgent, testAgent, and reviewAgent with the design document path and current status summary.
+- Dispatch or simulate implementationAgent, testAgent, and reviewAgent with the design document path and current status summary.
 - Monitor role progress and restart or re-issue role prompts when a role is stuck, interrupted, or silent for too long.
 - Use currently installed skills, plugins, or tools when they improve design documents, status files, or final reports, but never require missing optional capabilities.
 - Do not write implementation code.
@@ -41,7 +41,7 @@ If the full prompt cannot be loaded, continue with these built-in main-agent rul
 Load these files only when their role is needed:
 
 - Main agent controller prompt: `prompts/main-agent.md` (load first when the skill starts)
-- codingAgent: `../../subagents/coding-agent.md`
+- implementationAgent: `../../subagents/implementation-agent.md`
 - testAgent: `../../subagents/test-agent.md`
 - reviewAgent: `../../subagents/review-agent.md`
 
@@ -60,9 +60,9 @@ Use these templates when creating task artifacts:
 - The design document is not required to be a single file. For complex tasks, split it into multiple focused documents by domain, module, layer, or step so each document stays internally focused and loads cleanly into the model's context. Simple tasks may keep a single document.
 - When the design is split, record every document path in the status file `## Metadata > Design Document` (one per line) and add a top-level index document that lists and links the parts, so downstream roles can discover the full set.
 - The design document is the source of truth for implementation, testing, and review.
-- The design document must be clear enough that codingAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue.
-- Maintain a task status file for the full workflow: design, coding, testing, review, and delivery.
-- There must always be exactly one overall task status file that records overall state and progress. Each SubTask may optionally keep its own SubTask-status file recording that SubTask's coding, test, review, and auto-fix progress, but the single overall status file is mandatory.
+- The design document must be clear enough that implementationAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue.
+- Maintain a task status file for the full workflow: design, implementation, testing, review, and delivery.
+- There must always be exactly one overall task status file that records overall state and progress. Each SubTask may optionally keep its own SubTask-status file recording that SubTask's implementation, test, review, and auto-fix progress, but the single overall status file is mandatory.
 - Status and progress must be persisted to the status files. Do not report progress only in the conversation. Whenever a SubTask completes (or any phase changes), write the update into the overall task status file and the relevant SubTask-status file (if one exists) before moving on.
 - Use existing installed skills, plugins, or tools when they improve document or code quality, but never require the user to install missing optional capabilities.
 - Prefer continuing through non-blocking ambiguity with documented assumptions. Stop and ask the user only when continuing would risk data loss, irreversible changes, or a serious mismatch with the design.
@@ -74,16 +74,16 @@ Use these templates when creating task artifacts:
 By default, do not ask the user. Inside the workflow loops, each role decides for itself:
 
 - During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
-- During coding review, the role responsible for the changed artifact (coding-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Code Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
-- When a test fails, coding-agent decides whether the failure is an implementation bug or an invalid test, then coding-agent fixes implementation bugs and test-agent fixes invalid tests.
+- During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Code Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
+- When a test fails, implementation-agent decides whether the failure is an implementation bug or an invalid test, then implementation-agent fixes implementation bugs and test-agent fixes invalid tests.
 
 Escalate to the user only when:
 
 - the decision would cause data loss, an irreversible change, or a serious deviation from the agreed Goals / Acceptance Criteria;
-- the design phase reaches the final human approval step (one explicit user touch before coding starts);
+- the design phase reaches the final human approval step (one explicit user touch before implementation starts);
 - the same finding flips between accept and reject across three or more automated iterations without convergence.
 
-The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed. Only §2 step 8 (final human approval before coding) is a user touch.
+The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed. Only §2 step 8 (final human approval before implementation) is a user touch.
 
 ## Total Goal Fidelity
 
@@ -116,7 +116,7 @@ zyz-worker is designed to complete the whole task autonomously from the design d
 
 The main agent is the current user-facing conversation agent. It coordinates and records. It must not directly write implementation code, modify tests, run tests, or perform review.
 
-codingAgent writes implementation and runs tests. It must not modify test code.
+implementationAgent writes implementation and runs tests. It must not modify test code.
 
 testAgent writes and maintains test code. It must not run tests.
 
@@ -144,11 +144,11 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 6. Update the design document and status file. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
 7. Repeat review until reviewAgent says no changes are needed.
    This loop runs automatically without user input; only step 8 below is a user touch.
-8. Ask the user for final human approval before coding.
+8. Ask the user for final human approval before implementation.
 
-Do not enter coding until both reviewAgent and the user approve the design.
+Do not enter implementation until both reviewAgent and the user approve the design.
 
-### 3. Coding And Testing
+### 3. Implementation And Testing
 
 #### 3.0 Decide whether to split
 
@@ -160,17 +160,17 @@ The main agent decides on its own whether to split the task into SubTasks. Split
 
 Not splitting is also valid for simple tasks.
 
-#### 3.0.1 Coding and testing run in parallel by default
+#### 3.0.1 Implementation and testing run in parallel by default
 
-In most cases coding-agent and test-agent can work at the same time: both derive their work from the approved design document, so test-agent does not need to wait for the implementation to exist before writing tests. Dispatch them together (in a single batch) unless the design makes the tests depend on a concrete implementation detail that is not yet settled. Their outputs still converge at the test-run step (coding-agent runs tests after both finish).
+In most cases implementation-agent and test-agent can work at the same time: both derive their work from the approved design document, so test-agent does not need to wait for the implementation to exist before writing tests. Dispatch them together (in a single batch) unless the design makes the tests depend on a concrete implementation detail that is not yet settled. Their outputs still converge at the test-run step (implementation-agent runs tests after both finish).
 
 #### 3.A No-split path
 
 When the task is not split, run a single iteration:
 
-1. coding-agent implements the engineering changes, and test-agent writes or updates tests from the design document. Run these two in parallel by default (see §3.0.1).
-2. coding-agent runs the tests.
-3. If tests fail, coding-agent classifies the failure; coding-agent fixes implementation bugs and test-agent fixes invalid tests.
+1. implementation-agent implements the engineering changes, and test-agent writes or updates tests from the design document. Run these two in parallel by default (see §3.0.1).
+2. implementation-agent runs the tests.
+3. If tests fail, implementation-agent classifies the failure; implementation-agent fixes implementation bugs and test-agent fixes invalid tests.
 4. After tests pass, review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
 5. Repeat 2-4 until tests pass and review-agent reports no changes.
 
@@ -180,9 +180,9 @@ Then proceed to §3.C aggregate testing and aggregate review.
 
 When split, the main agent records SubTasks in the status file `## SubTasks` section. For each SubTask:
 
-1. coding-agent implements that SubTask's engineering changes, and test-agent writes or updates tests for that SubTask. Run these two in parallel by default (see §3.0.1).
-2. coding-agent runs that SubTask's tests.
-3. If tests fail, coding-agent classifies and the responsible role fixes; loop until tests pass.
+1. implementation-agent implements that SubTask's engineering changes, and test-agent writes or updates tests for that SubTask. Run these two in parallel by default (see §3.0.1).
+2. implementation-agent runs that SubTask's tests.
+3. If tests fail, implementation-agent classifies and the responsible role fixes; loop until tests pass.
 4. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Code Review > Rejected Suggestions`.
 5. Loop 2-4 until tests pass and review-agent reports no changes for this SubTask.
 6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
@@ -203,7 +203,7 @@ SubTasks default to sequential execution. Parallel SubTask execution is allowed 
 
 When all SubTasks (or the single no-split iteration) are complete, run:
 
-1. Aggregate testing by coding-agent, covering at minimum: unit tests, end-to-end tests, regression tests. Add pressure tests when the design's `## Risks` calls out performance or capacity risk. Record the executed categories and result in the status file `## Final Aggregate Testing`.
+1. Aggregate testing by implementation-agent, covering at minimum: unit tests, end-to-end tests, regression tests. Add pressure tests when the design's `## Risks` calls out performance or capacity risk. Record the executed categories and result in the status file `## Final Aggregate Testing`.
 2. Aggregate review by review-agent across all SubTasks for consistency, contracts, and regression. Each role decides accept-or-reject for findings affecting its artifact; rejections recorded as in §3.B. Record the verdict in the status file `## Final Aggregate Review`.
 3. Loop aggregate test and aggregate review until both converge.
 
@@ -219,7 +219,7 @@ The final report's `## Tests` section must enumerate the aggregate categories ac
 
 ## Long-Running Work
 
-During long coding phases, the main agent should keep the status file current. Record the active role, latest output, blocked items, next action, and restart notes.
+During long implementation phases, the main agent should keep the status file current. Record the active role, latest output, blocked items, next action, and restart notes.
 
 If a subagent is stuck, interrupted, or silent for too long, the main agent should restart that role if the platform supports it. If no real subagent runtime exists, resume from the status file and re-issue the relevant role prompt with the latest design and status summary.
 
@@ -245,7 +245,7 @@ When the environment variable `ZYZ_WORKER_STATUS_FILE` is set, this skill runs i
 
 The required fields in `worker-status.md` are:
 
-- `phase` — one of `design | coding | testing | review | delivery | done | error`
+- `phase` — one of `design | implementation | testing | review | delivery | done | error`
 - `phase-since` — ISO timestamp of when the current `phase` was entered
 - `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
 - `waiting-reason` — free text, non-empty only when `wait-state != none`
@@ -255,7 +255,7 @@ The required fields in `worker-status.md` are:
 Hard rules in orchestrated mode:
 
 - **Flush before any suspend.** Before suspending, before dispatching a subagent, after receiving a subagent result, and on entering any new workflow phase, write `ZYZ_WORKER_STATUS_FILE` atomically (tmpfile + rename). Never edit the file in place.
-- **`phase` is monotonically furthest-reached.** Treat `phase` as monotonically furthest-reached: once written as `phase=coding`, never roll back to `phase=design`; once written as `phase=review`, never roll back to `phase=coding` even when the review loop iterates the implementation; once written as `phase=delivery`, never roll back.
+- **`phase` is monotonically furthest-reached.** Treat `phase` as monotonically furthest-reached: once written as `phase=implementation`, never roll back to `phase=design`; once written as `phase=review`, never roll back to `phase=implementation` even when the review loop iterates the implementation; once written as `phase=delivery`, never roll back.
 - **`wait-state` is orthogonal to `phase`.** Set `wait-state` independently from `phase`. Set `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource` with a non-empty `waiting-reason` before suspending; set `wait-state=none` immediately on resume.
 - **Async user Q&A goes through files.** Use `ZYZ_QUESTION_FILE` and `ZYZ_ANSWER_FILE` when the user is not attached to the tmux pane. After consuming an `answer.md`, rename it to `answer.md.consumed.<question-id>`.
 - **Two status files, not one.** Orchestrated mode keeps the existing `.zyz-worker/tasks/<task-id>/status.md` as the worker's detailed task status (used by execute-task workflow), and adds `worker-status.md` at the path in `ZYZ_WORKER_STATUS_FILE` as the orchestrator-facing snapshot. The two files do not replace each other.
@@ -266,10 +266,10 @@ Phase mapping (when each phase value must be written to `worker-status.md`):
 |---|---|---|
 | §1 Start Task | `design` | when initializing the task status file |
 | §2 Design (all of it, including review loops) | `design` | once on entry; on each return to main agent |
-| §3.A step 1 / §3.B step 1 — coding-agent dispatched | `coding` | before dispatching the subagent |
+| §3.A step 1 / §3.B step 1 — implementation-agent dispatched | `implementation` | before dispatching the subagent |
 | §3.A step 2 / §3.B step 2 — test-agent / running tests | `testing` | before dispatching / before running |
 | §3.A step 5 / §3.B step 5 — review-agent dispatched | `review` | before dispatching |
-| §3.B step 6 — review → coding revisions loop | `review` (held; do not roll back) | no flush |
+| §3.B step 6 — review → implementation revisions loop | `review` (held; do not roll back) | no flush |
 | §3.C aggregate testing | `testing` | on entry |
 | §3.C aggregate review | `review` | on entry |
 | §4 Deliver | `delivery` | on entry |

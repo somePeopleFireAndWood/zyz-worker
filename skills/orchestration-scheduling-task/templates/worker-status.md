@@ -1,8 +1,8 @@
 ---
 task-id: <task-id>
-phase: design                     # design | coding | testing | review | delivery | done | error
+phase: design                     # design | implementation | testing | review | delivery | done | error
                                   # `phase` is monotonically furthest-reached. Once `phase=review`
-                                  # has been written, never roll back to `phase=coding` — even when
+                                  # has been written, never roll back to `phase=implementation` — even when
                                   # iterating inside the review loop. Same for `phase=delivery`.
 phase-since: <iso>                # ISO timestamp of when the current `phase` was entered
 wait-state: none                  # none | waiting-user | waiting-subagent | waiting-resource

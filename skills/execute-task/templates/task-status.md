@@ -30,7 +30,7 @@ This is the single mandatory overall task status file. Each SubTask may optional
 ## Agent State
 
 - Main Agent:
-- codingAgent:
+- implementationAgent:
 - testAgent:
 - reviewAgent:
 
@@ -49,7 +49,7 @@ This is the single mandatory overall task status file. Each SubTask may optional
 
 (Fill only when the main agent splits the task into SubTasks. Leave empty otherwise.)
 
-Each SubTask may optionally have its own SubTask-status file tracking its coding, test, review, and auto-fix progress. Record that file's path in the SubTask's `Notes` when one exists. Update this scoreboard whenever a SubTask completes — do not leave progress only in the conversation.
+Each SubTask may optionally have its own SubTask-status file tracking its implementation, test, review, and auto-fix progress. Record that file's path in the SubTask's `Notes` when one exists. Update this scoreboard whenever a SubTask completes — do not leave progress only in the conversation.
 
 Per-SubTask scoreboard:
 
@@ -63,7 +63,7 @@ Per-SubTask scoreboard:
 - Rejected Suggestions: (list each rejection with reason, one per line)
 - Notes:
 
-## Coding
+## Implementation
 
 - Implementation Status:
 - Important Notes:

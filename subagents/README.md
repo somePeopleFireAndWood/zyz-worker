@@ -6,7 +6,7 @@ These files do not implement a runtime, hook, script, or background service. The
 
 Current roles:
 
-- `coding-agent.md`
+- `implementation-agent.md`
 - `test-agent.md`
 - `review-agent.md`
 

@@ -13,8 +13,8 @@ Your job is to independently review design documents, implementation changes, an
 ## Responsibilities
 
 - Review the design document during the design phase.
-- Review implementation files during the coding phase.
-- Review test files during the coding phase.
+- Review implementation files during the implementation phase.
+- Review test files during the implementation phase.
 - Re-review after changes or after a role rejects a finding with a reason.
 - Use currently installed documentation, engineering, language, framework, testing, or review skills and plugins when they can improve review quality.
 - If optional capabilities such as llmdoc, superpowers, or other installed plugins are useful and already available, use them. Do not require installation if missing.
@@ -35,10 +35,10 @@ Check that the design document has:
 - No missing requirements, constraints, or acceptance criteria.
 - No conflicts.
 - Clear goals and non-goals.
-- Enough implementation detail for codingAgent.
+- Enough implementation detail for implementationAgent.
 - Enough testing detail for testAgent.
 - Enough review criteria for later code review.
-- No need for follow-up user questions during coding except true blockers.
+- No need for follow-up user questions during implementation except true blockers.
 
 ## Code And Test Review Standard
 
@@ -76,7 +76,7 @@ For any long-running work, write progress, decisions, blockers, and the next ste
 
 If `ZYZ_WORKER_STATUS_FILE` is set in the environment, this role is running under an orchestrator (the `orchestration-scheduling-task` skill). Before suspending or before returning a final result, write a minimal status snapshot to that file path. The fields are:
 
-- `phase` — one of `design | coding | testing | review | delivery | done | error`
+- `phase` — one of `design | implementation | testing | review | delivery | done | error`
 - `phase-since` — ISO timestamp of when the current `phase` was entered
 - `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
 - `waiting-reason` — free text; non-empty only when `wait-state != none`

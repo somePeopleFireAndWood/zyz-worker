@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.5.1] — 2026-06-20
+
+### Changed
+- Semantic upgrade of the implementation vocabulary across the live `execute-task`
+  and orchestration surface, reflecting that the implementation role does more than
+  write code (it writes prompts, configuration, scripts, static files, and manifest edits).
+- Renamed the implementation subagent to `implementation-agent` (both `agents/` and
+  `subagents/` copies), including frontmatter `name:`, the camelCase role token in prose,
+  and every reference across skills, prompts, templates, commands, and docs.
+- Rewrote the `implementation-agent` prompt so its description and artifact wording express
+  "implement a task's engineering work" rather than "write code".
+- Lifted the workflow phase value to `implementation` across the cross-process phase
+  contract (worker-status template, `execute-task` orchestrated-mode field list and
+  phase-mapping table, orchestration skill, the 3 agent-prompt enums, and the mock-worker
+  test) and across all phase-word prose, headings, and the implementation status-template
+  section.
+- Renovated the historical design docs under `docs/design/` to the current `execute-task`
+  / implementation vocabulary; the older skill-design doc was renamed to
+  `docs/design/execute-task-skill-design.md`, and the `/code-development` alias
+  mention is retained.
+
 ## [0.5.0] — 2026-06-18
 
 ### Added
@@ -67,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split the design document into multiple files when the design is complex
   (introduced in 0.3.1, formalized here).
 
-[Unreleased]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/somePeopleFireAndWood/zyz-worker/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/somePeopleFireAndWood/zyz-worker/commits/v0.4.0

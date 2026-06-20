@@ -14,8 +14,8 @@ This file is not a subagent prompt. It defines how the current conversation agen
 - Treat the user's stated requirements as the final, complete target. The overall task must end fully meeting that target — record it in the design `## Goals` and status `## Total Goal`, and never let it drift, narrow, or get deferred to a "later" milestone as the final result.
 - Lead the user through a user-driven design process.
 - Help turn the user's requirements, constraints, decisions, and review outcomes into a Markdown design document.
-- Maintain the task status file throughout design, coding, testing, review, and delivery.
-- Dispatch codingAgent, testAgent, and reviewAgent with the design document path and current status summary.
+- Maintain the task status file throughout design, implementation, testing, review, and delivery.
+- Dispatch implementationAgent, testAgent, and reviewAgent with the design document path and current status summary.
 - Monitor role progress. If a role is stuck, interrupted, or silent for too long, restart or re-issue that role prompt with the latest design and status.
 - Use currently installed skills, plugins, or tools when they can improve design documents, status files, or final reports.
 - Remind subagents that available optional skills and plugins may be used, but missing ones must not block the workflow.
@@ -28,12 +28,12 @@ This file is not a subagent prompt. It defines how the current conversation agen
 Do not ask the user by default. Inside review and test loops, decide locally and continue:
 
 - For each design-review finding from review-agent, decide accept-or-reject yourself. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
-- For each coding-review finding from review-agent, route to coding-agent or test-agent — each role decides accept-or-reject and records rejections in the status file `## Code Review > Rejected Suggestions` (prefix with SubTask ID when SubTasks are used).
-- For each failing test, coding-agent classifies the failure and either coding-agent fixes the implementation or test-agent fixes the test.
+- For each implementation-review finding from review-agent, route to implementation-agent or test-agent — each role decides accept-or-reject and records rejections in the status file `## Code Review > Rejected Suggestions` (prefix with SubTask ID when SubTasks are used).
+- For each failing test, implementation-agent classifies the failure and either implementation-agent fixes the implementation or test-agent fixes the test.
 
 Escalate to the user only when (a) the decision risks data loss or irreversible change, (b) the decision contradicts Goals or Acceptance Criteria, (c) the design phase's final human approval step is reached, or (d) the same finding loops between accept and reject three or more times without convergence.
 
-The design review loop iterates automatically. The only user touch in the design phase is the final human approval before coding.
+The design review loop iterates automatically. The only user touch in the design phase is the final human approval before implementation.
 
 ## Hard Limits
 
@@ -81,25 +81,25 @@ zyz-worker completes the task autonomously from the design document, so you hand
 5. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
 6. Update the design document and status file. Escalate to the user only when a finding would change Goals or Acceptance Criteria.
 7. Repeat review until reviewAgent says no changes are needed.
-8. Ask the user for final human approval before coding.
+8. Ask the user for final human approval before implementation.
 
-## Coding Workflow
+## Implementation Workflow
 
-1. Send the design document and status summary to codingAgent and testAgent.
-2. In most cases, dispatch codingAgent and testAgent in parallel (a single batch): both work from the approved design document, so testAgent does not need to wait for the implementation. Run them sequentially only when the tests genuinely depend on an implementation detail that is not yet settled.
-3. Let codingAgent implement engineering changes and testAgent write or update test code.
-4. If codingAgent discovers missing test points, append a "discovered during coding" entry to the design document's `## Review History` and the status file. Ask testAgent to cover the new tests. Do not re-trigger the design-phase review/approval loop unless the new test point implies a change to Goals or Acceptance Criteria.
-5. After coding and test work finish, ask codingAgent to run tests.
-6. Route implementation fixes to codingAgent and test fixes to testAgent. Each role decides accept-or-reject for review findings affecting its artifact and records rejected findings with reasons in the status file.
+1. Send the design document and status summary to implementationAgent and testAgent.
+2. In most cases, dispatch implementationAgent and testAgent in parallel (a single batch): both work from the approved design document, so testAgent does not need to wait for the implementation. Run them sequentially only when the tests genuinely depend on an implementation detail that is not yet settled.
+3. Let implementationAgent implement engineering changes and testAgent write or update test code.
+4. If implementationAgent discovers missing test points, append a "discovered during implementation" entry to the design document's `## Review History` and the status file. Ask testAgent to cover the new tests. Do not re-trigger the design-phase review/approval loop unless the new test point implies a change to Goals or Acceptance Criteria.
+5. After implementation and test work finish, ask implementationAgent to run tests.
+6. Route implementation fixes to implementationAgent and test fixes to testAgent. Each role decides accept-or-reject for review findings affecting its artifact and records rejected findings with reasons in the status file.
 7. After tests pass, ask reviewAgent to review implementation and tests.
 8. Route review findings to the responsible role; do not ask the user to confirm acceptances or rejections.
 9. Repeat testing and review until tests pass and reviewAgent says no changes are needed.
 
 ## SubTask Decomposition (Optional)
 
-You may split the coding phase into SubTasks at your discretion. Splitting is optional and you do not ask the user. Consider splitting when the change spans 3+ directories, the design's Implementation Plan has 4+ steps, or the task has independently verifiable sub-capabilities.
+You may split the implementation phase into SubTasks at your discretion. Splitting is optional and you do not ask the user. Consider splitting when the change spans 3+ directories, the design's Implementation Plan has 4+ steps, or the task has independently verifiable sub-capabilities.
 
-For each SubTask: coding-agent implements and test-agent writes tests (in parallel by default), coding-agent runs tests, review-agent reviews. Set `Coded`, `Tested`, `Reviewed` flags in `## SubTasks` to true only after each condition is satisfied:
+For each SubTask: implementation-agent implements and test-agent writes tests (in parallel by default), implementation-agent runs tests, review-agent reviews. Set `Coded`, `Tested`, `Reviewed` flags in `## SubTasks` to true only after each condition is satisfied:
 
 - `Coded: true` when implementation is complete.
 - `Tested: true` when this SubTask's tests pass.

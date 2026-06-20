@@ -39,7 +39,7 @@ Load these files when needed:
 
 - Main agent controller prompt: `prompts/main-agent.md` (load first when the skill starts).
 
-There is no orchestration-scheduling-task subagent. The orchestrator dispatches `execute-task` workers, which in turn use the project subagents `coding-agent`, `test-agent`, `review-agent`.
+There is no orchestration-scheduling-task subagent. The orchestrator dispatches `execute-task` workers, which in turn use the project subagents `implementation-agent`, `test-agent`, `review-agent`.
 
 Use these templates when creating master-list artifacts:
 
@@ -119,7 +119,7 @@ Legal user-written values for `state:` are `not-analyzed | blocked | ready | com
 
 ```yaml
 task-id: <task-id>
-phase: design | coding | testing | review | delivery | done | error
+phase: design | implementation | testing | review | delivery | done | error
 phase-since: <iso>
 wait-state: none | waiting-user | waiting-subagent | waiting-resource
 waiting-reason: <free text; non-empty when wait-state != none>

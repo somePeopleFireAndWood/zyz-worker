@@ -24,7 +24,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 提示词式 SubAgent 定义位于 `subagents/`
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
-- 代码开发 Skill 设计文档位于 `docs/design/code-development-skill-design.md`（历史文档，描述对象现名为 execute-task）
+- execute-task Skill 设计文档位于 `docs/design/execute-task-skill-design.md`
 - 工程结构约定位于 `docs/conventions/project-structure.md`
 - 暂未实现 hooks、MCP server 或真实 SubAgent 运行时
 
@@ -152,7 +152,7 @@ subagents/
 
 #### 关于主 Agent 与 SubAgent
 
-主 agent 不是 Claude Code SubAgent。主 agent 是当前与用户对话的 Agent 在执行 `/execute-task`（或 `/zyz-worker:execute-task`，以及别名 `/code-development` / `/zyz-worker:code-development`）时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `agents/` 下的 `coding-agent`、`test-agent` 和 `review-agent`。
+主 agent 不是 Claude Code SubAgent。主 agent 是当前与用户对话的 Agent 在执行 `/execute-task`（或 `/zyz-worker:execute-task`，以及别名 `/code-development` / `/zyz-worker:code-development`）时采用的主控提示词；真正注册为 Claude Code SubAgent 的是 `agents/` 下的 `implementation-agent`、`test-agent` 和 `review-agent`。
 
 ## 初步概念
 
@@ -164,7 +164,7 @@ subagents/
 已确认任务
   -> 产品需求拆解
   -> 技术实现设计
-  -> 编码实现
+  -> 实现
   -> 测试验证
   -> 完成总结
 ```
@@ -181,7 +181,7 @@ subagents/
 │   ├── agents/   -> ../agents   (symlink)
 │   └── commands/ -> ../commands (symlink)
 ├── agents/
-│   ├── coding-agent.md
+│   ├── implementation-agent.md
 │   ├── review-agent.md
 │   └── test-agent.md
 ├── commands/
@@ -195,7 +195,7 @@ subagents/
 │   │   ├── long-running-state.md
 │   │   └── project-structure.md
 │   └── design/
-│       ├── code-development-skill-design.md
+│       ├── execute-task-skill-design.md
 │       └── initial-design.md
 ├── hooks/
 │   └── README.md
@@ -230,7 +230,7 @@ subagents/
 │       └── SKILL.md
 ├── subagents/
 │   ├── README.md
-│   ├── coding-agent.md
+│   ├── implementation-agent.md
 │   ├── review-agent.md
 │   └── test-agent.md
 ├── CLAUDE.md

@@ -26,7 +26,7 @@ Available task templates:
 
 Use the project subagents when their role is needed:
 
-- `coding-agent`
+- `implementation-agent`
 - `test-agent`
 - `review-agent`
 

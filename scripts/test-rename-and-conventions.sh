@@ -108,7 +108,7 @@ run_T1() {
 #    (a) "code-development"           — every hit must be in the whitelist
 #    (b) "skills/code-development"    — only allowed under
 #                                       .zyz-worker/tasks/rename-and-conventions/
-#                                       or docs/design/code-development-skill-design.md
+#                                       or docs/design/execute-task-skill-design.md
 #    (c) "skills/zyz-worker"          — zero hits anywhere
 # ---------------------------------------------------------------------------
 
@@ -149,7 +149,7 @@ run_T2() {
     # first time the script is `git add`-ed it would flag its own contents.
     local wl_full=(
         "commands/code-development.md"
-        "docs/design/code-development-skill-design.md"
+        "docs/design/execute-task-skill-design.md"
         "docs/design/initial-design.md"
         "docs/conventions/project-structure.md"
         "docs/automation-todo.md"
@@ -167,7 +167,6 @@ run_T2() {
     # "skills/code-development" by name (comments, grep patterns, messages).
     local wl_skills_cd=(
         ".zyz-worker/tasks/rename-and-conventions/"
-        "docs/design/code-development-skill-design.md"
         "scripts/test-rename-and-conventions.sh"
     )
 
@@ -410,10 +409,10 @@ run_T4() {
 
     # ---- Pattern A: 6 agent files, dedicated "## Long-Running State" -----
     local pattern_a_files=(
-        "subagents/coding-agent.md"
+        "subagents/implementation-agent.md"
         "subagents/test-agent.md"
         "subagents/review-agent.md"
-        "agents/coding-agent.md"
+        "agents/implementation-agent.md"
         "agents/test-agent.md"
         "agents/review-agent.md"
     )

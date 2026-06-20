@@ -22,7 +22,7 @@ The current conversation agent is the main agent. It remains user-facing and coo
 
 Project-level Claude Code subagents are available in `agents/` (also reachable as `.claude/agents/` via symlink):
 
-- `coding-agent`
+- `implementation-agent`
 - `test-agent`
 - `review-agent`
 
@@ -49,7 +49,7 @@ The workflow is defined by:
 
 Relationship to `/execute-task`: the orchestrator does NOT execute tasks itself. It schedules and dispatches. Each task runs in its own tmux session, in its own git worktree, as a separate `claude` process invoking `/execute-task`. The orchestrator and each worker communicate exclusively through files in `<list-dir>` (master entries, `worker-status.md`, `heartbeat`, `question.md`/`answer.md`); nothing crosses agent boundaries in memory.
 
-The current conversation agent is the orchestrator (main agent). It remains user-facing and runs the orchestration loop. The same project-level subagents (`coding-agent`, `test-agent`, `review-agent`) are reused by each dispatched worker through `/execute-task`; the orchestrator itself does not need a dedicated subagent.
+The current conversation agent is the orchestrator (main agent). It remains user-facing and runs the orchestration loop. The same project-level subagents (`implementation-agent`, `test-agent`, `review-agent`) are reused by each dispatched worker through `/execute-task`; the orchestrator itself does not need a dedicated subagent.
 
 Pair `/orchestrate-tasks` with `/loop` for automatic periodic polling. The orchestrator's main-agent prompt picks a `delaySeconds` per tick using a 7-branch cadence policy and calls `ScheduleWakeup` with the same `/loop /orchestrate-tasks <list-dir>` string:
 
