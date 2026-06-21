@@ -210,6 +210,19 @@ Map the observable state of a runtime directory to an interpretation as follows:
 
 **Scope note**: Auto-detecting these states and auto-setting the master entry to `state: error` is OUT OF SCOPE for this feature. This section is documentation-only guidance for a human operator — the orchestrator poll loop does NOT automatically detect or act on these crash states.
 
+### How dispatch.md binding works (and why Phase-2 is lazy)
+
+Phase-2 binding is lazy because of *when* Claude Code persists its session files. On the verified host (Claude Code v2.1.152, macOS), Claude writes BOTH of these only after the session's first successful LLM round-trip — never at startup:
+
+- `~/.claude/sessions/<pid>.json` — the session pointer. Its filename `<pid>` equals the claude process PID, and it carries `{sessionId, cwd, ...}`. `orch-check-worker.sh` reads `sessionId` from it.
+- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — the full transcript. `encoded-cwd` is the worktree's PHYSICAL path (`pwd -P`, so symlinks like macOS `/var → /private/var` resolve) with every `/` replaced by `-`.
+
+Consequences a recovery operator should understand:
+
+- A worker's claude process can EXIST (so `claude-pid` binds via `pgrep -P <shell-pid> -n -x claude`) for seconds-to-minutes before its `session-id` and `transcript-path` are discoverable on disk. This is the `present | partial` row above and the normal `dispatch-bound=false` transient — not an error.
+- `claude --resume <session-id>` only has a transcript to resume from once that first round-trip has happened. Before then there is genuinely nothing to recover (case 3).
+- The claude process is a DIRECT child of the pane shell, which is why `pgrep -P <shell-pid>` finds it. If a future Claude Code version changes when these files are flushed or how the process is parented, re-verify before relying on the timing.
+
 ## Optional Skills And Plugins
 
 Before scanning, analyzing, dispatching, or summarizing, check whether the current agent already has relevant skills, plugins, or tools available:

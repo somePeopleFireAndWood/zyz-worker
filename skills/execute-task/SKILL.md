@@ -74,7 +74,7 @@ Use these templates when creating task artifacts:
 By default, do not ask the user. Inside the workflow loops, each role decides for itself:
 
 - During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
-- During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Code Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
+- During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Implementation Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
 - When a test fails, implementation-agent decides whether the failure is an implementation bug or an invalid test, then implementation-agent fixes implementation bugs and test-agent fixes invalid tests.
 
 Escalate to the user only when:
@@ -183,7 +183,7 @@ When split, the main agent records SubTasks in the status file `## SubTasks` sec
 1. implementation-agent implements that SubTask's engineering changes, and test-agent writes or updates tests for that SubTask. Run these two in parallel by default (see §3.0.1).
 2. implementation-agent runs that SubTask's tests.
 3. If tests fail, implementation-agent classifies and the responsible role fixes; loop until tests pass.
-4. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Code Review > Rejected Suggestions`.
+4. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Implementation Review > Rejected Suggestions`.
 5. Loop 2-4 until tests pass and review-agent reports no changes for this SubTask.
 6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
    - `Coded: true` when implementation is complete.

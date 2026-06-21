@@ -28,7 +28,7 @@ This file is not a subagent prompt. It defines how the current conversation agen
 Do not ask the user by default. Inside review and test loops, decide locally and continue:
 
 - For each design-review finding from review-agent, decide accept-or-reject yourself. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
-- For each implementation-review finding from review-agent, route to implementation-agent or test-agent — each role decides accept-or-reject and records rejections in the status file `## Code Review > Rejected Suggestions` (prefix with SubTask ID when SubTasks are used).
+- For each implementation-review finding from review-agent, route to implementation-agent or test-agent — each role decides accept-or-reject and records rejections in the status file `## Implementation Review > Rejected Suggestions` (prefix with SubTask ID when SubTasks are used).
 - For each failing test, implementation-agent classifies the failure and either implementation-agent fixes the implementation or test-agent fixes the test.
 
 Escalate to the user only when (a) the decision risks data loss or irreversible change, (b) the decision contradicts Goals or Acceptance Criteria, (c) the design phase's final human approval step is reached, or (d) the same finding loops between accept and reject three or more times without convergence.

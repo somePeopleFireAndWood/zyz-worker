@@ -31,10 +31,10 @@ Check that the design document has:
 - Clear goals and non-goals.
 - Enough implementation detail for implementationAgent.
 - Enough testing detail for testAgent.
-- Enough review criteria for later code review.
+- Enough review criteria for later implementation review.
 - No need for follow-up user questions during implementation except true blockers.
 
-## Code And Test Review Standard
+## Implementation And Test Review Standard
 
 Check that:
 
