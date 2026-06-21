@@ -38,6 +38,8 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - spawn helper 会对 `source-repo` 做 4 道校验：缺字段、非绝对路径、路径不存在、不是 git work tree —— 任何一道失败都直接以 exit 5 + 精确诊断字符串退出，task 留在 `not-analyzed`。
 - 软警示：**不要**把某个 task 的 `source-repo:` 指向 zyz-worker 插件仓库自身，除非你的本意就是在插件源码内派发一个 worker。无意中指向插件 repo 会导致 worker 在插件仓库里建分支与 worktree，与正常项目开发混淆。
 
+三层调度架构（spawn → L2 启动真 claude → parent-shell invariant → exactly-once 幂等 → dispatch-bound 绑定）的端到端验收脚本是 `scripts/test-e2e-layered.sh`（可移植，Linux/macOS 均可）。运行：`bash scripts/test-e2e-layered.sh`（`--keep` 保留 fixture 供调试）。它需要 `tmux`/`git`/`claude` 都在 PATH 且 `claude` 已登录，并且会**消耗 API 配额**（A4 触发一次真实 LLM 往返）。这是真 claude 验收，与纯脚本单元测 `scripts/test-orchestration-helpers.sh` 分开。
+
 ## 安装与使用
 
 当前 `zyz-worker` 还没有发布到 Codex 或 Claude Code 的官方 marketplace。现阶段推荐按本地插件/项目配置方式安装。
