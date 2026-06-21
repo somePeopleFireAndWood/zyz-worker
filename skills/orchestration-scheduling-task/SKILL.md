@@ -228,4 +228,4 @@ This skill is coupled to `execute-task`. If `execute-task` ever introduces a new
 - The phase mapping table (design-spec §D.5) must be extended.
 - This SKILL.md and `prompts/main-agent.md` should mention the new phase explicitly.
 
-If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh`, the Phase-2 lazy fill in `scripts/orch-check-worker.sh`, and the `## Crash Recovery` section above.
+If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh`, the Phase-2 lazy fill in `scripts/orch-check-worker.sh`, the `## Crash Recovery` section above, and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
