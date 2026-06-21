@@ -8,7 +8,13 @@
 #     $2  <list-dir>         master list directory
 #
 #   Side effects:
-#     None. Read-only.
+#     Mostly read-only. The ONE write path: when a dispatch.md is present in the
+#     worker's runtime dir, this helper lazily populates its Phase-2 frontmatter
+#     fields (claude-pid, claude-session-id, transcript-path, first-seen-iso) and
+#     regenerates the `## Recovery` body once claude has bound. The rewrite is
+#     atomic (tmpfile + rename) and idempotent: a non-empty stored Phase-2 field
+#     is never overwritten. When no dispatch.md exists (pre-feature workers), the
+#     bind block is skipped entirely and the helper stays read-only.
 #
 #   Output (stdout):
 #     Multi-line key=value report. Always emits the following keys:
@@ -20,6 +26,11 @@
 #       wait-state=<value-or-empty>
 #       waiting-reason=<value-or-empty>
 #       expected-resume-by=<iso-or-empty>
+#       dispatch-bound=true|false|<empty>
+#         empty => dispatch.md absent (pre-feature worker / spawn crashed pre-write)
+#         false => dispatch.md present but the Phase-2 trio is not all populated
+#         true  => dispatch.md present and claude-pid + claude-session-id +
+#                  transcript-path are all populated (worker is bound)
 #
 #   Heartbeat thresholds:
 #     Base threshold S = max(per-task `heartbeat-stale-sec` frontmatter,
@@ -72,6 +83,7 @@ MASTER_ENTRY="$LIST_DIR/tasks/$TASK_ID.md"
 RUNTIME_DIR="$LIST_DIR/runtime/$TASK_ID"
 WORKER_STATUS_FILE="$RUNTIME_DIR/worker-status.md"
 HEARTBEAT_FILE="$RUNTIME_DIR/heartbeat"
+DISPATCH_FILE="$RUNTIME_DIR/dispatch.md"
 
 # Extract a frontmatter field. Same logic as orch-scan-tasks.sh.
 fm_field() {
@@ -98,6 +110,89 @@ fm_field() {
             }
         }
     ' "$file"
+}
+
+# Atomically rewrite dispatch.md, preserving Phase-1 frontmatter verbatim and
+# emitting the (possibly freshly-discovered) Phase-2 values + a regenerated body.
+#
+#   $1  dispatch file path
+#   $2  claude-pid          (in-memory value)
+#   $3  claude-session-id   (in-memory value)
+#   $4  transcript-path     (in-memory value)
+#   $5  first-seen-iso      (in-memory value)
+#
+# The body is ALWAYS regenerated from the current in-memory state (no
+# preserve-verbatim branch): a placeholder while the trio is incomplete, the
+# concrete `## Recovery` commands once the trio is complete. All <…> tokens in
+# the recovery block are substituted with real values at generation time, so the
+# rendered body contains no angle brackets. Phase-1 keys are read back via
+# fm_field BEFORE the unquoted heredoc (fm_field can't run inside it cleanly).
+rewrite_dispatch_atomic() {
+    local file="$1"
+    local r_claude_pid="$2"
+    local r_claude_sid="$3"
+    local r_transcript="$4"
+    local r_first_seen="$5"
+
+    # Phase-1 frontmatter — read back verbatim from the existing file.
+    local p1_task_id p1_spawn_iso p1_tmux_session p1_tmux_window p1_tmux_pane
+    local p1_shell_pid p1_worktree p1_source_repo p1_branch p1_base
+    local p1_plugin_root p1_encoded_cwd
+    p1_task_id="$(fm_field "$file" task-id)"
+    p1_spawn_iso="$(fm_field "$file" spawn-iso)"
+    p1_tmux_session="$(fm_field "$file" tmux-session)"
+    p1_tmux_window="$(fm_field "$file" tmux-window-id)"
+    p1_tmux_pane="$(fm_field "$file" tmux-pane-id)"
+    p1_shell_pid="$(fm_field "$file" shell-pid)"
+    p1_worktree="$(fm_field "$file" worktree)"
+    p1_source_repo="$(fm_field "$file" source-repo)"
+    p1_branch="$(fm_field "$file" branch)"
+    p1_base="$(fm_field "$file" base)"
+    p1_plugin_root="$(fm_field "$file" plugin-root)"
+    p1_encoded_cwd="$(fm_field "$file" encoded-cwd)"
+
+    # Body — pure function of trio-completeness.
+    local body
+    if [ -n "$r_claude_pid" ] && [ -n "$r_claude_sid" ] && [ -n "$r_transcript" ]; then
+        body="This worker is bound to claude session \`$r_claude_sid\`. Recovery commands:
+
+- If tmux session \`$p1_tmux_session\` is still alive: \`tmux attach -t $p1_tmux_session\`
+- If tmux is dead but the transcript exists: \`cd $p1_worktree && claude --resume $r_claude_sid --plugin-dir $p1_plugin_root\`
+- Transcript file (for read-only inspection): \`$r_transcript\`
+
+Discovered at $r_first_seen."
+    else
+        body="(awaiting claude startup; orch-check-worker.sh populates this on the first poll where claude has registered AND first LLM round-trip has produced a transcript)"
+    fi
+
+    local tmp="$file.tmp.$$"
+    cat > "$tmp" <<EOF
+---
+task-id: $p1_task_id
+spawn-iso: $p1_spawn_iso
+tmux-session: $p1_tmux_session
+tmux-window-id: $p1_tmux_window
+tmux-pane-id: $p1_tmux_pane
+shell-pid: $p1_shell_pid
+worktree: $p1_worktree
+source-repo: $p1_source_repo
+branch: $p1_branch
+base: $p1_base
+plugin-root: $p1_plugin_root
+encoded-cwd: $p1_encoded_cwd
+claude-pid: $r_claude_pid
+claude-session-id: $r_claude_sid
+transcript-path: $r_transcript
+first-seen-iso: $r_first_seen
+---
+
+# Dispatch Info
+
+## Recovery
+
+$body
+EOF
+    mv -f "$tmp" "$file"
 }
 
 # Determine tmux session name. Prefer the master entry frontmatter; fall back
@@ -184,6 +279,92 @@ if [ -f "$HEARTBEAT_FILE" ] && [ -r "$HEARTBEAT_FILE" ]; then
     fi
 fi
 
+# Phase-2 lazy fill — dispatch.md.
+#
+# DISPATCH_BOUND is initialized OUTSIDE the file-existence gate so the stdout key
+# always has a well-defined value:
+#   ""     => dispatch.md absent (pre-feature worker, or spawn crashed pre-write)
+#   false  => dispatch.md present, the Phase-2 trio is NOT all populated
+#   true   => dispatch.md present, the trio is all populated
+#
+# Backwards compat: when dispatch.md is absent, the entire block is skipped and
+# DISPATCH_BOUND stays "". The helper performs no writes in that case.
+DISPATCH_BOUND=""
+
+if [ -f "$DISPATCH_FILE" ]; then
+    DISPATCH_BOUND="false"   # present-but-incomplete default; flipped at Step D.
+
+    # Read all current values from dispatch.md.
+    CLAUDE_PID="$(fm_field "$DISPATCH_FILE" claude-pid)"
+    CLAUDE_SID="$(fm_field "$DISPATCH_FILE" claude-session-id)"
+    TRANSCRIPT="$(fm_field "$DISPATCH_FILE" transcript-path)"
+    FIRST_SEEN="$(fm_field "$DISPATCH_FILE" first-seen-iso)"
+    DISPATCH_SHELL_PID="$(fm_field "$DISPATCH_FILE" shell-pid)"
+    DISPATCH_ENCODED_CWD="$(fm_field "$DISPATCH_FILE" encoded-cwd)"
+
+    NEEDS_REWRITE="false"
+
+    # Step A: discover claude-pid (newest direct child of the pane shell named
+    # `claude`). `-n` = newest match (claude forks after the heartbeat daemon, so
+    # higher PID); `-x claude` = exact comm match (filters the heartbeat daemon,
+    # whose comm is not `claude`). pgrep is invoked by basename so PATH shims
+    # work in tests. pgrep exits non-zero on no match under set -e → `|| true`.
+    if [ -z "$CLAUDE_PID" ] && [ -n "$DISPATCH_SHELL_PID" ]; then
+        CANDIDATE="$(pgrep -P "$DISPATCH_SHELL_PID" -n -x claude 2>/dev/null || true)"
+        if [ -n "$CANDIDATE" ]; then
+            CLAUDE_PID="$CANDIDATE"
+            NEEDS_REWRITE="true"
+        fi
+    fi
+
+    # Step B: discover claude-session-id from the pid pointer json. The pointer
+    # path is passed to python3 via the ZYZ_POINTER env var (never interpolated
+    # into the python source — avoids any quoting issue). python3 is invoked by
+    # basename; absence or parse failure degrades silently (`2>/dev/null||true`).
+    if [ -n "$CLAUDE_PID" ] && [ -z "$CLAUDE_SID" ]; then
+        POINTER="$HOME/.claude/sessions/$CLAUDE_PID.json"
+        if [ -f "$POINTER" ]; then
+            CAND_SID="$(ZYZ_POINTER="$POINTER" python3 -c 'import json, os
+try:
+    print(json.load(open(os.environ["ZYZ_POINTER"])).get("sessionId", ""))
+except Exception:
+    pass' 2>/dev/null || true)"
+            if [ -n "$CAND_SID" ]; then
+                CLAUDE_SID="$CAND_SID"
+                NEEDS_REWRITE="true"
+            fi
+        fi
+    fi
+
+    # Step C: discover transcript file once session-id and encoded-cwd are known.
+    # Only set transcript-path if the JSONL actually exists (it appears after the
+    # first LLM round-trip, which can lag claude registration by seconds/minutes).
+    if [ -n "$CLAUDE_SID" ] && [ -n "$DISPATCH_ENCODED_CWD" ] && [ -z "$TRANSCRIPT" ]; then
+        CAND_TRANSCRIPT="$HOME/.claude/projects/$DISPATCH_ENCODED_CWD/$CLAUDE_SID.jsonl"
+        if [ -f "$CAND_TRANSCRIPT" ]; then
+            TRANSCRIPT="$CAND_TRANSCRIPT"
+            NEEDS_REWRITE="true"
+        fi
+    fi
+
+    # Step D: bind on the trio (claude-pid + claude-session-id + transcript-path).
+    # first-seen-iso is stamped only the first time the trio completes.
+    NEWLY_BOUND="false"
+    if [ -n "$CLAUDE_PID" ] && [ -n "$CLAUDE_SID" ] && [ -n "$TRANSCRIPT" ]; then
+        DISPATCH_BOUND="true"
+        if [ -z "$FIRST_SEEN" ]; then
+            FIRST_SEEN="$(date +%Y-%m-%dT%H:%M:%S%z)"
+            NEWLY_BOUND="true"
+            NEEDS_REWRITE="true"
+        fi
+    fi
+
+    if [ "$NEEDS_REWRITE" = "true" ]; then
+        rewrite_dispatch_atomic "$DISPATCH_FILE" \
+            "$CLAUDE_PID" "$CLAUDE_SID" "$TRANSCRIPT" "$FIRST_SEEN"
+    fi
+fi
+
 printf 'session-alive=%s\n' "$SESSION_ALIVE"
 printf 'heartbeat-status=%s\n' "$HEARTBEAT_STATUS"
 printf 'heartbeat-mtime=%s\n' "$HEARTBEAT_MTIME"
@@ -192,5 +373,6 @@ printf 'phase-since=%s\n' "$PHASE_SINCE"
 printf 'wait-state=%s\n' "$WAIT_STATE"
 printf 'waiting-reason=%s\n' "$WAITING_REASON"
 printf 'expected-resume-by=%s\n' "$EXPECTED_RESUME_BY"
+printf 'dispatch-bound=%s\n' "$DISPATCH_BOUND"
 
 exit 0

@@ -1676,8 +1676,9 @@ $(printf '%s\n' "$merge_out_bar" | sed 's/^/      | /')"
 #
 # ST1 owns T8(a) (spawn writes Phase-1 fields) and T8(d) (archive, not delete,
 # through cleanup).  T8(b)/(c)/(c2) (Phase-2 lazy-fill in orch-check-worker.sh)
-# are added by ST2's test-agent — see the placeholder near the end of this
-# function.
+# are implemented by ST2's test-agent in t8_run_phase2_section() (a top-level
+# helper invoked from run_T8 after the T8(a) happy path, BEFORE the T8(d)
+# cleanup section since cleanup archives dispatch.md away).
 #
 # Fixture shape mirrors T6: real `git init`, a real master entry whose
 # `source-repo:` points at the fixture repo (NOT the plugin repo), a real
@@ -1726,6 +1727,23 @@ T8_SKIP_ALL() {
         "dispatch.md Phase-2 key claude-session-id empty (a)" \
         "dispatch.md Phase-2 key transcript-path empty (a)" \
         "dispatch.md Phase-2 key first-seen-iso empty (a)" \
+        "check exits 0 with Phase-2 fixture (b)" \
+        "check stdout preserves legacy phase=/wait-state= lines in order (b)" \
+        "check stdout has dispatch-bound=true (b)" \
+        "dispatch.md claude-pid == forked child pid (b)" \
+        "dispatch.md claude-session-id == fake uuid (b)" \
+        "dispatch.md transcript-path == fixture jsonl path (b)" \
+        "dispatch.md first-seen-iso non-empty (b)" \
+        "## Recovery body has substituted 'claude --resume <uuid>' (b)" \
+        "## Recovery body has substituted 'tmux attach -t <session>' (b)" \
+        "## Recovery body has substituted transcript path (b)" \
+        "## Recovery body has NO literal angle-bracket placeholders (b)" \
+        "no-op poll leaves all 4 Phase-2 values unchanged (c)" \
+        "no-op poll leaves dispatch.md byte-identical (content hash) (c)" \
+        "external sessions json mutation ignored: claude-session-id unchanged (c)" \
+        "field-clear re-bind: claude-session-id == new uuid (c2)" \
+        "field-clear re-bind: transcript-path updated to new jsonl (c2)" \
+        "field-clear re-bind: first-seen-iso repopulated (c2)" \
         "runtime/<task-id>/ gone after cleanup --force (d)" \
         "runtime/.archive/<task-id>-*/dispatch.md exists after cleanup (d)" \
         "archived dispatch.md has same task-id: line as original (d)" \
@@ -1766,6 +1784,11 @@ run_T8() {
     T8_LIST_DIR="$T8_TMPROOT/list"
     T8_WORK_DIR="$T8_TMPROOT/work"
     T8_WORKTREE_DIR="$T8_TMPROOT/worktrees/$T8_TASK_ID"
+    # Forked fake-claude child PID (set by t8_run_phase2_section when the T8(b)
+    # fixture forks `exec -a claude sleep 600 &`).  Initialized empty here so
+    # t8_teardown can reference it under `set -u` even on SKIP paths where the
+    # fork never happened.
+    T8_FAKE_CLAUDE_PID=""
 
     # Convenience local aliases (the T8_* globals carry the same values and
     # are what the teardown reads).
@@ -1831,6 +1854,15 @@ run_T8() {
         # daemon (F8-allowed natural path; F8 only forbids manual pkill of
         # the daemon itself).
         tmux kill-session -t "$T8_TMUX_SESSION" 2>/dev/null || true
+
+        # Belt-and-suspenders: explicitly reap the T8(b) fake-claude child
+        # (`exec -a claude sleep 600 &`) in case the session-kill SIGHUP did
+        # not propagate to it.  This is OUR fixture process, not the heartbeat
+        # daemon, so killing it does not violate F8.  Guard the pid is numeric
+        # before kill so an empty/garbage value can't error under set -u.
+        if printf '%s' "${T8_FAKE_CLAUDE_PID:-}" | grep -qE '^[1-9][0-9]*$'; then
+            kill "$T8_FAKE_CLAUDE_PID" 2>/dev/null || true
+        fi
 
         # F8 hygiene (same as T6): after teardown there must be NO
         # orch-heartbeat-daemon.sh process left for the T8 task-id.  Wait up
@@ -1936,6 +1968,7 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
             "dispatch.md encoded-cwd equals pwd -P of worktree (a)" \
             "dispatch.md plugin-root equals repo root (a)" \
             "dispatch.md Phase-2 fields empty (a)" \
+            "Phase-2 lazy-fill bind / idempotency / re-bind (b/c/c2)" \
             "runtime/<task-id>/ gone after cleanup (d)" \
             "runtime/.archive/<task-id>-*/dispatch.md exists (d)" \
             "archived dispatch.md has same task-id: line (d)"
@@ -1972,6 +2005,10 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
         for k in claude-pid claude-session-id transcript-path first-seen-iso; do
             skip "T8 dispatch.md Phase-2 key $k empty (a) (skipped: dispatch.md absent)"
         done
+        # Emit the b/c/c2 SKIP set (the phase2 section self-SKIPs all its
+        # labels via its own dispatch.md-absent guard, keeping the count
+        # stable with the happy path).
+        t8_run_phase2_section
         # Fall through to T8(d): cleanup section guards on dir presence.
         t8_run_cleanup_section
         return
@@ -2119,20 +2156,421 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
     done
 
     # =====================================================================
+    # T8(b)/(c)/(c2) — Phase-2 lazy-fill in orch-check-worker.sh  (added ST2)
+    # =====================================================================
+    # IMPORTANT ORDERING: these run BEFORE the T8(d) cleanup section, because
+    # cleanup ARCHIVES (mv's away) runtime/<task-id>/dispatch.md — after that
+    # the check helper has nothing to bind against.  The design's Lifecycle
+    # ordering is "spawn → check binds → cleanup archives", so we mirror it:
+    # bind here, then run the cleanup section as the genuinely-last step.
+    #
+    # All three sub-cases share the same controlled $HOME, fake-claude child
+    # process, and fixture session/project dirs, and they MUTATE shared state
+    # in sequence (b binds → c proves idempotency on b's state → c2 clears the
+    # fields and re-binds).  They are therefore implemented as one linear block
+    # in dependency order, matching the design's "Continuation of …" phrasing.
+    t8_run_phase2_section
+
+    # =====================================================================
     # T8(d) — lifecycle through cleanup (archive, not delete)
     # =====================================================================
     t8_run_cleanup_section
 
-    # ------------------------------------------------------------------
-    # T8(b)/(c)/(c2) added in ST2  (Phase-2 lazy-fill in
-    # orch-check-worker.sh: bind from a controlled $HOME fixture, idempotency
-    # under stable input, and manual re-bind via field-clear).  ST2's
-    # test-agent extends run_T8 HERE — keep the same T8_*/t8_* naming and the
-    # $HOME="$T8_TMPROOT/home" controlled-home pattern from the design's
-    # Testing Plan.
-    # ------------------------------------------------------------------
+    # Teardown trap runs the F8 daemon-residue check + tmproot cleanup.  Note:
+    # the `exec -a claude sleep 600` child forked in T8(b) is a child of the
+    # pane shell, so `tmux kill-session` in t8_teardown SIGHUPs and reaps it —
+    # no separate kill needed (verified against the existing teardown).
+}
 
-    # Teardown trap runs the F8 daemon-residue check + tmproot cleanup.
+# t8_run_phase2_section — T8(b)/(c)/(c2): drive orch-check-worker.sh's Phase-2
+# lazy-fill against a controlled $HOME.  Reads the T8_* globals (so it can be
+# called from run_T8 after the T8(a) happy path).  Requires that T8(a) produced
+# a readable dispatch.md with populated Phase-1 fields — guarded below.
+#
+# SKIP semantics: if python3 is unavailable the check helper's Step B can never
+# discover claude-session-id, so the whole trio never binds.  Per design we SKIP
+# (not FAIL) every b/c/c2 assertion with the canonical message.
+t8_run_phase2_section() {
+    local check="$REPO_ROOT/scripts/orch-check-worker.sh"
+    local LIST_DIR="$T8_LIST_DIR"
+    local TASK_ID="$T8_TASK_ID"
+    local TMUX_SESSION="$T8_TMUX_SESSION"
+    local TMPROOT="$T8_TMPROOT"
+    local DISPATCH="$LIST_DIR/runtime/$TASK_ID/dispatch.md"
+
+    # Reuse the T8(a) inline frontmatter extractor.  t8_fm is defined inside
+    # run_T8 (the happy path), which has already run by the time we get here.
+    # It trims surrounding whitespace, so comparisons are byte-trailing-space
+    # safe (the check helper writes empty fields as `key: ` with a trailing
+    # space, spawn writes `key:` with none — t8_fm normalizes both).
+
+    # ---- The full b/c/c2 assertion label list (for batch SKIP) ----------
+    # Kept in one place so every early-return SKIP path emits the same set and
+    # the operator's PASS/SKIP count stays stable regardless of which guard
+    # fired.
+    local b_c_c2_labels=(
+        "check exits 0 with Phase-2 fixture (b)"
+        "check stdout preserves legacy phase=/wait-state= lines in order (b)"
+        "check stdout has dispatch-bound=true (b)"
+        "dispatch.md claude-pid == forked child pid (b)"
+        "dispatch.md claude-session-id == fake uuid (b)"
+        "dispatch.md transcript-path == fixture jsonl path (b)"
+        "dispatch.md first-seen-iso non-empty (b)"
+        "## Recovery body has substituted 'claude --resume <uuid>' (b)"
+        "## Recovery body has substituted 'tmux attach -t <session>' (b)"
+        "## Recovery body has substituted transcript path (b)"
+        "## Recovery body has NO literal angle-bracket placeholders (b)"
+        "no-op poll leaves all 4 Phase-2 values unchanged (c)"
+        "no-op poll leaves dispatch.md byte-identical (content hash) (c)"
+        "external sessions json mutation ignored: claude-session-id unchanged (c)"
+        "field-clear re-bind: claude-session-id == new uuid (c2)"
+        "field-clear re-bind: transcript-path updated to new jsonl (c2)"
+        "field-clear re-bind: first-seen-iso repopulated (c2)"
+    )
+    t8_skip_phase2() {
+        # $1 = reason suffix appended to each label.
+        local reason="$1" lbl
+        for lbl in "${b_c_c2_labels[@]}"; do
+            skip "T8 $lbl (skipped: $reason)"
+        done
+    }
+
+    # ---- Guard: python3 required (design SKIP, not FAIL) ----------------
+    if ! command -v python3 >/dev/null 2>&1; then
+        t8_skip_phase2 "python3 unavailable; Phase-2 bind not testable"
+        return
+    fi
+
+    # ---- Guard: T8(a) must have produced a usable dispatch.md ----------
+    if [ ! -f "$DISPATCH" ] || [ ! -r "$DISPATCH" ]; then
+        t8_skip_phase2 "dispatch.md absent/unreadable (T8(a) did not produce it)"
+        return
+    fi
+
+    # ---- Pull the Phase-1 anchors we need from dispatch.md -------------
+    local SHELL_PID ENCODED_CWD WORKTREE PLUGIN_ROOT
+    SHELL_PID="$(t8_fm "$DISPATCH" shell-pid 2>/dev/null || true)"
+    ENCODED_CWD="$(t8_fm "$DISPATCH" encoded-cwd 2>/dev/null || true)"
+    WORKTREE="$(t8_fm "$DISPATCH" worktree 2>/dev/null || true)"
+    PLUGIN_ROOT="$(t8_fm "$DISPATCH" plugin-root 2>/dev/null || true)"
+
+    if ! printf '%s' "$SHELL_PID" | grep -qE '^[1-9][0-9]*$'; then
+        t8_skip_phase2 "shell-pid='$SHELL_PID' not a valid pid (cannot fork fake claude)"
+        return
+    fi
+    if [ -z "$ENCODED_CWD" ]; then
+        t8_skip_phase2 "encoded-cwd empty (cannot place fixture transcript)"
+        return
+    fi
+
+    # ---- Controlled HOME: stage fake ~/.claude trees inside the tmproot --
+    # The check helper reads $HOME/.claude/sessions/<pid>.json and
+    # $HOME/.claude/projects/<encoded-cwd>/<sid>.jsonl.  Point HOME at a temp
+    # dir so we never touch the real ~/.claude.  pgrep is unaffected by HOME
+    # (it queries the live process table), so the fake-claude child is still
+    # discoverable.
+    local FAKE_HOME="$TMPROOT/home"
+    local SESS_DIR="$FAKE_HOME/.claude/sessions"
+    local PROJ_DIR="$FAKE_HOME/.claude/projects/$ENCODED_CWD"
+    mkdir -p "$SESS_DIR" "$PROJ_DIR"
+
+    # ---- Fork a fake `claude` as a direct child of the pane shell -------
+    # VERIFIED-CORRECT on Darwin 25.5.0 (design Fixture note): `exec -a claude
+    # sleep 600 &` yields a process whose comm is `claude`, so
+    # `pgrep -P <shell> -n -x claude` matches it.  A shebang shim or
+    # `cp /bin/sleep claude` do NOT work (comm becomes /bin/sh or empty) — do
+    # not substitute them.  The `&` backgrounds it so the pane shell stays
+    # interactive; it is a direct child of $SHELL_PID.
+    tmux send-keys -t "$TMUX_SESSION" "exec -a claude sleep 600 &" Enter 2>/dev/null || true
+
+    # Give the shell a moment to fork the child and let pgrep's accounting
+    # name settle.  Poll up to ~5s for robustness on a busy host.
+    local FAKE_PID="" _try
+    for _try in 1 2 3 4 5 6 7 8 9 10; do
+        FAKE_PID="$(pgrep -P "$SHELL_PID" -n -x claude 2>/dev/null || true)"
+        if [ -n "$FAKE_PID" ]; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    if ! printf '%s' "$FAKE_PID" | grep -qE '^[1-9][0-9]*$'; then
+        # Could not produce a comm=claude child on this host.  This is the one
+        # fixture-mechanic that the design flags as host-sensitive; treat as a
+        # SKIP (the bind is genuinely not testable here), not a FAIL.
+        t8_skip_phase2 "could not fork a comm=claude child of shell-pid=$SHELL_PID (exec -a claude unsupported on this host)"
+        return
+    fi
+
+    # Record the forked child PID in a GLOBAL so t8_teardown can belt-and-
+    # suspenders kill it.  Killing the tmux session already SIGHUPs and reaps
+    # this child (it is a backgrounded direct child of the pane shell, same as
+    # the heartbeat daemon), but an explicit `kill` in teardown guarantees no
+    # stray 600s `sleep` survives even if SIGHUP propagation is flaky on the
+    # host.
+    T8_FAKE_CLAUDE_PID="$FAKE_PID"
+
+    # ---- Fixed fake identifiers ----------------------------------------
+    local FAKE_UUID="11111111-2222-3333-4444-555555555555"
+    local WORKTREE_PHYS=""
+    if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
+        WORKTREE_PHYS="$(cd "$WORKTREE" && pwd -P)"
+    else
+        WORKTREE_PHYS="$WORKTREE"
+    fi
+
+    # Step 3: write the sessions pointer json keyed by the forked child pid.
+    local POINTER="$SESS_DIR/$FAKE_PID.json"
+    cat >"$POINTER" <<EOF
+{"pid": $FAKE_PID, "sessionId": "$FAKE_UUID", "cwd": "$WORKTREE_PHYS"}
+EOF
+
+    # Step 4: write the transcript jsonl with one non-empty JSONL row.
+    local TRANSCRIPT_FIXTURE="$PROJ_DIR/$FAKE_UUID.jsonl"
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":"t8 fixture row"}}' >"$TRANSCRIPT_FIXTURE"
+
+    # =====================================================================
+    # T8(b) — invoke check with the controlled HOME; assert the bind.
+    # =====================================================================
+    local b_out_file b_err_file b_out b_rc
+    b_out_file="$TMPROOT/check-b.out"
+    b_err_file="$TMPROOT/check-b.err"
+    (
+        cd "$TMPROOT" || exit 99
+        HOME="$FAKE_HOME" bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null
+    ) >"$b_out_file" 2>"$b_err_file"
+    b_rc=$?
+    b_out="$(cat "$b_out_file" 2>/dev/null || true)"
+
+    if [ "$b_rc" -eq 0 ]; then
+        T8_PASS "check exits 0 with Phase-2 fixture (b)"
+    else
+        T8_FAIL "check exited $b_rc (expected 0) with Phase-2 fixture (b).  stdout:
+$(sed 's/^/      | /' "$b_out_file" 2>/dev/null)
+      stderr:
+$(sed 's/^/      | /' "$b_err_file" 2>/dev/null)"
+    fi
+
+    # Legacy stdout lines still present, in their original relative order.  We
+    # extract the keys-of-interest in emission order and compare to the
+    # expected sequence (the new dispatch-bound line is additive AFTER
+    # expected-resume-by and is checked separately).
+    local legacy_order
+    legacy_order="$(printf '%s\n' "$b_out" | grep -E '^(session-alive|heartbeat-status|heartbeat-mtime|phase|phase-since|wait-state|waiting-reason|expected-resume-by)=' | sed 's/=.*//' | tr '\n' ' ' | sed 's/ *$//')"
+    local legacy_expected="session-alive heartbeat-status heartbeat-mtime phase phase-since wait-state waiting-reason expected-resume-by"
+    if [ "$legacy_order" = "$legacy_expected" ]; then
+        T8_PASS "check stdout preserves legacy phase=/wait-state= lines in order (b)"
+    else
+        T8_FAIL "check stdout legacy key order='$legacy_order' != expected='$legacy_expected' (b)"
+    fi
+
+    # New dispatch-bound=true line.
+    if printf '%s\n' "$b_out" | grep -qx 'dispatch-bound=true'; then
+        T8_PASS "check stdout has dispatch-bound=true (b)"
+    else
+        T8_FAIL "check stdout missing 'dispatch-bound=true'.  Full stdout:
+$(printf '%s\n' "$b_out" | sed 's/^/      | /')  (b)"
+    fi
+
+    # dispatch.md Phase-2 fields are now populated.  Re-extract via t8_fm.
+    local got_pid got_sid got_transcript got_first
+    got_pid="$(t8_fm "$DISPATCH" claude-pid 2>/dev/null || true)"
+    got_sid="$(t8_fm "$DISPATCH" claude-session-id 2>/dev/null || true)"
+    got_transcript="$(t8_fm "$DISPATCH" transcript-path 2>/dev/null || true)"
+    got_first="$(t8_fm "$DISPATCH" first-seen-iso 2>/dev/null || true)"
+
+    if [ "$got_pid" = "$FAKE_PID" ]; then
+        T8_PASS "dispatch.md claude-pid == forked child pid (b)"
+    else
+        T8_FAIL "dispatch.md claude-pid='$got_pid' != forked child pid '$FAKE_PID' (b)"
+    fi
+    if [ "$got_sid" = "$FAKE_UUID" ]; then
+        T8_PASS "dispatch.md claude-session-id == fake uuid (b)"
+    else
+        T8_FAIL "dispatch.md claude-session-id='$got_sid' != fake uuid '$FAKE_UUID' (b)"
+    fi
+    if [ "$got_transcript" = "$TRANSCRIPT_FIXTURE" ]; then
+        T8_PASS "dispatch.md transcript-path == fixture jsonl path (b)"
+    else
+        T8_FAIL "dispatch.md transcript-path='$got_transcript' != fixture '$TRANSCRIPT_FIXTURE' (b)"
+    fi
+    if [ -n "$got_first" ]; then
+        T8_PASS "dispatch.md first-seen-iso non-empty (b)"
+    else
+        T8_FAIL "dispatch.md first-seen-iso is EMPTY after bind (b)"
+    fi
+
+    # ---- ## Recovery body: substituted (no angle brackets) -------------
+    # Read everything after the `## Recovery` heading.  The body must contain
+    # the CONCRETE substituted commands, not the `<…>` template tokens.
+    local recovery_body
+    recovery_body="$(awk '/^## Recovery$/{f=1; next} f' "$DISPATCH" 2>/dev/null || true)"
+
+    if printf '%s\n' "$recovery_body" | grep -qF "claude --resume $FAKE_UUID --plugin-dir $PLUGIN_ROOT"; then
+        T8_PASS "## Recovery body has substituted 'claude --resume <uuid>' (b)"
+    else
+        T8_FAIL "## Recovery body missing 'claude --resume $FAKE_UUID --plugin-dir $PLUGIN_ROOT'.  Body:
+$(printf '%s\n' "$recovery_body" | sed 's/^/      | /')  (b)"
+    fi
+    if printf '%s\n' "$recovery_body" | grep -qF "tmux attach -t $TMUX_SESSION"; then
+        T8_PASS "## Recovery body has substituted 'tmux attach -t <session>' (b)"
+    else
+        T8_FAIL "## Recovery body missing 'tmux attach -t $TMUX_SESSION'.  Body:
+$(printf '%s\n' "$recovery_body" | sed 's/^/      | /')  (b)"
+    fi
+    if printf '%s\n' "$recovery_body" | grep -qF "$TRANSCRIPT_FIXTURE"; then
+        T8_PASS "## Recovery body has substituted transcript path (b)"
+    else
+        T8_FAIL "## Recovery body missing transcript path '$TRANSCRIPT_FIXTURE'.  Body:
+$(printf '%s\n' "$recovery_body" | sed 's/^/      | /')  (b)"
+    fi
+    # No leftover template angle-bracket tokens (e.g. <claude-session-id>,
+    # <tmux-session>).  We look for the specific placeholder names the body
+    # template would contain if substitution had not happened.
+    if printf '%s\n' "$recovery_body" | grep -qE '<(claude-session-id|tmux-session|worktree|plugin-root|transcript-path|first-seen-iso)>'; then
+        T8_FAIL "## Recovery body still contains literal <…> placeholder tokens (substitution did not fire).  Body:
+$(printf '%s\n' "$recovery_body" | sed 's/^/      | /')  (b)"
+    else
+        T8_PASS "## Recovery body has NO literal angle-bracket placeholders (b)"
+    fi
+
+    # =====================================================================
+    # T8(c) — idempotency under stable input (continues T8(b) state).
+    # =====================================================================
+    # Snapshot the 4 Phase-2 values and a content hash of dispatch.md BEFORE
+    # the no-op poll.
+    local pre_pid pre_sid pre_transcript pre_first pre_hash
+    pre_pid="$got_pid"
+    pre_sid="$got_sid"
+    pre_transcript="$got_transcript"
+    pre_first="$got_first"
+    pre_hash="$(t8_content_hash "$DISPATCH")"
+
+    sleep 1
+
+    # The pure no-op poll: same fixture, no mutation.  The trio is already
+    # populated, so NEEDS_REWRITE must stay false and dispatch.md must NOT be
+    # rewritten.
+    (
+        cd "$TMPROOT" || exit 99
+        HOME="$FAKE_HOME" bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null
+    ) >"$TMPROOT/check-c.out" 2>"$TMPROOT/check-c.err" || true
+
+    local post_pid post_sid post_transcript post_first post_hash
+    post_pid="$(t8_fm "$DISPATCH" claude-pid 2>/dev/null || true)"
+    post_sid="$(t8_fm "$DISPATCH" claude-session-id 2>/dev/null || true)"
+    post_transcript="$(t8_fm "$DISPATCH" transcript-path 2>/dev/null || true)"
+    post_first="$(t8_fm "$DISPATCH" first-seen-iso 2>/dev/null || true)"
+    post_hash="$(t8_content_hash "$DISPATCH")"
+
+    if [ "$post_pid" = "$pre_pid" ] && [ "$post_sid" = "$pre_sid" ] \
+        && [ "$post_transcript" = "$pre_transcript" ] && [ "$post_first" = "$pre_first" ]; then
+        T8_PASS "no-op poll leaves all 4 Phase-2 values unchanged (c)"
+    else
+        T8_FAIL "no-op poll changed a Phase-2 value: pid '$pre_pid'->'$post_pid', sid '$pre_sid'->'$post_sid', transcript '$pre_transcript'->'$post_transcript', first '$pre_first'->'$post_first' (c)"
+    fi
+
+    if [ -z "$pre_hash" ] || [ -z "$post_hash" ]; then
+        # No digest tool on this host (neither shasum nor sha256sum).  The
+        # byte-identity check is not performable; SKIP rather than FAIL.
+        skip "T8 no-op poll leaves dispatch.md byte-identical (content hash) (c) (skipped: no shasum/sha256sum on host)"
+    elif [ "$post_hash" = "$pre_hash" ]; then
+        T8_PASS "no-op poll leaves dispatch.md byte-identical (content hash) (c)"
+    else
+        T8_FAIL "no-op poll rewrote dispatch.md: pre-hash='$pre_hash' post-hash='$post_hash' (rewrite fired when nothing was new) (c)"
+    fi
+
+    # ---- External mutation of the sessions json is ignored (idempotency) -
+    # Change the stored sessionId in the pointer json to a DIFFERENT value.
+    # Because dispatch.md already has a non-empty claude-session-id, Step B is
+    # short-circuited and the external mutation must be ignored.
+    local OTHER_UUID="99999999-8888-7777-6666-555555555555"
+    cat >"$POINTER" <<EOF
+{"pid": $FAKE_PID, "sessionId": "$OTHER_UUID", "cwd": "$WORKTREE_PHYS"}
+EOF
+    (
+        cd "$TMPROOT" || exit 99
+        HOME="$FAKE_HOME" bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null
+    ) >"$TMPROOT/check-c2mut.out" 2>"$TMPROOT/check-c2mut.err" || true
+
+    local after_mut_sid
+    after_mut_sid="$(t8_fm "$DISPATCH" claude-session-id 2>/dev/null || true)"
+    if [ "$after_mut_sid" = "$FAKE_UUID" ]; then
+        T8_PASS "external sessions json mutation ignored: claude-session-id unchanged (c)"
+    else
+        T8_FAIL "external sessions json mutation NOT ignored: claude-session-id='$after_mut_sid' (expected unchanged '$FAKE_UUID'; idempotency short-circuit failed) (c)"
+    fi
+
+    # =====================================================================
+    # T8(c2) — manual re-bind via field-clear (continues).
+    # =====================================================================
+    # Clear the 4 Phase-2 fields in dispatch.md while preserving Phase-1.  We
+    # rewrite only the four `claude-pid:` / `claude-session-id:` /
+    # `transcript-path:` / `first-seen-iso:` lines to empty (value removed),
+    # leaving every other line — including the whole Phase-1 block and body —
+    # untouched.  Use a temp file + mv to avoid a partial in-place edit.
+    local cleared_tmp="$DISPATCH.t8clear.$$"
+    awk '
+        /^claude-pid:/        { print "claude-pid:";        next }
+        /^claude-session-id:/ { print "claude-session-id:"; next }
+        /^transcript-path:/   { print "transcript-path:";   next }
+        /^first-seen-iso:/    { print "first-seen-iso:";    next }
+        { print }
+    ' "$DISPATCH" >"$cleared_tmp" 2>/dev/null && mv -f "$cleared_tmp" "$DISPATCH"
+
+    # Point the pointer json at a NEW sessionId and create its transcript.  The
+    # forked child pid is unchanged (still alive), so Step A re-discovers the
+    # same claude-pid, Step B reads the NEW sessionId, Step C finds the new
+    # transcript.
+    local NEW_UUID="abababab-cdcd-efef-0101-232323232323"
+    cat >"$POINTER" <<EOF
+{"pid": $FAKE_PID, "sessionId": "$NEW_UUID", "cwd": "$WORKTREE_PHYS"}
+EOF
+    local NEW_TRANSCRIPT="$PROJ_DIR/$NEW_UUID.jsonl"
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":"t8 c2 rebind row"}}' >"$NEW_TRANSCRIPT"
+
+    (
+        cd "$TMPROOT" || exit 99
+        HOME="$FAKE_HOME" bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null
+    ) >"$TMPROOT/check-c2.out" 2>"$TMPROOT/check-c2.err" || true
+
+    local rb_sid rb_transcript rb_first
+    rb_sid="$(t8_fm "$DISPATCH" claude-session-id 2>/dev/null || true)"
+    rb_transcript="$(t8_fm "$DISPATCH" transcript-path 2>/dev/null || true)"
+    rb_first="$(t8_fm "$DISPATCH" first-seen-iso 2>/dev/null || true)"
+
+    if [ "$rb_sid" = "$NEW_UUID" ]; then
+        T8_PASS "field-clear re-bind: claude-session-id == new uuid (c2)"
+    else
+        T8_FAIL "field-clear re-bind: claude-session-id='$rb_sid' != new uuid '$NEW_UUID' (re-bind did not fire) (c2)"
+    fi
+    if [ "$rb_transcript" = "$NEW_TRANSCRIPT" ]; then
+        T8_PASS "field-clear re-bind: transcript-path updated to new jsonl (c2)"
+    else
+        T8_FAIL "field-clear re-bind: transcript-path='$rb_transcript' != new '$NEW_TRANSCRIPT' (c2)"
+    fi
+    if [ -n "$rb_first" ]; then
+        T8_PASS "field-clear re-bind: first-seen-iso repopulated (c2)"
+    else
+        T8_FAIL "field-clear re-bind: first-seen-iso is EMPTY after re-bind (c2)"
+    fi
+}
+
+# t8_content_hash <file> — emit a content hash of the file using whichever
+# digest tool the host has (shasum on macOS, sha256sum on most Linux).  Prints
+# just the hex digest (first field) or empty if no tool is available.  Used by
+# T8(c) to prove the no-op poll did not rewrite dispatch.md (content equality is
+# more robust than mtime, which has 1s granularity on some macOS volumes).
+t8_content_hash() {
+    local f="$1"
+    [ -f "$f" ] || { printf ''; return 0; }
+    if command -v shasum >/dev/null 2>&1; then
+        shasum "$f" 2>/dev/null | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$f" 2>/dev/null | awk '{print $1}'
+    else
+        printf ''
+    fi
 }
 
 # t8_run_cleanup_section — T8(d): invoke cleanup --force and assert the
