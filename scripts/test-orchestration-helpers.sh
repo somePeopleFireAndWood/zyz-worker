@@ -1667,6 +1667,559 @@ $(printf '%s\n' "$merge_out_bar" | sed 's/^/      | /')"
 }
 
 # ---------------------------------------------------------------------------
+# T8. dispatch.md — Phase-1 spawn write + archive lifecycle
+# ---------------------------------------------------------------------------
+#
+# This group covers the per-task dispatch.md state file introduced by the
+# "dispatch-md-and-recovery" design (see
+#   .zyz-worker/tasks/dispatch-md-and-recovery/design.md ## Testing Plan).
+#
+# ST1 owns T8(a) (spawn writes Phase-1 fields) and T8(d) (archive, not delete,
+# through cleanup).  T8(b)/(c)/(c2) (Phase-2 lazy-fill in orch-check-worker.sh)
+# are added by ST2's test-agent — see the placeholder near the end of this
+# function.
+#
+# Fixture shape mirrors T6: real `git init`, a real master entry whose
+# `source-repo:` points at the fixture repo (NOT the plugin repo), a real
+# `mktemp -d` tmproot, real tmux, a `trap ... EXIT` teardown that kills the
+# T8 tmux session, asserts no leftover heartbeat-daemon for the T8 task-id
+# (F8 hygiene, same as T6), and removes the tmproot.
+
+# T8_FAIL <reason>
+T8_FAIL() {
+    fail "T8 $1"
+}
+
+T8_PASS() {
+    pass "T8 $1"
+}
+
+T8_SKIP_ALL() {
+    local reason="$1"
+    # One consolidated SKIP record per planned T8(a)/(d) check so the
+    # operator's count matches expectations.  Keep this list in sync with the
+    # assertions emitted below.
+    local i
+    for i in \
+        "dispatch.md exists and is readable (a)" \
+        "dispatch.md Phase-1 key task-id non-empty (a)" \
+        "dispatch.md Phase-1 key spawn-iso non-empty (a)" \
+        "dispatch.md Phase-1 key tmux-session non-empty (a)" \
+        "dispatch.md Phase-1 key tmux-window-id non-empty (a)" \
+        "dispatch.md Phase-1 key tmux-pane-id non-empty (a)" \
+        "dispatch.md Phase-1 key shell-pid non-empty (a)" \
+        "dispatch.md Phase-1 key worktree non-empty (a)" \
+        "dispatch.md Phase-1 key source-repo non-empty (a)" \
+        "dispatch.md Phase-1 key branch non-empty (a)" \
+        "dispatch.md Phase-1 key base non-empty (a)" \
+        "dispatch.md Phase-1 key plugin-root non-empty (a)" \
+        "dispatch.md Phase-1 key encoded-cwd non-empty (a)" \
+        "dispatch.md tmux-window-id matches ^@[0-9]+\$ (a)" \
+        "dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a)" \
+        "dispatch.md shell-pid is a positive integer (a)" \
+        "dispatch.md shell-pid process is alive (kill -0) (a)" \
+        "dispatch.md worktree is an absolute path that exists (a)" \
+        "dispatch.md source-repo is an absolute path that exists (a)" \
+        "dispatch.md encoded-cwd equals pwd -P of worktree, /->- (a)" \
+        "dispatch.md plugin-root equals repo root (CLAUDE_PLUGIN_ROOT unset) (a)" \
+        "dispatch.md Phase-2 key claude-pid empty (a)" \
+        "dispatch.md Phase-2 key claude-session-id empty (a)" \
+        "dispatch.md Phase-2 key transcript-path empty (a)" \
+        "dispatch.md Phase-2 key first-seen-iso empty (a)" \
+        "runtime/<task-id>/ gone after cleanup --force (d)" \
+        "runtime/.archive/<task-id>-*/dispatch.md exists after cleanup (d)" \
+        "archived dispatch.md has same task-id: line as original (d)" \
+        "no orch-heartbeat-daemon.sh residue after teardown (F8)" \
+        "T8 fixture teardown clean"
+    do
+        skip "T8 $i (skipped: $reason)"
+    done
+}
+
+run_T8() {
+    say_header "T8  dispatch.md Phase-1 spawn write + archive lifecycle"
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        T8_SKIP_ALL "tmux not available on PATH"
+        return
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        T8_SKIP_ALL "git not available on PATH"
+        return
+    fi
+
+    local spawn="$REPO_ROOT/scripts/orch-spawn-worker.sh"
+    local cleanup="$REPO_ROOT/scripts/orch-cleanup-worker.sh"
+    if [ ! -x "$spawn" ] || [ ! -x "$cleanup" ]; then
+        T8_SKIP_ALL "one or more helper scripts missing/not executable"
+        return
+    fi
+
+    # ---- Fixture setup --------------------------------------------------
+    # GLOBAL (non-`local`) state that the EXIT trap must see; bash `local`
+    # vars are invisible to the trap once run_T8 returns (same rationale as
+    # T6).  Use a unique T8_* tmux session name + a mktemp -d tmproot so the
+    # test is isolated and re-runnable.
+    T8_TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t8.XXXXXX")"
+    T8_TASK_ID="t8disp"
+    T8_TMUX_SESSION="zyz-task-$T8_TASK_ID"
+    T8_LIST_DIR="$T8_TMPROOT/list"
+    T8_WORK_DIR="$T8_TMPROOT/work"
+    T8_WORKTREE_DIR="$T8_TMPROOT/worktrees/$T8_TASK_ID"
+
+    # Convenience local aliases (the T8_* globals carry the same values and
+    # are what the teardown reads).
+    local TMPROOT="$T8_TMPROOT"
+    local TASK_ID="$T8_TASK_ID"
+    local TMUX_SESSION="$T8_TMUX_SESSION"
+    local LIST_DIR="$T8_LIST_DIR"
+    local WORK_DIR="$T8_WORK_DIR"
+    local WORKTREE_DIR="$T8_WORKTREE_DIR"
+
+    # Capture any EXIT trap a prior group left installed.  T6 sets
+    # `trap "t6_teardown" EXIT` and (unlike T4'/T5) does NOT clear it on its
+    # early-return paths — it historically relied on being the last group with
+    # an EXIT trap.  Now that T8 follows T6 and installs its own EXIT trap, we
+    # must CHAIN the prior trap rather than clobber it, or T6's teardown (its
+    # F8 residue check + tmproot removal) would silently never run.  `trap -p`
+    # prints the current trap as a re-executable `trap '<cmd>' EXIT` string; we
+    # extract just <cmd> and invoke it first inside t8_teardown.  This handles
+    # ALL of T6's exit paths (natural end AND early returns) without touching
+    # T6.  T8_PRIOR_EXIT_TRAP is a GLOBAL so t8_teardown (invoked from the
+    # trap) can see it.
+    T8_PRIOR_EXIT_TRAP=""
+    local _prior_trap_line
+    _prior_trap_line="$(trap -p EXIT 2>/dev/null || true)"
+    if [ -n "$_prior_trap_line" ]; then
+        # Strip the leading `trap -- '` (or `trap '`) and trailing `' EXIT`.
+        # Use sed to peel the wrapper; what remains is the raw command string.
+        T8_PRIOR_EXIT_TRAP="$(printf '%s\n' "$_prior_trap_line" \
+            | sed -e "s/^trap -- '//" -e "s/^trap '//" -e "s/' EXIT\$//" \
+            | sed "s/'\\\\''/'/g")"
+    fi
+
+    # Robustness diagnostic (review note #2a): by the time control reaches
+    # here, T8 has already passed the same tmux/git/script gates that T6 must
+    # pass, so — on any host where T6 actually ran — T6 will have installed
+    # (and never cleared) its `trap "t6_teardown" EXIT`.  We therefore EXPECT
+    # T8_PRIOR_EXIT_TRAP to be non-empty.  If the peel produced an empty
+    # string (e.g. a future edit changed T6's trap format and the sed wrapper
+    # no longer matches), the chain would silently no-op and T6's teardown
+    # would never run again — exactly the latent bug this chaining exists to
+    # prevent.  Surface it loudly rather than letting it regress invisibly.
+    if [ -z "$T8_PRIOR_EXIT_TRAP" ]; then
+        T8_FAIL "expected a prior EXIT trap (T6's t6_teardown) to chain, but captured none -- trap -p EXIT='$_prior_trap_line' (T6 teardown may not run; trap-format regression?)"
+    fi
+
+    # Teardown reads T8_* globals (not the local copies).  Defined inline so
+    # it is in the function table when the trap fires.
+    t8_teardown() {
+        # First, run any prior group's EXIT trap (T6's t6_teardown) that we
+        # chained above, so its assertions + tmproot removal still fire.  If
+        # the chained eval returns non-zero, emit a VISIBLE warning (review
+        # note #2b) before swallowing it — a silent `|| true` would hide a
+        # future trap-format regression.  We keep going (the warning does not
+        # abort teardown) so T8's own cleanup still completes.
+        if [ -n "${T8_PRIOR_EXIT_TRAP:-}" ]; then
+            if ! eval "$T8_PRIOR_EXIT_TRAP"; then
+                echo "  WARN  T8 chained prior EXIT trap returned non-zero: '$T8_PRIOR_EXIT_TRAP' (T6 teardown may be incomplete; trap-format regression?)"
+            fi
+        fi
+
+        # Best-effort kill of the T8 tmux session in case an early failure
+        # left it alive.  Killing the session SIGHUPs the in-pane heartbeat
+        # daemon (F8-allowed natural path; F8 only forbids manual pkill of
+        # the daemon itself).
+        tmux kill-session -t "$T8_TMUX_SESSION" 2>/dev/null || true
+
+        # F8 hygiene (same as T6): after teardown there must be NO
+        # orch-heartbeat-daemon.sh process left for the T8 task-id.  Wait up
+        # to ~3s for SIGHUP propagation, then check.  Grep per task-id so
+        # unrelated daemons on the host do not pollute the assertion.
+        sleep 2
+        local residue
+        residue="$(pgrep -f "orch-heartbeat-daemon.*runtime/$T8_TASK_ID" 2>/dev/null || true)"
+        if [ -n "$residue" ]; then
+            T8_FAIL "no orch-heartbeat-daemon.sh residue after teardown (F8) -- pids: '$residue'"
+            # Don't pkill ourselves; F8 forbids it.  Leave for operator.
+        else
+            T8_PASS "no orch-heartbeat-daemon.sh residue after teardown (F8)"
+        fi
+
+        rm -rf "$T8_TMPROOT"
+        T8_PASS "T8 fixture teardown clean"
+    }
+    # shellcheck disable=SC2064
+    trap "t8_teardown" EXIT
+
+    # --- Init the fixture git repo (the source-repo for this task) -------
+    # NOTE: source-repo points at the fixture repo, NOT the plugin repo.
+    # Because PLUGIN_ROOT derivation now runs on EVERY spawn (hoisted out of
+    # the auto-start block by ST1), a non-auto-start spawn whose source-repo
+    # is not the plugin repo emits
+    #   warn: PLUGIN_ROOT=... does not contain skills/execute-task
+    # to STDERR.  That warn is EXPECTED and BENIGN here.  We capture stdout
+    # and stderr SEPARATELY below so the warn never false-fails the test.
+    mkdir -p "$WORK_DIR"
+    (
+        cd "$WORK_DIR" || exit 1
+        git init -q . >/dev/null 2>&1
+        git config user.email "t8@example.com"
+        git config user.name "T8 Test"
+        git checkout -q -b main 2>/dev/null || git checkout -q main
+        echo "T8 initial (work)" >README.md
+        git add README.md
+        git commit -q -m "initial"
+    ) || { T8_FAIL "git init in $WORK_DIR failed"; return; }
+
+    # --- Build the master entry pointing at the fixture repo ------------
+    mkdir -p "$LIST_DIR/tasks"
+    {
+        echo "---"
+        echo "task-id: $TASK_ID"
+        echo "project: t8-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: ready"
+        echo "priority: normal"
+        echo "branch: task/$TASK_ID"
+        echo "base: main"
+        echo "worktree: $WORKTREE_DIR"
+        echo "tmux-session: $TMUX_SESSION"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-21"
+        echo "updated-at: 2026-06-21"
+        echo "---"
+        echo ""
+        echo "# $TASK_ID (T8 mock)"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "T8 dispatch.md Phase-1 + archive lifecycle test."
+    } >"$LIST_DIR/tasks/$TASK_ID.md"
+
+    # --- Invoke spawn WITHOUT --auto-start ------------------------------
+    # We unset CLAUDE_PLUGIN_ROOT in the spawn subshell so plugin-root is
+    # derived deterministically from $SCRIPT_DIR/.. == repo root, regardless
+    # of the caller's environment.  Invoke from $TMPROOT (not a git repo) to
+    # mirror T6's cwd-independence posture.
+    #
+    # Capture stdout and stderr into SEPARATE files: the PLUGIN_ROOT warn
+    # (expected/benign — see above) goes to stderr and must NOT be treated as
+    # a failure.  We only gate on the EXIT CODE, never on stderr content.
+    local spawn_out_file spawn_err_file spawn_rc
+    spawn_out_file="$TMPROOT/spawn.out"
+    spawn_err_file="$TMPROOT/spawn.err"
+    (
+        cd "$TMPROOT" || exit 99
+        unset CLAUDE_PLUGIN_ROOT
+        bash "$spawn" "$TASK_ID" "$LIST_DIR" </dev/null
+    ) >"$spawn_out_file" 2>"$spawn_err_file"
+    spawn_rc=$?
+
+    if [ "$spawn_rc" -ne 0 ]; then
+        T8_FAIL "orch-spawn-worker.sh ($TASK_ID) exited $spawn_rc (expected 0).  stdout:
+$(sed 's/^/      | /' "$spawn_out_file" 2>/dev/null)
+      stderr:
+$(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
+        # Continue to teardown; remaining a/d checks SKIP.
+        local i
+        for i in \
+            "dispatch.md exists and is readable (a)" \
+            "dispatch.md Phase-1 keys present and non-empty (a)" \
+            "dispatch.md tmux-window-id / tmux-pane-id format (a)" \
+            "dispatch.md shell-pid positive + alive (a)" \
+            "dispatch.md worktree / source-repo absolute + exist (a)" \
+            "dispatch.md encoded-cwd equals pwd -P of worktree (a)" \
+            "dispatch.md plugin-root equals repo root (a)" \
+            "dispatch.md Phase-2 fields empty (a)" \
+            "runtime/<task-id>/ gone after cleanup (d)" \
+            "runtime/.archive/<task-id>-*/dispatch.md exists (d)" \
+            "archived dispatch.md has same task-id: line (d)"
+        do
+            skip "T8 $i (skipped: spawn failed)"
+        done
+        return
+    fi
+
+    # =====================================================================
+    # T8(a) — spawn writes Phase-1 fields
+    # =====================================================================
+    local DISPATCH="$LIST_DIR/runtime/$TASK_ID/dispatch.md"
+
+    if [ -f "$DISPATCH" ] && [ -r "$DISPATCH" ]; then
+        T8_PASS "dispatch.md exists and is readable (a)"
+    else
+        T8_FAIL "dispatch.md missing or unreadable: $DISPATCH (a)"
+        # Without the file the rest of T8(a) cannot run; SKIP them, then go
+        # straight to the T8(d) cleanup section (which has its own guards).
+        local k
+        for k in task-id spawn-iso tmux-session tmux-window-id tmux-pane-id \
+                 shell-pid worktree source-repo branch base plugin-root encoded-cwd; do
+            skip "T8 dispatch.md Phase-1 key $k non-empty (a) (skipped: dispatch.md absent)"
+        done
+        skip "T8 dispatch.md tmux-window-id matches ^@[0-9]+\$ (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md shell-pid is a positive integer (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md shell-pid process is alive (kill -0) (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md worktree is an absolute path that exists (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md source-repo is an absolute path that exists (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md encoded-cwd equals pwd -P of worktree, /->- (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md plugin-root equals repo root (CLAUDE_PLUGIN_ROOT unset) (a) (skipped: dispatch.md absent)"
+        for k in claude-pid claude-session-id transcript-path first-seen-iso; do
+            skip "T8 dispatch.md Phase-2 key $k empty (a) (skipped: dispatch.md absent)"
+        done
+        # Fall through to T8(d): cleanup section guards on dir presence.
+        t8_run_cleanup_section
+        return
+    fi
+
+    # Small inline frontmatter extractor matching the scripts' fm_field
+    # semantics: anchor on `^<key>:`, strip the leading whitespace from the
+    # value, print only the value (empty string when the key has no value).
+    # We keep it inline (not relying on a sourced helper) to match the
+    # self-contained style of the existing test groups.
+    #
+    # ASSUMPTION (important for ST2 reuse): this extractor is correct ONLY for
+    # the spawn/check-WRITTEN dispatch.md format — i.e. plain `key: value`
+    # lines with NO `# inline comments`, NO quoted values, and NO key that is
+    # a colon-prefix of another key.  The `^<key>:` anchor would mis-match if a
+    # future schema added a prefix-colliding field (e.g. `claude` next to
+    # `claude-pid`), and the value-trim does NOT unquote or strip comments the
+    # way the scripts' richer fm_field() does.  All 16 current dispatch.md
+    # fields satisfy these constraints, and spawn/check write the format
+    # verbatim, so it is safe here.  ST2 should reuse THIS helper only against
+    # spawn/check-written dispatch.md files — never against the
+    # template/dispatch.md (which has comments + quoted placeholders) or any
+    # hand-edited file.  Use the scripts' own fm_field() for the general case.
+    t8_fm() {
+        local file="$1" key="$2"
+        awk -F': ' -v k="$key" '
+            $0 ~ ("^" k ":") {
+                v = substr($0, length(k) + 2)
+                sub(/^[[:space:]]+/, "", v)
+                sub(/[[:space:]]+$/, "", v)
+                print v
+                exit
+            }
+        ' "$file"
+    }
+
+    # ---- the 12 Phase-1 keys present and non-empty ----
+    local key val
+    for key in task-id spawn-iso tmux-session tmux-window-id tmux-pane-id \
+               shell-pid worktree source-repo branch base plugin-root encoded-cwd; do
+        val="$(t8_fm "$DISPATCH" "$key" 2>/dev/null || true)"
+        if [ -n "$val" ]; then
+            T8_PASS "dispatch.md Phase-1 key $key non-empty (a)"
+        else
+            T8_FAIL "dispatch.md Phase-1 key $key is EMPTY (a)"
+        fi
+    done
+
+    # ---- tmux-window-id / tmux-pane-id format ----
+    local win_id pane_id
+    win_id="$(t8_fm "$DISPATCH" tmux-window-id 2>/dev/null || true)"
+    pane_id="$(t8_fm "$DISPATCH" tmux-pane-id 2>/dev/null || true)"
+    if printf '%s' "$win_id" | grep -qE '^@[0-9]+$'; then
+        T8_PASS "dispatch.md tmux-window-id matches ^@[0-9]+\$ (a)"
+    else
+        T8_FAIL "dispatch.md tmux-window-id='$win_id' does not match ^@[0-9]+\$ (a)"
+    fi
+    if printf '%s' "$pane_id" | grep -qE '^%[0-9]+$'; then
+        T8_PASS "dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a)"
+    else
+        T8_FAIL "dispatch.md tmux-pane-id='$pane_id' does not match ^%[0-9]+\$ (a)"
+    fi
+
+    # ---- shell-pid is a positive integer and the process is alive ----
+    local shell_pid
+    shell_pid="$(t8_fm "$DISPATCH" shell-pid 2>/dev/null || true)"
+    if printf '%s' "$shell_pid" | grep -qE '^[1-9][0-9]*$'; then
+        T8_PASS "dispatch.md shell-pid is a positive integer (a)"
+    else
+        T8_FAIL "dispatch.md shell-pid='$shell_pid' is not a positive integer (a)"
+    fi
+    # kill -0 only meaningful for a syntactically valid pid; guard so an
+    # invalid value above does not throw a bash syntax error under set -u.
+    if printf '%s' "$shell_pid" | grep -qE '^[1-9][0-9]*$' && kill -0 "$shell_pid" 2>/dev/null; then
+        T8_PASS "dispatch.md shell-pid process is alive (kill -0) (a)"
+    else
+        T8_FAIL "dispatch.md shell-pid='$shell_pid' process is NOT alive (kill -0 failed) (a)"
+    fi
+
+    # ---- worktree / source-repo are absolute paths that exist ----
+    local wt sr
+    wt="$(t8_fm "$DISPATCH" worktree 2>/dev/null || true)"
+    sr="$(t8_fm "$DISPATCH" source-repo 2>/dev/null || true)"
+    case "$wt" in
+        /*) if [ -d "$wt" ]; then
+                T8_PASS "dispatch.md worktree is an absolute path that exists (a)"
+            else
+                T8_FAIL "dispatch.md worktree='$wt' is absolute but does not exist (a)"
+            fi ;;
+        *)  T8_FAIL "dispatch.md worktree='$wt' is not an absolute path (a)" ;;
+    esac
+    case "$sr" in
+        /*) if [ -d "$sr" ]; then
+                T8_PASS "dispatch.md source-repo is an absolute path that exists (a)"
+            else
+                T8_FAIL "dispatch.md source-repo='$sr' is absolute but does not exist (a)"
+            fi ;;
+        *)  T8_FAIL "dispatch.md source-repo='$sr' is not an absolute path (a)" ;;
+    esac
+
+    # ---- encoded-cwd EXACTLY equals pwd -P of worktree with / -> - -----
+    # THIS IS THE KEY ASSERTION: it catches the macOS /var -> /private/var
+    # symlink issue.  We recompute the expected value INDEPENDENTLY from the
+    # recorded worktree value, using the same `cd && pwd -P | tr / -` idiom
+    # the spawn script uses.  If spawn had used raw $WORKTREE instead of
+    # `pwd -P`, the physical-path resolution diverges and this FAILS.
+    local enc enc_expected
+    enc="$(t8_fm "$DISPATCH" encoded-cwd 2>/dev/null || true)"
+    enc_expected=""
+    if [ -n "$wt" ] && [ -d "$wt" ]; then
+        enc_expected="$(cd "$wt" && pwd -P | tr / -)"
+    fi
+    if [ -n "$enc" ] && [ -n "$enc_expected" ] && [ "$enc" = "$enc_expected" ]; then
+        T8_PASS "dispatch.md encoded-cwd equals pwd -P of worktree, /->- (a)"
+    else
+        T8_FAIL "dispatch.md encoded-cwd='$enc' != expected '$enc_expected' (recomputed from worktree '$wt' via cd+pwd -P|tr / -) (a)"
+    fi
+
+    # ---- plugin-root equals repo root (CLAUDE_PLUGIN_ROOT was unset) ----
+    # Spawn derives PLUGIN_ROOT from $SCRIPT_DIR/.. when CLAUDE_PLUGIN_ROOT
+    # is unset; $SCRIPT_DIR is scripts/, so $SCRIPT_DIR/.. == repo root.
+    # Compare physical forms on both sides to dodge any symlink delta.
+    local pr pr_phys repo_phys
+    pr="$(t8_fm "$DISPATCH" plugin-root 2>/dev/null || true)"
+    pr_phys=""
+    if [ -n "$pr" ] && [ -d "$pr" ]; then
+        pr_phys="$(cd "$pr" && pwd -P)"
+    fi
+    repo_phys="$(cd "$REPO_ROOT" && pwd -P)"
+    if [ -n "$pr_phys" ] && [ "$pr_phys" = "$repo_phys" ]; then
+        T8_PASS "dispatch.md plugin-root equals repo root (CLAUDE_PLUGIN_ROOT unset) (a)"
+    else
+        T8_FAIL "dispatch.md plugin-root='$pr' (phys '$pr_phys') != repo root '$repo_phys' (a)"
+    fi
+
+    # ---- the 4 Phase-2 keys are all EMPTY at spawn time ----
+    local p2
+    for key in claude-pid claude-session-id transcript-path first-seen-iso; do
+        p2="$(t8_fm "$DISPATCH" "$key" 2>/dev/null || true)"
+        if [ -z "$p2" ]; then
+            T8_PASS "dispatch.md Phase-2 key $key empty (a)"
+        else
+            T8_FAIL "dispatch.md Phase-2 key $key is NON-empty at spawn time ('$p2') (a)"
+        fi
+    done
+
+    # =====================================================================
+    # T8(d) — lifecycle through cleanup (archive, not delete)
+    # =====================================================================
+    t8_run_cleanup_section
+
+    # ------------------------------------------------------------------
+    # T8(b)/(c)/(c2) added in ST2  (Phase-2 lazy-fill in
+    # orch-check-worker.sh: bind from a controlled $HOME fixture, idempotency
+    # under stable input, and manual re-bind via field-clear).  ST2's
+    # test-agent extends run_T8 HERE — keep the same T8_*/t8_* naming and the
+    # $HOME="$T8_TMPROOT/home" controlled-home pattern from the design's
+    # Testing Plan.
+    # ------------------------------------------------------------------
+
+    # Teardown trap runs the F8 daemon-residue check + tmproot cleanup.
+}
+
+# t8_run_cleanup_section — T8(d): invoke cleanup --force and assert the
+# runtime dir is archived (moved, not deleted).  Reads the T8_* globals so it
+# can be called from either the happy path or the dispatch.md-absent fallback
+# above.  Captures stdout/stderr separately (cleanup is quiet, but be
+# consistent with the spawn invocation).
+t8_run_cleanup_section() {
+    local cleanup="$REPO_ROOT/scripts/orch-cleanup-worker.sh"
+    local LIST_DIR="$T8_LIST_DIR"
+    local TASK_ID="$T8_TASK_ID"
+    local TMPROOT="$T8_TMPROOT"
+
+    local DISPATCH="$LIST_DIR/runtime/$TASK_ID/dispatch.md"
+    local RUNTIME_DIR="$LIST_DIR/runtime/$TASK_ID"
+
+    # Capture the original task-id: frontmatter line (if dispatch.md is
+    # present) so we can compare it against the archived copy after the move.
+    local orig_taskid_line=""
+    if [ -f "$DISPATCH" ]; then
+        orig_taskid_line="$(grep -m1 '^task-id:' "$DISPATCH" 2>/dev/null || true)"
+    fi
+
+    # Cleanup REQUIRES --force to actually archive; without it the script is a
+    # dry-run that leaves runtime/<task-id>/ in place (see
+    # orch-cleanup-worker.sh).  Capture stdout/stderr separately and gate on
+    # the exit code only.
+    local cleanup_out_file cleanup_err_file cleanup_rc
+    cleanup_out_file="$TMPROOT/cleanup.out"
+    cleanup_err_file="$TMPROOT/cleanup.err"
+    (
+        cd "$TMPROOT" || exit 99
+        bash "$cleanup" "$TASK_ID" "$LIST_DIR" --force </dev/null
+    ) >"$cleanup_out_file" 2>"$cleanup_err_file"
+    cleanup_rc=$?
+
+    if [ "$cleanup_rc" -ne 0 ]; then
+        T8_FAIL "orch-cleanup-worker.sh --force ($TASK_ID) exited $cleanup_rc (expected 0).  stdout:
+$(sed 's/^/      | /' "$cleanup_out_file" 2>/dev/null)
+      stderr:
+$(sed 's/^/      | /' "$cleanup_err_file" 2>/dev/null)"
+        skip "T8 runtime/<task-id>/ gone after cleanup --force (d) (skipped: cleanup failed)"
+        skip "T8 runtime/.archive/<task-id>-*/dispatch.md exists after cleanup (d) (skipped: cleanup failed)"
+        skip "T8 archived dispatch.md has same task-id: line as original (d) (skipped: cleanup failed)"
+        return
+    fi
+
+    # runtime/<task-id>/ must be GONE (moved, not copied).
+    if [ ! -e "$RUNTIME_DIR" ]; then
+        T8_PASS "runtime/<task-id>/ gone after cleanup --force (d)"
+    else
+        T8_FAIL "runtime/<task-id>/ still present after cleanup --force: $RUNTIME_DIR (d)"
+    fi
+
+    # runtime/.archive/<task-id>-*/dispatch.md must EXIST (archived, not
+    # deleted).  The cleanup script names the archive dir
+    # <task-id>-<YYYYmmdd-HHMMSS>; glob for it.  Under set -u with a
+    # non-matching glob the literal pattern survives, so guard with -f.
+    local archived_dispatch="" candidate
+    for candidate in "$LIST_DIR"/runtime/.archive/"$TASK_ID"-*/dispatch.md; do
+        if [ -f "$candidate" ]; then
+            archived_dispatch="$candidate"
+            break
+        fi
+    done
+    if [ -n "$archived_dispatch" ]; then
+        T8_PASS "runtime/.archive/<task-id>-*/dispatch.md exists after cleanup (d)"
+    else
+        T8_FAIL "no runtime/.archive/$TASK_ID-*/dispatch.md found after cleanup (archive missing — cleanup deleted instead of archived?) (d)"
+    fi
+
+    # The archived dispatch.md must carry the same task-id: line as the
+    # original (proves it is the same file, moved intact).
+    if [ -n "$archived_dispatch" ] && [ -f "$archived_dispatch" ]; then
+        local archived_taskid_line
+        archived_taskid_line="$(grep -m1 '^task-id:' "$archived_dispatch" 2>/dev/null || true)"
+        if [ -n "$orig_taskid_line" ] && [ "$archived_taskid_line" = "$orig_taskid_line" ]; then
+            T8_PASS "archived dispatch.md has same task-id: line as original (d)"
+        else
+            T8_FAIL "archived dispatch.md task-id line='$archived_taskid_line' != original='$orig_taskid_line' (d)"
+        fi
+    else
+        skip "T8 archived dispatch.md has same task-id: line as original (d) (skipped: archive copy absent)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # T7. README / CLAUDE.md / project-structure.md key strings
 # ---------------------------------------------------------------------------
 run_T7() {
@@ -1753,6 +2306,7 @@ run_T4_prime
 run_T5
 run_T6
 run_T7
+run_T8
 
 echo
 echo "============================================================"

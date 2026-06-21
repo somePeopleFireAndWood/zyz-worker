@@ -2,9 +2,10 @@
 task-id: <task-id>                # immutable; matches the filename without `.md`
 project: <project-name>           # user-maintained; label only; default = basename source-repo when omitted
 source-repo: ~/workspace/<repo>   # required; supports ~/; absolute or ~/ form
-state: not-analyzed               # not-analyzed | blocked | ready | completed
-                                  # Legal user-written values are limited to the four above.
-                                  # `in-progress` and `paused` are written ONLY by the orchestrator.
+state: not-analyzed               # user-writable:  not-analyzed | blocked | ready | completed
+                                  # orchestrator-only: in-progress | paused
+                                  # All 6 values are accepted by orch-scan-tasks.sh;
+                                  # users should only hand-write one of the first four.
 priority: normal                  # low | normal | high
 branch: task/<task-id>            # default; override if needed
 base: main                        # merge target branch; override if needed

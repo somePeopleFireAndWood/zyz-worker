@@ -6,3 +6,4 @@ build/
 .env.*
 *.log
 .zyz-worker/
+.in_use/
