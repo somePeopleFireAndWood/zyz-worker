@@ -46,7 +46,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
-EXPECTED_VERSION="0.6.1"
+EXPECTED_VERSION="0.6.2"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns. Derived so a version bump only requires editing EXPECTED_VERSION above.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
@@ -80,15 +80,21 @@ skip() {
 }
 
 # portable_stat_size <file>
-# Echoes the file size in bytes.  Tries BSD `stat -f %z` first (macOS),
-# then GNU `stat -c %s` (Linux).  Echoes "" on failure.
+# Echoes the file size in bytes.  Tries GNU `stat -c %s` (Linux) first, then
+# BSD `stat -f %z` (macOS), validating that each result is all-digits before
+# accepting it, then falls back to `wc -c`.  Echoes "" on total failure.
+#
+# Why validate numeric: on GNU/Linux `stat -f` is `--file-system` (NOT a format
+# string) and exits 0 printing a filesystem-info blob, so a naive "BSD first,
+# fall back if empty" approach never falls back on Linux.  Requiring an all-digit
+# result makes the order-independent fallback correct on both platforms.
 portable_stat_size() {
     local f="$1"
     local s
-    s="$(stat -f %z "$f" 2>/dev/null || true)"
-    if [ -z "$s" ]; then
-        s="$(stat -c %s "$f" 2>/dev/null || true)"
-    fi
+    s="$(stat -c %s "$f" 2>/dev/null || true)"
+    case "$s" in ''|*[!0-9]*) s="$(stat -f %z "$f" 2>/dev/null || true)";; esac
+    case "$s" in ''|*[!0-9]*) s="$(wc -c < "$f" 2>/dev/null | tr -d ' \t' || true)";; esac
+    case "$s" in ''|*[!0-9]*) s="";; esac
     echo "$s"
 }
 

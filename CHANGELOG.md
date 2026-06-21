@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(reserved for next release; intentionally empty after each release tag)
+
+## [0.6.2] — 2026-06-21
+
 ### Fixed
 - **Orchestration workers no longer fail at dispatch with `Unknown command:
   /execute-task`.** The L2 `orch-driver-agent` sent the bare slash command
