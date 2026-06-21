@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
 #
 # orch-spawn-worker.sh — create the worktree + tmux session + in-pane heartbeat
-# daemon for a single task. Does NOT execute the task; the worker (claude +
-# /execute-task) is expected to be started by the user inside the tmux pane,
-# unless --auto-start is passed.
+# daemon for a single task, and write the Phase-1 dispatch.md. That is ALL it
+# does: it builds the container. It NEVER starts claude. Starting the worker
+# (claude + /execute-task, with confirmation-page handling and readiness
+# probing) is the exclusive job of the L2 driver subagent.
 #
 # Contract:
 #   Inputs:
 #     $1  <task-id>               must match [A-Za-z0-9_-]+
 #     $2  <list-dir>              master list directory
-#     $3  --auto-start (optional) auto-type `claude` + `/execute-task` into the pane
-#                                 (alternatively, set $ZYZ_AUTO_START_WORKER=1)
 #
 #   Side effects:
 #     - Reads <list-dir>/tasks/<task-id>.md frontmatter.
 #     - Creates <list-dir>/runtime/<task-id>/.
-#     - Writes an initial <list-dir>/runtime/<task-id>/worker-status.md.
+#     - Writes the INITIAL <list-dir>/runtime/<task-id>/worker-status.md
+#       (phase=design). After this preflight write the file is owned
+#       exclusively by L3 (the worker); spawn never rewrites it.
 #     - `git worktree add <worktree> -b <branch> <base>` (creates the branch).
 #     - `tmux new-session -d -s <tmux-session> -c <worktree>` (creates the session).
 #     - Sends an in-pane background command to start the heartbeat daemon.
 #     - Sends env-var exports into the pane.
-#     - If --auto-start: types `claude --plugin-dir <plugin-root>` and a follow-up
-#       `/execute-task <task-id>`.
+#     - Writes <list-dir>/runtime/<task-id>/dispatch.md (Phase-1).
+#     Does NOT start claude (that is the L2 driver subagent's job).
 #
 #   Output (stdout):
 #     session-name=<tmux-session>
 #     worktree=<worktree>
-#     auto-start=true|false
 #     source-repo=<expanded-absolute-path>
 #
 #   Exit codes:
@@ -49,29 +49,16 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $(basename "$0") <task-id> <list-dir> [--auto-start]" >&2
+    echo "Usage: $(basename "$0") <task-id> <list-dir>" >&2
 }
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+if [ "$#" -ne 2 ]; then
     usage
     exit 2
 fi
 
 TASK_ID="$1"
 LIST_DIR="$2"
-AUTO_START="false"
-
-if [ "$#" -eq 3 ]; then
-    case "$3" in
-        --auto-start) AUTO_START="true" ;;
-        *) usage; exit 2 ;;
-    esac
-fi
-
-# Environment-variable override.
-if [ "${ZYZ_AUTO_START_WORKER:-0}" = "1" ]; then
-    AUTO_START="true"
-fi
 
 # task-id whitelist.
 case "$TASK_ID" in
@@ -174,14 +161,13 @@ done
 # Phase-1 write.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Resolve the plugin root (hoisted to top-level so both the auto-start
-# `claude --plugin-dir` launch AND the dispatch.md Phase-1 write can record
-# it). The warn-only sanity check now fires on every spawn — a missing
-# skills/execute-task directory is a misconfiguration regardless of how the
-# worker is started (auto-start vs. manual). We only warn (not exit) because
-# a heterogenous install layout could legitimately put skills elsewhere; the
-# run-report's Unknown-command failure will still be caught downstream by the
-# §4e check during auto-start.
+# Resolve the plugin root (hoisted to top-level so the dispatch.md Phase-1
+# write can record it in the `plugin-root:` field — the L2 driver reads that
+# field to launch `claude --plugin-dir <plugin-root>`). The warn-only sanity
+# check fires on every spawn — a missing skills/execute-task directory is a
+# misconfiguration regardless of how the worker is started. We only warn (not
+# exit) because a heterogenous install layout could legitimately put skills
+# elsewhere.
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 if [ ! -d "$PLUGIN_ROOT/skills/execute-task" ]; then
     echo "warn: PLUGIN_ROOT=$PLUGIN_ROOT does not contain skills/execute-task" >&2
@@ -329,10 +315,10 @@ tmux send-keys -t "$TMUX_SESSION" \
     "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
     Enter
 
-# Step 10: write the Phase-1 dispatch.md (atomic). This is the LAST preflight
-# step — it runs for BOTH non-auto-start and auto-start spawns, so dispatch.md
-# presence reliably means "spawn ran preflight to completion". The check
-# helper (orch-check-worker.sh) lazily fills the Phase-2 fields on later polls.
+# Step 10: write the Phase-1 dispatch.md (atomic). This is the LAST step —
+# dispatch.md presence reliably means "spawn ran preflight to completion". The
+# check helper (orch-check-worker.sh) lazily fills the Phase-2 fields on later
+# polls once the L2 driver has started claude inside the pane.
 #
 # tmux-window-id / tmux-pane-id / shell-pid are read back from the session we
 # created seconds ago (Step 7). It has exactly one window with one pane, so
@@ -381,104 +367,10 @@ first-seen-iso:
 EOF
 mv -f "$TMP_DISPATCH" "$DISPATCH_FILE"
 
-# Step 11: optionally auto-start claude + /execute-task. Default OFF.
-#
-# Failure modes this block defends against (see RUN_REPORT_2026-06-20_zh.md):
-#   §3a Worker pane didn't have the plugin registered → derive PLUGIN_ROOT
-#        from $SCRIPT_DIR/.. so we don't depend on $CLAUDE_PLUGIN_ROOT being
-#        inherited from the orchestrator's env.
-#   §2   `claude` hangs at every permission prompt → default the launch
-#        flags to bypass mode. Override with $ZYZ_WORKER_CLAUDE_FLAGS.
-#   §3b  `sleep 2` raced the claude welcome screen → poll the pane until
-#        a prompt indicator appears (30s timeout, 1s tick) before typing
-#        the slash command.
-#   §4e  `/execute-task` got rejected as Unknown command and the
-#        orchestrator never noticed → after sending it, check the pane
-#        for that error string and atomically rewrite worker-status.md
-#        with phase=error so the next poll surfaces the failure.
-if [ "$AUTO_START" = "true" ]; then
-    # PLUGIN_ROOT and its warn-only sanity check were hoisted to top-level
-    # (above, after the tmux/git dependency loop) so the dispatch.md Phase-1
-    # write can also record it. We just reference $PLUGIN_ROOT here.
-    CLAUDE_FLAGS="${ZYZ_WORKER_CLAUDE_FLAGS---permission-mode bypassPermissions --dangerously-skip-permissions}"
-
-    tmux send-keys -t "$TMUX_SESSION" \
-        "claude --plugin-dir '$PLUGIN_ROOT' $CLAUDE_FLAGS" Enter
-
-    # Poll the pane until claude looks ready. We look for the `❯ ` prompt
-    # glyph that the welcome screen renders once it accepts input. Bound
-    # the wait at 30s so a totally broken launch (no `claude` on PATH,
-    # etc.) does not stall spawn indefinitely.
-    READY="false"
-    for _ in $(seq 1 30); do
-        if tmux capture-pane -t "$TMUX_SESSION" -p -S -30 2>/dev/null | grep -q '❯ '; then
-            READY="true"
-            break
-        fi
-        sleep 1
-    done
-    if [ "$READY" != "true" ]; then
-        echo "warn: claude did not show a prompt in 30s; sending /execute-task anyway" >&2
-    fi
-
-    tmux send-keys -t "$TMUX_SESSION" "/execute-task $TASK_ID" Enter
-
-    # Give claude a beat to either accept or reject the command, then
-    # inspect the pane. `Unknown command` is the exact toast string claude
-    # prints when a slash command isn't registered — we treat that as a
-    # hard dispatch failure and reflect it in worker-status.md so the
-    # orchestrator's next poll (which only reads worker-status.md, not the
-    # pane) surfaces it instead of seeing fresh-heartbeat + phase=design.
-    sleep 1
-    if tmux capture-pane -t "$TMUX_SESSION" -p -S -30 2>/dev/null | grep -q 'Unknown command'; then
-        FAIL_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
-        TMP_FAIL="$WORKER_STATUS_FILE.tmp.$$"
-        cat > "$TMP_FAIL" <<EOF
----
-task-id: $TASK_ID
-phase: error
-phase-since: $FAIL_ISO
-wait-state: none
-waiting-reason:
-expected-resume-by:
-last-flush: $FAIL_ISO
----
-
-# Worker Status
-
-## Current Activity
-
-(spawn aborted: claude rejected /execute-task as Unknown command)
-
-## Last Output Summary
-
-claude pane reported \`Unknown command: /execute-task\` after auto-start.
-The plugin's slash command is not registered in this session even though
-\`claude --plugin-dir '$PLUGIN_ROOT'\` was passed. Likely causes:
-  - --plugin-dir does not register marketplace plugins in this claude version
-  - PLUGIN_ROOT path is wrong: $PLUGIN_ROOT
-  - the plugin's command manifest is malformed
-
-Diagnose by attaching to the pane and restarting with --debug:
-  tmux attach -t $TMUX_SESSION
-  # then in the pane, after Ctrl-C-ing the broken claude:
-  claude --debug --plugin-dir '$PLUGIN_ROOT'
-  # type /execute-task $TASK_ID and read the debug log.
-
-## Next Action
-
-Operator intervention required. The orchestrator will not retry this
-spawn automatically.
-EOF
-        mv -f "$TMP_FAIL" "$WORKER_STATUS_FILE"
-        echo "warn: claude rejected /execute-task as Unknown command; worker-status.md set to phase=error" >&2
-    fi
-fi
-
-# Step 12: stdout report.
+# Step 11: stdout report. spawn never starts claude — that is the L2 driver's
+# job. spawn's job ends here, with the container built and dispatch.md written.
 printf 'session-name=%s\n' "$TMUX_SESSION"
 printf 'worktree=%s\n' "$WORKTREE"
-printf 'auto-start=%s\n' "$AUTO_START"
 printf 'source-repo=%s\n' "$SOURCE_REPO"
 
 exit 0

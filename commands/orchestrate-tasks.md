@@ -24,11 +24,14 @@ Available templates:
 - @${CLAUDE_PLUGIN_ROOT}/skills/orchestration-scheduling-task/templates/master-list-task-entry.md
 - @${CLAUDE_PLUGIN_ROOT}/skills/orchestration-scheduling-task/templates/worker-status.md
 - @${CLAUDE_PLUGIN_ROOT}/skills/orchestration-scheduling-task/templates/question-answer.md
+- @${CLAUDE_PLUGIN_ROOT}/skills/orchestration-scheduling-task/templates/monitor.md
+
+The orchestrator (L1) dispatches a short-lived `orch-driver-agent` (L2) subagent to drive each worker's tmux pane — start `claude` and run `/execute-task`, or intervene when stuck. L1 itself never touches a pane; it polls worker state inline (read-only) and notifies the user when a worker needs them. See the SKILL's `## Architecture (3-layer)` section.
 
 Helper scripts (the orchestrator calls these — do not re-implement them):
 
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-scan-tasks.sh <list-dir>`
-- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-spawn-worker.sh <task-id> <list-dir> [--auto-start]`
+- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-spawn-worker.sh <task-id> <list-dir>` (builds the container only — worktree + tmux + heartbeat + dispatch.md Phase-1; never starts claude)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-check-worker.sh <task-id> <list-dir>`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-heartbeat-daemon.sh <heartbeat-file> <interval-sec>` (run inside the worker's tmux pane; not invoked directly by the orchestrator)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-cleanup-worker.sh <task-id> <list-dir> [--force]`

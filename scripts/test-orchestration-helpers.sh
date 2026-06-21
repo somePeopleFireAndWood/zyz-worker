@@ -216,6 +216,97 @@ run_T1() {
             fail "T1' $mlte does NOT document source-repo as required+absolute (need both 'required' and one of 'absolute'/'~/')"
         fi
     fi
+
+    # ---- T1'' (orchestration-layered-architecture ST-B / ST-A) ----------
+    # The layered (L1/L2/L3) orchestration redesign adds:
+    #   - a new driver-state template templates/monitor.md (ST-B) with 9
+    #     frontmatter keys + 3 body anchors, and
+    #   - a new L2 driver subagent definition agents/orch-driver-agent.md
+    #     mirrored frontmatter-free in subagents/orch-driver-agent.md (ST-A).
+    # Per design §Testing Plan ("脚本层能测的": monitor.md 模板存在+字段齐全;
+    # driver agent + 模板路径真实存在).
+
+    # (1) monitor.md template exists.
+    local monitor="skills/orchestration-scheduling-task/templates/monitor.md"
+    check_file_exists "$monitor"
+
+    # (1a) monitor.md frontmatter declares all 9 driver-state keys.  Each is a
+    #      `^<key>:` line inside the file.  We assert them individually so a
+    #      missing one names itself on FAIL.
+    if [ -f "$REPO_ROOT/$monitor" ]; then
+        local mkey
+        for mkey in \
+            task-id \
+            last-driver-iso \
+            driver-intent \
+            claude-started \
+            needs-user \
+            needs-user-window \
+            needs-attention \
+            attention-reason \
+            last-summary
+        do
+            check_grep "$monitor" "T1'' monitor.md frontmatter key '$mkey:'" \
+                "^${mkey}:"
+        done
+
+        # (1b) monitor.md body anchors: the three section headings the L2
+        #      driver writes under.
+        check_grep "$monitor" "T1'' monitor.md body anchor '# Driver State'" \
+            '^# Driver State([[:space:]]|$)'
+        check_grep "$monitor" "T1'' monitor.md body anchor '## Last Action'" \
+            '^## Last Action([[:space:]]|$)'
+        check_grep "$monitor" "T1'' monitor.md body anchor '## Notes'" \
+            '^## Notes([[:space:]]|$)'
+    fi
+
+    # (2) L2 driver subagent definition exists in BOTH the agents/ canonical
+    #     copy and the subagents/ legacy mirror (same dual layout as the
+    #     execute-task subagents).
+    local drv_agent="agents/orch-driver-agent.md"
+    local drv_sub="subagents/orch-driver-agent.md"
+    check_file_exists "$drv_agent"
+    check_file_exists "$drv_sub"
+
+    # (2a) The agents/ copy carries Claude Code subagent frontmatter:
+    #      `name: orch-driver-agent` and a `tools:` line that includes Bash
+    #      (the driver runs `tmux send-keys` / `tmux capture-pane`, so Bash is
+    #      load-bearing per design Constraint 3 + the ST-A contract).
+    if [ -f "$REPO_ROOT/$drv_agent" ]; then
+        check_grep "$drv_agent" "T1'' agents/ frontmatter 'name: orch-driver-agent'" \
+            '^name:[[:space:]]*orch-driver-agent[[:space:]]*$'
+        check_grep "$drv_agent" "T1'' agents/ frontmatter 'tools:' line includes Bash" \
+            '^tools:.*\bBash\b'
+    fi
+
+    # (2b) The subagents/ mirror is FRONTMATTER-FREE per the legacy convention
+    #      (subagents/implementation-agent.md et al start with a '# ' heading,
+    #      NOT a leading '---' YAML fence).  Assert the driver mirror matches:
+    #      its first non-empty line is a '# ' heading and it does NOT open with
+    #      '---'.  Cross-check against subagents/implementation-agent.md so the
+    #      convention itself is pinned, not just the new file.
+    local sub_first_drv sub_first_impl
+    if [ -f "$REPO_ROOT/$drv_sub" ]; then
+        sub_first_drv="$(grep -m1 -vE '^[[:space:]]*$' "$REPO_ROOT/$drv_sub" 2>/dev/null || true)"
+        case "$sub_first_drv" in
+            '---'|'---'[[:space:]]*)
+                fail "T1'' $drv_sub opens with a '---' YAML fence (legacy subagents/ mirror must be frontmatter-free, first line a '# ' heading)" ;;
+            '# '*)
+                pass "T1'' $drv_sub is frontmatter-free (starts with '# ' heading, no leading '---')" ;;
+            *)
+                fail "T1'' $drv_sub first non-empty line is not a '# ' heading (got: '$sub_first_drv')" ;;
+        esac
+    fi
+    # Pin the convention against the canonical legacy mirror.
+    if [ -f "$REPO_ROOT/subagents/implementation-agent.md" ]; then
+        sub_first_impl="$(grep -m1 -vE '^[[:space:]]*$' "$REPO_ROOT/subagents/implementation-agent.md" 2>/dev/null || true)"
+        case "$sub_first_impl" in
+            '# '*)
+                pass "T1'' subagents/implementation-agent.md is frontmatter-free (mirror convention reference)" ;;
+            *)
+                fail "T1'' subagents/implementation-agent.md unexpectedly not frontmatter-free (got: '$sub_first_impl'); mirror convention reference broken" ;;
+        esac
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -285,6 +376,52 @@ EOF
         else
             fail "T2(b) $af contains forbidden markdown outlink (F13):
 $(printf '%s\n' "$violators" | sed 's/^/      | /')"
+        fi
+    done
+
+    # (c) layered-architecture reference consistency: main-agent.md and SKILL.md
+    #     reference the new L2 driver agent (`orch-driver-agent`) and the new
+    #     driver-state template path (`templates/monitor.md`).  Assert that
+    #     EVERY referenced path actually exists on disk (the same posture as
+    #     T2(a)'s @CLAUDE_PLUGIN_ROOT resolution — a referenced artefact that
+    #     does not exist would break the L1 dispatch contract).  Per design
+    #     §Testing Plan ("T2 引用一致性: main-agent.md / SKILL.md 引用的新 driver
+    #     agent + 模板路径真实存在").
+    local main_md="skills/orchestration-scheduling-task/prompts/main-agent.md"
+    local skill_md="skills/orchestration-scheduling-task/SKILL.md"
+    # The driver agent is referenced by the bare name `orch-driver-agent`; it
+    # resolves to the canonical agents/ copy (mirrored in subagents/).
+    local driver_agent_path="agents/orch-driver-agent.md"
+    local driver_sub_path="subagents/orch-driver-agent.md"
+    local monitor_tpl_path="skills/orchestration-scheduling-task/templates/monitor.md"
+
+    local rc_file
+    for rc_file in "$main_md" "$skill_md"; do
+        if [ ! -f "$REPO_ROOT/$rc_file" ]; then
+            fail "T2(c) $rc_file missing (cannot verify driver-agent / monitor.md refs)"
+            continue
+        fi
+        # Must reference the driver agent by name.
+        if grep -qF "orch-driver-agent" "$REPO_ROOT/$rc_file"; then
+            pass "T2(c) $rc_file references 'orch-driver-agent'"
+        else
+            fail "T2(c) $rc_file does NOT reference 'orch-driver-agent'"
+        fi
+        # Must reference the monitor.md driver-state file.
+        if grep -qF "monitor.md" "$REPO_ROOT/$rc_file"; then
+            pass "T2(c) $rc_file references 'monitor.md'"
+        else
+            fail "T2(c) $rc_file does NOT reference 'monitor.md'"
+        fi
+    done
+
+    # And the referenced artefacts must actually exist on disk.
+    local rc_path
+    for rc_path in "$driver_agent_path" "$driver_sub_path" "$monitor_tpl_path"; do
+        if [ -e "$REPO_ROOT/$rc_path" ]; then
+            pass "T2(c) referenced path resolves: $rc_path"
+        else
+            fail "T2(c) referenced path does NOT resolve: $rc_path (driver-agent / monitor.md ref broken)"
         fi
     done
 }
@@ -537,9 +674,47 @@ run_T4() {
     # script must `command -v tmux git` at entry.  So we still expect 3.
     t4_missing_dep "scripts/orch-scan-tasks.sh" "/tmp/zyz-orch-t4-dummy-list"
 
-    # ---- orch-spawn-worker.sh : <task-id> <list-dir> [--auto-start] ----
+    # ---- orch-spawn-worker.sh : <task-id> <list-dir> (2 args; spawn no
+    #      longer has --auto-start — it only builds the container, and starting
+    #      claude is the exclusive job of the L2 orch-driver-agent) ----
     t4_no_args        "scripts/orch-spawn-worker.sh"
     t4_invalid_taskid "scripts/orch-spawn-worker.sh"
+
+    # ---- T4'' spawn no longer accepts --auto-start (layered-architecture
+    #      ST-C) -------------------------------------------------------------
+    # The layered redesign REMOVED spawn's --auto-start flag entirely: spawn
+    # now takes EXACTLY 2 args and starting claude is the exclusive job of the
+    # L2 orch-driver-agent.  A 3rd positional arg (the old `--auto-start`) must
+    # be rejected as an argument error (exit 2).  This fires BEFORE any heavy
+    # work (the `[ "$#" -ne 2 ]` guard is the first thing spawn checks), so it
+    # exits 2 regardless of fixture validity — no fixture needed.  We use a
+    # valid task-id charset for the first arg so the rejection is the arg-COUNT
+    # guard, not the task-id charset guard.
+    if [ -x "$REPO_ROOT/scripts/orch-spawn-worker.sh" ]; then
+        run_and_check_exit 2 \
+            "T4'' spawn with a 3rd arg '--auto-start' -> exit 2 (arg error; flag removed)" \
+            bash "$REPO_ROOT/scripts/orch-spawn-worker.sh" foo "/tmp/zyz-orch-t4-dummy-list" --auto-start
+        # The spawn usage/help string + its stdout contract must NOT mention
+        # auto-start anywhere (no stale `--auto-start` flag, no `auto-start=`
+        # stdout line).  Scan the whole script source for the substring.
+        check_grep_absent "scripts/orch-spawn-worker.sh" \
+            "T4'' spawn source has no 'auto-start' mention (flag fully removed)" \
+            "auto-start"
+        # The slash-command prose must ALSO not advertise the removed flag.
+        # An aggregate review found commands/orchestrate-tasks.md had been
+        # documenting a stale `--auto-start` flag long after spawn dropped it;
+        # the spawn-source absence check above never guarded the command file,
+        # so the stale reference survived a green suite.  Guard it here with the
+        # same helper + message style so it cannot regress.
+        check_grep_absent "commands/orchestrate-tasks.md" \
+            "T4'' command file has no 'auto-start' mention (flag fully removed)" \
+            "auto-start"
+    else
+        skip "T4'' spawn with a 3rd arg '--auto-start' -> exit 2 (spawn script missing or not executable)"
+        skip "T4'' spawn source has no 'auto-start' mention (spawn script missing)"
+        skip "T4'' command file has no 'auto-start' mention (spawn script missing)"
+    fi
+
     # Missing-dep for spawn-worker requires a valid list-dir + master entry +
     # valid source-repo, because stage C orchestration-source-repo §B
     # reordered the exit-code precedence:
@@ -1886,9 +2061,10 @@ run_T8() {
 
     # --- Init the fixture git repo (the source-repo for this task) -------
     # NOTE: source-repo points at the fixture repo, NOT the plugin repo.
-    # Because PLUGIN_ROOT derivation now runs on EVERY spawn (hoisted out of
-    # the auto-start block by ST1), a non-auto-start spawn whose source-repo
-    # is not the plugin repo emits
+    # PLUGIN_ROOT derivation runs on EVERY spawn (spawn no longer has an
+    # --auto-start block — it only builds the container; starting claude is the
+    # L2 orch-driver-agent's job).  A spawn whose source-repo is not the plugin
+    # repo therefore emits
     #   warn: PLUGIN_ROOT=... does not contain skills/execute-task
     # to STDERR.  That warn is EXPECTED and BENIGN here.  We capture stdout
     # and stderr SEPARATELY below so the warn never false-fails the test.
@@ -1933,7 +2109,7 @@ run_T8() {
         echo "T8 dispatch.md Phase-1 + archive lifecycle test."
     } >"$LIST_DIR/tasks/$TASK_ID.md"
 
-    # --- Invoke spawn WITHOUT --auto-start ------------------------------
+    # --- Invoke spawn (2 args; spawn no longer has --auto-start) ---------
     # We unset CLAUDE_PLUGIN_ROOT in the spawn subshell so plugin-root is
     # derived deterministically from $SCRIPT_DIR/.. == repo root, regardless
     # of the caller's environment.  Invoke from $TMPROOT (not a git repo) to
@@ -2728,6 +2904,57 @@ run_T7() {
             fail "T7' README.md mentions neither '多项目' nor 'multi-project'"
         fi
     fi
+
+    # ---- T7'' (orchestration-layered-architecture ST-F / ST-E) ----------
+    # The layered (L1/L2/L3) redesign adds load-bearing strings to SKILL.md
+    # (ST-F) and main-agent.md (ST-E).  Per design §Testing Plan ("T7 字符串:
+    # SKILL.md 含层级图关键串、三层职责、driver/monitor 字样、notify 签名扩展点、
+    # max-parallel -1 资源提醒").  These are positive literal anchors the
+    # grep-based suite pins so future edits cannot silently drop them.
+
+    # (A) SKILL.md load-bearing strings.
+    local skill_md="skills/orchestration-scheduling-task/SKILL.md"
+    check_grep "$skill_md" "T7'' SKILL.md '## Architecture' 3-layer section heading" \
+        '^## Architecture'
+    check_grep_fixed "$skill_md" "T7'' SKILL.md references 'orch-driver-agent' (L2 driver)" \
+        "orch-driver-agent"
+    check_grep_fixed "$skill_md" "T7'' SKILL.md mentions 'monitor' (driver-state / File Protocols row)" \
+        "monitor"
+    # max-parallel -1 unlimited + resource caveat wording.
+    check_grep_fixed "$skill_md" "T7'' SKILL.md 'ZYZ_MAX_PARALLEL_WORKERS' parallel cap" \
+        "ZYZ_MAX_PARALLEL_WORKERS"
+    check_grep_fixed "$skill_md" "T7'' SKILL.md default '-1' unlimited semantics" \
+        "-1"
+    check_grep_fixed "$skill_md" "T7'' SKILL.md 'unlimited' wording for the -1 default" \
+        "unlimited"
+    check_grep_fixed "$skill_md" "T7'' SKILL.md resource caveat (per-worker = full claude process)" \
+        "Resource caveat"
+    # notify structured signature (future-webhook extension point).
+    check_grep_fixed "$skill_md" "T7'' SKILL.md notify signature '(task-id, window, reason'" \
+        "(task-id, window, reason"
+
+    # (B) main-agent.md load-bearing strings.
+    local main_md="skills/orchestration-scheduling-task/prompts/main-agent.md"
+    check_grep_fixed "$main_md" "T7'' main-agent.md 'intent=first-dispatch'" \
+        "intent=first-dispatch"
+    check_grep_fixed "$main_md" "T7'' main-agent.md 'intent=intervene'" \
+        "intent=intervene"
+    check_grep "$main_md" "T7'' main-agent.md '### intervene' step heading" \
+        '^### intervene([[:space:]]|$)'
+    check_grep "$main_md" "T7'' main-agent.md '### throttle' step heading" \
+        '^### throttle([[:space:]]|$)'
+    check_grep "$main_md" "T7'' main-agent.md '### notify' step heading" \
+        '^### notify([[:space:]]|$)'
+    check_grep_fixed "$main_md" "T7'' main-agent.md 'default -1' parallel-cap default" \
+        "default -1"
+    # main-agent.md must NOT carry the removed auto-start env var, nor the stale
+    # "let the user attach to manually start claude" dispatch instruction
+    # (Finding 8: L2 starts claude now; ST-E deleted both).  We forbid the
+    # removed env var outright, and forbid the specific stale phrasing.
+    check_grep_absent "$main_md" "T7'' main-agent.md 'ZYZ_AUTO_START_WORKER' (removed env var)" \
+        "ZYZ_AUTO_START_WORKER"
+    check_grep_absent "$main_md" "T7'' main-agent.md stale 'manually start' claude instruction" \
+        "manually start"
 }
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,142 @@ Load this skill when the user wants any of the following:
 
 If the user only wants to run a single confirmed task, use the `execute-task` skill directly. If the user wants to schedule many tasks against a single master list, this skill is the entry point.
 
+## Architecture (3-layer)
+
+Orchestration is a **3-layer call hierarchy**. The split exists because interactively driving a worker's tmux pane (start `claude`, clear the startup confirmation pages, rescue a stuck worker) is token-heavy and noisy; pushing N parallel workers' pane driving into one context would pollute it and depress real parallelism. So that heavy work is isolated per worker, while cheap read-only polling stays inline.
+
+- **L1 — orchestration main agent** (user-facing; single; holds the `<list-dir>` flock). Orchestrates everything: scan, analyze dependencies, plan dispatch, gate merges, notify. Keeps a cheap **inline read-only poll** (`orch-check-worker.sh` — files + `pgrep`, never `capture-pane` / `send-keys`) for each worker's overall-state projection. **Never touches a pane.** Only the one heavy job — interactively driving a pane — is delegated, on demand, to L2.
+- **L2 — per-worker `orch-driver-agent` subagent** (short-lived; dispatched on demand, NOT every tick). Does the heavy pane work for exactly one worker: start `claude` in bypass mode, clear the trust-folder and bypass-risk confirmation pages, run `/execute-task`, or intervene when that one worker is stuck. It is the **only** layer that touches a pane interactively (`send-keys` / `capture-pane`). It observes overall state only (`worker-status.md` / `dispatch.md` upward projections), **never reads task internals**, writes **only** `monitor.md`, and returns one line to L1 before exiting.
+- **L3 — the tmux window + independent `claude` process running `/execute-task`** (the execution layer). It has its own main agent plus `implementation` / `test` / `review` subagents and runs design → implementation → testing → review → delivery inside its own git worktree. It is **invisible to L1/L2** and driven (not nested) by L2 through `tmux send-keys`.
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ L1  orchestration main agent  (user-facing · single · holds list-dir flock) │
+│                                                                              │
+│  does:      scan → analyze(deps) → plan(dispatch) →                          │
+│             poll(inline orch-check-worker.sh, read-only · no pane) →         │
+│             dispatch L2 on first-launch / stuck → project → gate →           │
+│             notify → report                                                  │
+│  can see:   master entries, worker-status.md(projection), dispatch.md,       │
+│             heartbeat, monitor.md, the one-line summary L2 returns           │
+│  touch pane? NO — L1 calls read-only scripts, never send-keys / capture-pane │
+│  cannot touch: L3 internals (design / subtask / impl / test / review /       │
+│                question.md body)                                             │
+│  with user: orchestration-level interaction + notify "task X needs you in    │
+│             window Y" (never relays the Q&A content)                         │
+└───────────────┬──────────────────────────────────────────────────────────────┘
+                │ on demand (NOT every tick): first launch OR stuck intervention,
+                │ dispatch a short-lived driver subagent
+                │ pass: task-id + list-dir + pane info (self-contained prompt); get back: one line
+                │ multiple workers' L2 dispatched in one batch (single message, multiple Agent calls)
+        ┌───────┴───────┬───────────────┬───────────────┐
+        ▼               ▼               ▼               ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐  ...(one per worker, on demand)
+│ L2  driver    │ │ L2  driver    │ │ L2  driver    │
+│ subagent      │ │ subagent      │ │ subagent      │
+│ (worker A)    │ │ (worker B)    │ │ (worker C)    │
+│ short-lived · │ │               │ │               │
+│ on-demand     │ │               │ │               │
+│ (heavy work   │ │               │ │               │
+│  only):       │ │               │ │               │
+│ · first-disp: │ │               │ │               │
+│   idempotent  │ │               │ │               │
+│   pre-launch  │ │               │ │               │
+│   check →     │ │               │ │               │
+│   send-keys   │ │               │ │               │
+│   start claude│ │               │ │               │
+│   (bypass; in │ │               │ │               │
+│   recorded    │ │               │ │               │
+│   pane, no    │ │               │ │               │
+│   reparent) + │ │               │ │               │
+│   clear conf. │ │               │ │               │
+│   pages +     │ │               │ │               │
+│   /execute-   │ │               │ │               │
+│   task        │ │               │ │               │
+│ · intervene:  │ │               │ │               │
+│   conservative│ │               │ │               │
+│   send-keys   │ │               │ │               │
+│   rescue      │ │               │ │               │
+│ · set needs-  │ │               │ │               │
+│   user (only  │ │               │ │               │
+│   waiting-    │ │               │ │               │
+│   user)       │ │               │ │               │
+│ · write       │ │               │ │               │
+│   monitor.md  │ │               │ │               │
+│ · return one  │ │               │ │               │
+│   line        │ │               │ │               │
+│ can see:      │ │               │ │               │
+│ worker-status/│ │               │ │               │
+│ dispatch      │ │               │ │               │
+│ (projection), │ │               │ │               │
+│ a pane glance │ │               │ │               │
+│ does NOT write│ │               │ │               │
+│ worker-status,│ │               │ │               │
+│ does NOT read │ │               │ │               │
+│ L3 internals  │ │               │ │               │
+└───────┬───────┘ └───────┬───────┘ └───────┬───────┘
+        │ tmux send-keys / capture-pane (out-of-process driving, NOT agent nesting)
+        ▼               ▼               ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│ L3  tmux win  │ │ L3  tmux win  │ │ L3  tmux win  │
+│ zyz-task-A    │ │ zyz-task-B    │ │ zyz-task-C    │
+│               │ │               │ │               │
+│ independent   │ │ independent   │ │ independent   │
+│ claude proc   │ │ claude proc   │ │ claude proc   │
+│ (bypass)      │ │               │ │               │
+│ runs          │ │               │ │               │
+│ /execute-task │ │               │ │               │
+│               │ │               │ │               │
+│ execute-task  │ │               │ │               │
+│ has its own:  │ │               │ │               │
+│  · main agent │ │               │ │               │
+│  · impl-agent │ │               │ │               │
+│  · test-agent │ │               │ │               │
+│  · review-agt │ │               │ │               │
+│               │ │               │ │               │
+│ works in its  │ │               │ │               │
+│ own git       │ │               │ │               │
+│ worktree ·    │ │               │ │               │
+│ invisible to  │ │               │ │               │
+│ upper layers  │ │               │ │               │
+└───────┬───────┘ └───────────────┘ └───────────────┘
+        │ when execute-task needs a user decision
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│ user  ── attach to tmux window ──> talks to L3's claude    │
+│         directly                                           │
+│                                                            │
+│  L1 only notifies "window Y needs you"; it never relays    │
+│  the Q&A content. After attaching, the user interacts with │
+│  L3 directly; the Q&A never passes through L1/L2.          │
+└───────────────────────────────────────────────────────────┘
+
+Communication media (all via files + return value; no cross-agent memory sharing;
+the user attaches to a pane directly):
+  L1 ←→ files(<list-dir>/...) ←→ L2   [L2 writes state files, L1 reads]
+  L1 ←  return value(one line) ←  L2   [L2 returns on exit]
+  L2 ←→ tmux(send-keys/capture) ←→ L3  [out-of-process driving]
+  L3 ←→ files(in worktree + worker-status.md)  [L3's own execution state]
+  user ←→ tmux attach ←→ L3            [Q&A, never through L1/L2]
+```
+
+### Responsibility boundary table
+
+| Layer | Can see | Cannot touch | Can write | With user |
+|---|---|---|---|---|
+| **L1 main agent** | master entries, `worker-status.md` (projection), `dispatch.md`, `heartbeat`, `monitor.md`, L2's one-line summary | L3 internals (design / subtask / impl / test / review), L3↔user Q&A body, a worker's raw pane content | master entries, `SUMMARY.md`, notifications | orchestration-level interaction + notify "window Y needs you" (never relays content) |
+| **L2 driver subagent** | the one worker it drives: its `worker-status.md`, `dispatch.md` (upward projection), and a `capture-pane` glance when needed | that worker's L3 internals (design / subtask / impl / test / review / `question.md` body), other workers, master-entry decisions | that worker's `monitor.md` (and `send-keys` into the recorded pane to intervene) | not user-facing; only records a "needs-user" marker into `monitor.md` |
+| **L3 execute-task** | everything in its own worktree, its own `worker-status.md` | other workers, the master list, the existence of L1/L2 | `worker-status.md`, `question.md`, code/docs in the worktree | direct Q&A with the user when attached |
+| **user** | everything (may attach to any window) | — | master entries, answers (typed directly into the pane) | orchestration-level + attach into a window for direct Q&A with L3 |
+
+### Key invariants
+
+- **Only L2 touches a pane interactively** (`send-keys` / `capture-pane`). L1 may call the read-only `orch-check-worker.sh` for a projection but never touches a pane; L3 is driven, not a peer.
+- **`worker-status.md` and `dispatch.md` are L3's upward projection** of overall state, not "internals" — L1 and L2 may both read them (they are the authoritative overall-state source).
+- **"Internal" means** L3's design doc, subtask status, implementation / test / review files, and the **body** of `question.md`. L1 and L2 never read these.
+- **L1/L2 never relay Q&A.** The execute-task phase confirmations and blocking decisions stay between L3 and the user. L1 only notifies "task X needs you in window Y"; the user attaches and answers L3 directly. The Q&A never passes through L1/L2.
+- **notify keys off the live poll wait-state, never off `monitor.md`.** L1 never writes `monitor.md`; a stale `needs-user=true` left there by an earlier L2 is harmless scratch state (re-derived from a fresh poll the next time an L2 is actually dispatched).
+
 ## Main Agent Loading
 
 When this skill is used, the current user-facing conversation agent is the orchestrator (main agent). First load and follow the full controller prompt from:
@@ -39,12 +175,13 @@ Load these files when needed:
 
 - Main agent controller prompt: `prompts/main-agent.md` (load first when the skill starts).
 
-There is no orchestration-scheduling-task subagent. The orchestrator dispatches `execute-task` workers, which in turn use the project subagents `implementation-agent`, `test-agent`, `review-agent`.
+The orchestration-scheduling-task skill has no main-agent subagent, but it does own one project-level subagent: the **L2 driver**, `agents/orch-driver-agent.md` (mirrored in `subagents/orch-driver-agent.md`, the same dual layout as the execute-task subagents). L1 dispatches it on demand to drive one worker's pane (see Architecture above). The orchestrator also dispatches `execute-task` workers, which in turn use the project subagents `implementation-agent`, `test-agent`, `review-agent`.
 
 Use these templates when creating master-list artifacts:
 
 - Master list task entry: `templates/master-list-task-entry.md`
 - Worker status: `templates/worker-status.md`
+- Driver state (L2-owned): `templates/monitor.md`
 - Async question/answer: `templates/question-answer.md`
 
 ## Core Rules
@@ -67,9 +204,9 @@ The orchestrator runs a loop. Each tick (manual invocation, auto-timer self-sche
 
 1. **scan** — `scripts/orch-scan-tasks.sh <list-dir>` lists every task entry, its declared `state`, and (for in-progress/paused tasks) the worker-reported phase + wait-state. Missing or illegal `state` values are treated as `not-analyzed`.
 2. **analyze** — For `not-analyzed` tasks, run dependency / project / merge-with analysis. Write tentative results into the master entry `## Orchestrator Analysis` section. **If `## Description` is empty, leave `state: not-analyzed` and write `needs Description` into the analysis section; do not dispatch.**
-3. **plan** — Decide which `ready` tasks to dispatch this tick (up to the configured max parallel workers). Move `blocked` tasks whose dependencies are now met to `ready`.
-4. **dispatch** — For each task selected to dispatch, call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` to create the worktree, tmux session, and in-pane heartbeat daemon. The default does **not** auto-start `claude`; the user attaches to the tmux session and starts `claude` + `/execute-task` manually unless `--auto-start` is used.
-5. **poll** — For each `in-progress` or `paused` task, call `scripts/orch-check-worker.sh <task-id> <list-dir>` and project worker state into the master entry. On `heartbeat-status=fresh`, update `last-seen`. On stale (heartbeat stale OR phase-since unchanged for 5 ticks), write the stale summary into `## Notes` and shorten the cadence; do not silently change the master entry `state`.
+3. **plan** — Decide which `ready` tasks to dispatch this tick. The parallel cap is `ZYZ_MAX_PARALLEL_WORKERS` (**default `-1` = unlimited**; set a positive integer to cap — at `-1` no cap is applied and every `ready` task is dispatchable). Move `blocked` tasks whose dependencies are now met to `ready`. **Resource caveat:** each worker = 1 tmux session + 1 git worktree + 1 full `claude` process (running the entire `execute-task` workflow including its own subagents) — far heavier than execute-task's prompt-only subagents. With no cap, watch API quota / memory / disk; set a positive cap to limit.
+4. **dispatch** — For each task selected to dispatch, the orchestrator works in two stages. First call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` to build the **container only**: the worktree, tmux session, in-pane heartbeat daemon, and `dispatch.md` Phase-1 fields. Spawn **never** starts `claude` (there is no `--auto-start`). Then **dispatch an L2 `orch-driver-agent` subagent with `intent=first-dispatch`** to do the heavy pane work — start `claude` in bypass mode, clear the confirmation pages, readiness-probe, and run `/execute-task`. When several new workers are dispatched at once, their L2 drivers are launched in one batch (single message, multiple `Agent` calls).
+5. **poll** — For each `in-progress` or `paused` task, the orchestrator **inline** calls `scripts/orch-check-worker.sh <task-id> <list-dir>` (read-only: files + `pgrep`, never touches a pane) and projects worker state into the master entry. This inline poll runs for **every** active worker every tick (including throttled ones) and is the sole detection point for "user answered, worker left `waiting-user`". L1 dispatches an L2 driver with `intent=intervene` **only** for a worker the poll shows stuck/abnormal (session dead but should be alive, heartbeat stale while `phase-since` is unchanged for several ticks, Unknown-command signs); healthy workers get **no** L2. On `heartbeat-status=fresh`, update `last-seen`. On stale, write the stale summary into `## Notes` and shorten the cadence; do not silently change the master entry `state`.
 6. **handle errors** — If a worker reports `phase=error`, set the master entry `state: blocked`, copy the worker's `## Last Output Summary` into the master entry `## Notes`, and shorten cadence.
 7. **gate** — For tasks whose `## Pending Merge Approval` section contains `approved`, call `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`.
 8. **report** — Write a short summary to the conversation window and (re)write `<list-dir>/SUMMARY.md` listing all tasks and their current view.
@@ -84,6 +221,7 @@ The orchestrator and workers communicate through a small set of files in `<list-
 |---|---|---|---|
 | master entry | `<list-dir>/tasks/<task-id>.md` | orchestrator + user | orchestrator + user |
 | worker status | `<list-dir>/runtime/<task-id>/worker-status.md` | worker (execute-task) | orchestrator |
+| monitor | `<list-dir>/runtime/<task-id>/monitor.md` | L2 orch-driver-agent | orchestrator (L1) |
 | dispatch | `<list-dir>/runtime/<task-id>/dispatch.md` | spawn (Phase-1) + check (Phase-2) | orchestrator + operator |
 | heartbeat | `<list-dir>/runtime/<task-id>/heartbeat` | in-pane heartbeat daemon | orchestrator |
 | question | `<list-dir>/runtime/<task-id>/question.md` | worker | user |
@@ -201,11 +339,11 @@ Map the observable state of a runtime directory to an interpretation as follows:
 
 | dispatch.md | Phase-2 state | session-alive | Interpretation |
 |---|---|---|---|
-| present | empty | alive | claude not yet started or not bound; expected for fresh non-auto-start workers |
+| present | empty | alive | claude not yet started or not bound; the normal first-launch transient for an L2-driven worker before L2 has started `claude` (spawn never starts `claude` — there is no `--auto-start`) |
 | present | empty | dead | worker died before binding (claude never got far) |
 | present | partial | alive/dead | claude registered but no LLM round-trip yet (most likely `/execute-task` was rejected and the user never typed anything) |
 | present | full | alive/dead | normal bound worker; recover via case 1 (alive) or case 2 (dead) |
-| absent | n/a | alive | spawn crashed mid-preflight (worker-status.md present); attend manually |
+| absent | n/a | alive | spawn crashed mid-preflight before the dispatch.md write (spawn writes only the INITIAL `worker-status.md` at its Step 6, so that file may still be present); attend manually |
 | absent | n/a | dead | pre-feature worker, no recovery info; treat per case 4 |
 
 **Scope note**: Auto-detecting these states and auto-setting the master entry to `state: error` is OUT OF SCOPE for this feature. This section is documentation-only guidance for a human operator — the orchestrator poll loop does NOT automatically detect or act on these crash states.
@@ -242,3 +380,7 @@ This skill is coupled to `execute-task`. If `execute-task` ever introduces a new
 - This SKILL.md and `prompts/main-agent.md` should mention the new phase explicitly.
 
 If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh`, the Phase-2 lazy fill in `scripts/orch-check-worker.sh`, the `## Crash Recovery` section above, and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
+
+If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state.
+
+The notify mechanism is deliberately a structured signature `(task-id, window, reason)` where `reason ∈ {needs-user, needs-attention, error}`. This version only prints to the conversation window and `SUMMARY.md`; that signature is the **future-webhook extension point** — a webhook / IM channel mounts there. There is intentionally no `orch-notify.sh` script (notify is L1's own conversation output); if a channel is added later, keep the signature fixed and wire the new channel behind it.

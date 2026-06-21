@@ -10,7 +10,8 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
 
 ## Role
 
-- You schedule. You do not execute. Each task is run by a separate `claude` process (worker) inside a dedicated tmux session, calling `/execute-task`.
+- You schedule. You do not execute. Each task is run by a separate `claude` process (worker, L3) inside a dedicated tmux session, calling `/execute-task`.
+- **You (L1) never touch a worker's pane.** Pure status polling is L1 inline and read-only (`orch-check-worker.sh` — files + `pgrep`, never `capture-pane` / `send-keys`). The one heavy job — interactively driving a pane (start `claude`, clear confirmation pages, rescue a stuck worker) — is delegated on demand to a short-lived L2 `orch-driver-agent` subagent. Only L2 ever does `send-keys` / `capture-pane`.
 - You aggregate state through files. Do not rely on conversation memory for anything that must survive a tick.
 - You report to the user every tick. You write `<list-dir>/SUMMARY.md` and a short conversation-window summary.
 - You do not proxy user↔worker Q&A. The user attaches to the worker's tmux pane (synchronous) or edits `<list-dir>/runtime/<task-id>/answer.md` (asynchronous).
@@ -18,7 +19,7 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
 ## Hard Limits
 
 - **Do not directly modify a worker's code, tests, or design document.** Workers run `execute-task` themselves.
-- **Do not enter a worker's tmux pane and answer on behalf of the user.** If the user is away, write a note in `<list-dir>/SUMMARY.md` saying which worker is waiting on the user; do not type into the pane.
+- **Do not enter a worker's tmux pane and answer on behalf of the user.** L1 never touches a pane at all — no `send-keys`, no `capture-pane`. If a worker is `waiting-user`, the **notify** step prints "task X needs you in window Y" and writes a `## Needs User` note in `<list-dir>/SUMMARY.md`; the user attaches and answers L3 directly. (Interactive pane driving — only ever for first launch or stuck-worker rescue — is delegated to the L2 `orch-driver-agent`, never used to answer for the user.)
 - **Do not merge or cleanup worktree without explicit approval.** `## Pending Merge Approval` must contain `approved` before `scripts/orch-merge-and-cleanup.sh` is invoked. Stale-worker cleanup requires `cleanup-approved`.
 - **Do not run two orchestrator instances against the same `<list-dir>`.** Acquire `<list-dir>/.orchestrator.lock` via `flock` at startup. If locked, exit immediately.
 - **Do not rewrite the master entry `state:` field for stale workers.** Stale is surfaced through the `## Notes` body section and the `last-seen` frontmatter field. The master entry `state:` is rewritten only on real transitions (ready / blocked / in-progress / paused / completed).
@@ -34,8 +35,7 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
 - Optional environment variables:
   - `ZYZ_HEARTBEAT_STALE_SEC` (default 300)
   - `ZYZ_HEARTBEAT_WAITING_USER_SEC` (default 900)
-  - `ZYZ_MAX_PARALLEL_WORKERS` (default 3)
-  - `ZYZ_AUTO_START_WORKER=1` to enable `--auto-start` in spawn.
+  - `ZYZ_MAX_PARALLEL_WORKERS` (default -1 = unlimited; set a positive integer to cap). **Resource caveat:** each worker = 1 tmux session + 1 git worktree + 1 full `claude` process (running the entire `execute-task` workflow including its own subagents) — far heavier than a prompt-only subagent. With no cap, watch API quota / memory / disk. Set a positive cap to limit.
   - `ZYZ_ORCH_ONCE=1` — when set, the orchestrator runs a single tick and returns without self-scheduling, even under `/loop`; unset (default) means a bare `/orchestrate-tasks` enters auto-timer mode and self-schedules via `ScheduleWakeup`.
 
 ## Startup
@@ -73,45 +73,74 @@ For each `not-analyzed` task whose master entry has missing `source-repo:`, or `
 
 ### plan
 
-- Count currently `in-progress` + `paused` tasks. Compare to `ZYZ_MAX_PARALLEL_WORKERS` (default 3). The cap **counts paused as occupying a slot** because the worker's tmux session is still live.
 - Walk `blocked` tasks: if all their `blocked-by` references are `completed`, move them to `ready`.
-- Walk `ready` tasks in priority order (`high > normal > low`, then created-at ascending). Pick up to `cap - currentInFlight` for dispatch.
+- Apply the parallel cap from `ZYZ_MAX_PARALLEL_WORKERS`:
+  - **`-1` (default, unlimited):** do **not** cap. Dispatch every `ready` task this tick. When several new workers are dispatched at once, their L2 drivers are launched in parallel (one message, multiple `Agent` calls) — the same dependency-graph parallel discipline as execute-task SKILL.md §3.0.2 (schedule by the dependency graph, not list order).
+  - **Positive integer:** cap as before. Count currently `in-progress` + `paused` tasks as `currentInFlight`. The cap **counts `paused` as occupying a slot** because the worker's tmux session is still live. Walk `ready` tasks in priority order (`high > normal > low`, then created-at ascending) and pick up to `cap - currentInFlight` for dispatch.
 
 ### dispatch
 
+For each task selected, dispatch happens in two stages: **spawn the container** (build worktree + tmux + heartbeat), then **dispatch an L2 driver** to start `claude` + `/execute-task`. Spawn never starts `claude`; only the L2 driver does.
+
 For each task selected:
 
-- Call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` (no `--auto-start` by default).
+- Call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` (2 args; there is no `--auto-start` — spawn only builds the container: worktree + tmux session + in-pane heartbeat daemon + `dispatch.md` Phase-1 fields. It **never** starts `claude`).
 - On exit code 0:
   - Set master entry `state: in-progress`.
   - Capture the printed `session-name=…` and `worktree=…` and reflect them in the master entry frontmatter if they differ (they should match).
-  - If `auto-start=false` (default), append a one-line instruction to the master entry `## Notes`: `attach with: tmux attach -t <session-name>; then start: claude --plugin-dir <plugin-root>; then run: /execute-task <task summary>`.
+  - Read the worker's `dispatch.md` (`<list-dir>/runtime/<task-id>/dispatch.md`) for the Phase-1 fields needed to drive the pane: `tmux-pane-id`, `shell-pid`, `worktree`, `plugin-root`. The tmux session name is `zyz-task-<task-id>`.
+  - **Dispatch an L2 `orch-driver-agent` subagent with `intent=first-dispatch`** to start `claude` + `/execute-task`. The dispatch prompt is self-contained (no shared memory with L1): pass `task-id`, `list-dir`, tmux session name (`zyz-task-<task-id>`), `tmux-pane-id`, `shell-pid`, `worktree`, `plugin-root`, and `intent=first-dispatch`. The L2 driver does the heavy pane work (start `claude --permission-mode bypassPermissions --dangerously-skip-permissions`, clear the trust-folder and bypass-risk confirmation pages, readiness-probe, send `/execute-task`, Unknown-command check) and writes its conclusion to `monitor.md`.
+  - **Multiple new workers → dispatch their L2s in one parallel batch** (one message, multiple `Agent` calls; same dependency-graph parallel discipline as execute-task SKILL.md §3.0.2). L1 collects each L2's one-line return summary — not raw pane content.
 - On non-zero exit:
   - Set `state: blocked`. Write the script exit code + stderr summary into `## Notes`.
-  - Cadence drops to 180 s (stale branch).
+  - Do not dispatch an L2 (there is no container to drive). Cadence drops to 180 s (stale branch).
 
-### poll
+### poll (L1 inline, read-only)
 
-For each `in-progress` or `paused` task:
+This step is **L1 inline and unconditional** — it never dispatches an L2 and never touches a pane. For **every** `in-progress` or `paused` task (**including any worker throttled in the throttle step below** — throttle only suppresses L2 dispatch, never this read-only poll):
 
-- Call `scripts/orch-check-worker.sh <task-id> <list-dir>`. Parse `session-alive`, `heartbeat-status`, `heartbeat-mtime`, `phase`, `phase-since`, `wait-state`, `waiting-reason`, `expected-resume-by`.
+- L1 itself calls `scripts/orch-check-worker.sh <task-id> <list-dir>`. This is read-only files + `pgrep` only (it never does `capture-pane` / `send-keys` — only L2 drives the pane). Parse `session-alive`, `heartbeat-status`, `heartbeat-mtime`, `phase`, `phase-since`, `wait-state`, `waiting-reason`, `expected-resume-by`, `dispatch-bound`.
+- **This inline poll is the sole detection point for "user answered, worker left `waiting-user`".** When the user answers in the pane, L3 writes `worker-status.md` `wait-state=none`; the next poll sees it. No L2 is needed for that transition.
 - If `session-alive=false`: write a stale summary to `## Notes`; do not rewrite `state:`. Mark this tick as having a stale worker.
 - If `heartbeat-status=fresh`: update master entry `last-seen: <now>`.
 - If `heartbeat-status=stale` (mtime > 3× threshold): write a stale summary to `## Notes`; do not rewrite `state:`. Mark this tick as having a stale worker.
 - If `heartbeat-status=suspect`: do not mark stale yet; next tick decides.
 - If the worker's `phase-since` has not changed for 5 consecutive ticks: treat as soft-stale. Write a "phase-since unchanged for 5 ticks" note. Mark this tick as having a stale worker.
-- Project worker state into master entry `state:`:
+- Project worker state into master entry `state:` (see also **project** below; this is the same projection):
   - `phase=done` → keep `state: in-progress` until user approves merge in `## Pending Merge Approval`. Add the approval section if not already present.
   - `phase=error` → see **handle errors** below.
   - `wait-state != none` → `state: paused`.
   - `wait-state = none` → `state: in-progress`.
 
+### intervene (on-demand L2)
+
+Based on the poll results, decide whether any worker needs an L2 driver to drive its pane. **Healthy workers get NO L2** — pure observation is already done by the inline poll above.
+
+- If a worker looks stuck or abnormal — `session-alive=false` when it should be alive, `heartbeat-status=stale` AND `phase-since` unchanged for multiple ticks, or Unknown-command signs surfaced from `monitor.md` — **dispatch an L2 `orch-driver-agent` subagent with `intent=intervene`** to drive that one pane. The dispatch prompt is self-contained, same fields as the first-dispatch case (`task-id`, `list-dir`, `zyz-task-<task-id>`, `tmux-pane-id`, `shell-pid`, `worktree`, `plugin-root`, `intent=intervene`); the pane fields come from that worker's `dispatch.md`.
+- Multiple workers needing intervention → dispatch their L2s in one parallel batch. L1 collects each L2's one-line return summary, never raw pane content.
+
+### throttle
+
+For a worker whose **this-tick** poll still reports `wait-state=waiting-user`: **skip L2 dispatch this tick** (the state hasn't moved, so there is nothing for an L2 to do). The throttle **only** suppresses L2 dispatch (first-dispatch / intervene) — the inline poll in the **poll** step still runs for that worker every tick, so the moment `wait-state` flips to `none` (the user answered), the next poll detects it and the throttle auto-releases. This is the biggest cost lever and is aligned with the widened `waiting-user` cadence branch.
+
+### project
+
+L1 projects each worker's **overall state** into its master entry. Writing the master entry is L1's job, but it uses only overall-state fields — it never reads L3 internals.
+
+- Use the live poll result (the `state:` projection already described in the **poll** step: `phase=done` / `phase=error` / `wait-state` → `state:`).
+- Also read that worker's `monitor.md` (`<list-dir>/runtime/<task-id>/monitor.md`, L2-owned) for the L2-level overall flags: `claude-started`, `needs-user`, `needs-attention`, `attention-reason`, `last-summary`. Reflect `needs-attention` into the **handle errors** step below. Do **not** read any L3 internals; `monitor.md` carries overall driver state only.
+- L1 **never writes** `monitor.md` (L2-owned) and never writes `worker-status.md` (L3-owned). It only reads both.
+
 ### handle errors
 
-- For any worker reporting `phase=error`:
+- For any worker reporting `phase=error` (from the poll):
   - Set master entry `state: blocked`.
   - Read the worker's `## Last Output Summary` (from `worker-status.md` body) and copy it under a `## Notes` subheading `### Error at <iso>` in the master entry.
   - Set `deps-tentative: true` so the user re-evaluates.
+  - Mark this tick as needing user attention; cadence drops to 180 s.
+- For any worker whose `monitor.md` reports `needs-attention=true` (e.g. an L2 reported `/execute-task` rejected as an Unknown command):
+  - Set master entry `state: blocked`.
+  - Copy the `attention-reason` from `monitor.md` under a `## Notes` subheading `### Attention at <iso>` in the master entry. Take only the overall `attention-reason` string — do **not** read any L3 internals.
   - Mark this tick as needing user attention; cadence drops to 180 s.
 
 ### gate
@@ -128,9 +157,20 @@ For each task whose `## Pending Merge Approval` section contains `rejected: <rea
 
 For stale-worker cleanup: only invoke `scripts/orch-cleanup-worker.sh <task-id> <list-dir> --force` if the user wrote `cleanup-approved` into the master entry `## Notes`. Default behavior is dry-run / no action.
 
+### notify
+
+Notify the user about workers that need them. **The notify decision keys off the live inline-poll `wait-state` from this tick's poll, NOT off `monitor.md`'s possibly-stale `needs-user` flag.** (L1 never writes `monitor.md`; a stale `needs-user=true` left there by an earlier L2 after the user already answered is harmless — it is only L2's scratch record, re-derived from a fresh poll the next time an L2 is actually dispatched.)
+
+- For each worker whose **this-tick poll** reports `wait-state=waiting-user`:
+  - Print to the conversation window: `task <task-id> needs you in tmux window <window> — attach: tmux attach -t <window>`. The window name `<window>` comes from `dispatch.md` / the master entry `tmux-session` (i.e. `zyz-task-<task-id>`), **not** from `monitor.md`.
+  - Write a `## Needs User` section into `SUMMARY.md` listing each such task-id + window.
+  - **NEVER relay the question content.** Only surface "task X needs you in window Y". The user attaches to the pane and answers L3 directly; the Q&A never passes through L1/L2.
+- Once a worker's poll reports `wait-state=none`, stop notifying for it (the throttle auto-releases; any stale `monitor.md` `needs-user` is ignored — L1 keyed off the live poll, not the file).
+- **Extension point (future webhook):** notify has a structured signature `(task-id, window, reason)` where `reason ∈ {needs-user, needs-attention, error}`. This version only prints to the conversation window + `SUMMARY.md`; a future webhook / IM channel mounts at this signature (see SKILL.md). Do not add an `orch-notify.sh` script — notify is L1's own conversation output.
+
 ### report
 
-- Write `<list-dir>/SUMMARY.md`. One section per task: `state`, `phase`, `wait-state`, `heartbeat`, `last-seen`. Plus a `## This Tick` block (analyzed N, dispatched N, cleaned-up N, pending-approval N) and a `## Next Tick` block (cadence branch chosen + delaySeconds + one-line reason).
+- Write `<list-dir>/SUMMARY.md`. One section per task: `state`, `phase`, `wait-state`, `heartbeat`, `last-seen`, plus the L2-level `needs-user` / `needs-attention` markers (from the live poll + `monitor.md`). Plus a `## This Tick` block (analyzed N, dispatched N, cleaned-up N, pending-approval N) and a `## Next Tick` block (cadence branch chosen + delaySeconds + one-line reason). The `## Needs User` section written by **notify** also lives here.
 - Emit a short summary to the conversation window — 5-10 lines. Use the same data as SUMMARY.md.
 
 ## Cadence Policy
@@ -216,8 +256,8 @@ This tick:
   - Cleaned up: <N>
 
 Pending user action:
-  - <task-id>: <reason — e.g., needs Description / approve merge / answer question.md / fix conflict>
-
+  - <task-id>: <reason — e.g., needs Description / approve merge / attach to window zyz-task-<task-id> to answer / fix conflict>
+  - (waiting-user workers come from this tick's live poll; see the Needs User section in SUMMARY.md — never relay the question content)
 Next tick:
   - branch="<branch>", delaySeconds=<N>
   - reason: <one-line>
@@ -242,6 +282,10 @@ When the orchestrator restarts (new conversation, after `Ctrl-C`, after a crash)
 1. Reacquire `<list-dir>/.orchestrator.lock`. If somebody else holds it, refuse.
 2. Re-scan. Every fact comes from disk; no recovery of in-memory tick counters is needed.
 3. The "phase-since unchanged for 5 ticks" counter is implicit: on restart, compare `phase-since` against the previous `last-seen` in the master entry to estimate elapsed inactivity. If unclear, treat the worker as suspect for one tick.
-4. Resume the loop.
+4. **L1-restart intent derivation (do not double-launch `claude`).** For each active worker, decide whether it still needs an `intent=first-dispatch` L2 or only inline observation. `claude` must be launched exactly once across restarts, so:
+   - If that worker's `monitor.md` reports `claude-started=true` **OR** `orch-check-worker.sh` reports `dispatch-bound` non-empty (either signal means `claude` already started) → do **NOT** dispatch `first-dispatch`. Only inline-observe via poll; dispatch `intent=intervene` only if the poll shows it stuck.
+   - Else (no evidence `claude` ever started) → dispatch `intent=first-dispatch` to launch it.
+   This prevents re-launching `claude` on a worker that is already running after an L1 crash/restart. (The L2 driver's own pre-launch `capture-pane` check is a second, real-time safety net for the same invariant.)
+5. Resume the loop.
 
 The skill explicitly relies on file-only state. There is no persistent orchestrator-side state file (the master entries and `SUMMARY.md` are the persistent state).
