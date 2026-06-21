@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.6.1] — 2026-06-21
+
+### Fixed
+- **dispatch.md transcript binding now works for worktree paths containing a
+  `.`** (including the default `~/.zyz-worker/worktrees/...`). The orchestrator
+  computed `encoded-cwd` as `/`→`-` only, but Claude Code names its
+  `~/.claude/projects/<dir>` by replacing BOTH `/` and `.` with `-` and
+  squeezing consecutive `-`. So the check helper looked in the wrong directory,
+  never found the transcript, `dispatch-bound` stayed `false` forever, and crash
+  recovery was degraded. `orch-check-worker.sh` now discovers the transcript by
+  its session-id (a globally-unique UUID) via `find ~/.claude/projects -name
+  "<sid>.jsonl"`, which is robust regardless of claude's path-encoding rule. The
+  `encoded-cwd` computation in `orch-spawn-worker.sh` is also corrected to match
+  claude's actual rule so the recorded field (used for diagnostics and the
+  recovery command) is accurate. Found during real-claude e2e acceptance of
+  0.6.0.
+- **`scripts/test-e2e-layered.sh`**: the readiness probe misread the
+  bypass-permissions confirmation page's `❯ 1. No, exit` menu arrow as a ready
+  prompt, so the page was never cleared and claude stayed stuck; a confirmation
+  page is now never treated as "ready". The RESULT line also printed a wrong
+  fixed denominator and now prints `N passed, M failed`.
+
 ## [0.6.0] — 2026-06-21
 
 ### Added
