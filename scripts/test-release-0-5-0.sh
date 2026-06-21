@@ -46,7 +46,10 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
-EXPECTED_VERSION="0.5.2"
+EXPECTED_VERSION="0.6.0"
+# Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
+# patterns. Derived so a version bump only requires editing EXPECTED_VERSION above.
+EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -161,11 +164,13 @@ run_T1() {
 # ---------------------------------------------------------------------------
 # T2.  Version consistency across 3 manifests
 #
-#  - .claude-plugin/plugin.json    : exactly one '"version"' line == "0.5.2"
-#  - .claude-plugin/marketplace.json: exactly one '"version"' line == "0.5.2"
+# All three must agree with the single source of truth, $EXPECTED_VERSION
+# (defined near the top of this script — a version bump only edits that line):
+#  - .claude-plugin/plugin.json    : exactly one '"version"' line == $EXPECTED_VERSION
+#  - .claude-plugin/marketplace.json: exactly one '"version"' line == $EXPECTED_VERSION
 #       (no top-level version field; only plugins[0].version)
 #  - .codex-plugin/plugin.json     : exactly one '"version"' line matching
-#       "0.5.2+codex.<14 digits>"
+#       "$EXPECTED_VERSION+codex.<14 digits>"
 # ---------------------------------------------------------------------------
 run_T2() {
     say_header "T2  Version consistency across 3 manifests"
@@ -186,11 +191,11 @@ run_T2() {
             fail "T2 .claude-plugin/plugin.json has $count '\"version\"' lines, expected 1.  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            # Exact match against "version": "0.5.2"
-            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.2"'; then
-                pass "T2 .claude-plugin/plugin.json has exactly one \"version\": \"0.5.2\" line"
+            # Exact match against "version": "$EXPECTED_VERSION"
+            if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\""; then
+                pass "T2 .claude-plugin/plugin.json has exactly one \"version\": \"$EXPECTED_VERSION\" line"
             else
-                fail "T2 .claude-plugin/plugin.json '\"version\"' line is not \"0.5.2\".  Line:
+                fail "T2 .claude-plugin/plugin.json '\"version\"' line is not \"$EXPECTED_VERSION\".  Line:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fi
         fi
@@ -213,10 +218,10 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fail "T2 .claude-plugin/marketplace.json has $count '\"version\"' lines, expected exactly 1 (no top-level version field).  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.2"'; then
-                pass "T2 .claude-plugin/marketplace.json has exactly one \"version\": \"0.5.2\" line (plugins[0].version, no top-level version)"
+            if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\""; then
+                pass "T2 .claude-plugin/marketplace.json has exactly one \"version\": \"$EXPECTED_VERSION\" line (plugins[0].version, no top-level version)"
             else
-                fail "T2 .claude-plugin/marketplace.json '\"version\"' line is not \"0.5.2\".  Line:
+                fail "T2 .claude-plugin/marketplace.json '\"version\"' line is not \"$EXPECTED_VERSION\".  Line:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fi
         fi
@@ -238,11 +243,11 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fail "T2 .codex-plugin/plugin.json has $count '\"version\"' lines, expected 1.  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            # Match "0.5.2+codex.<14 digits>"
-            if printf '%s\n' "$hits" | grep -qE '"version"[[:space:]]*:[[:space:]]*"0\.5\.2\+codex\.[0-9]{14}"'; then
-                pass "T2 .codex-plugin/plugin.json '\"version\"' matches \"0.5.2+codex.<14 digits>\""
+            # Match "$EXPECTED_VERSION+codex.<14 digits>"
+            if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\\+codex\\.[0-9]{14}\""; then
+                pass "T2 .codex-plugin/plugin.json '\"version\"' matches \"$EXPECTED_VERSION+codex.<14 digits>\""
             else
-                fail "T2 .codex-plugin/plugin.json '\"version\"' does NOT match \"0.5.2+codex.<14 digits>\".  Line:
+                fail "T2 .codex-plugin/plugin.json '\"version\"' does NOT match \"$EXPECTED_VERSION+codex.<14 digits>\".  Line:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fi
         fi
@@ -355,7 +360,7 @@ run_T4() {
             "stdout contains dist= line" \
             "stdout contains size= line" \
             "stdout contains version= line" \
-            "dist/zyz-worker-0.5.2.zip exists" \
+            "dist/zyz-worker-${EXPECTED_VERSION}.zip exists" \
             "unzip -l succeeds (zip valid)" \
             "zip contains CHANGELOG.md" \
             "zip contains README.md" \

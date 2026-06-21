@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.6.0] — 2026-06-21
+
+### Added
+- **Per-task `dispatch.md` crash-recovery state file.** Each worker now records
+  the binding between its tmux session/pane and its claude session-id +
+  transcript path, so a worker (or its transcript) can be recovered after the
+  tmux session, claude process, or orchestrator dies. `orch-spawn-worker.sh`
+  writes Phase-1 (deterministic) fields; `orch-check-worker.sh` lazily fills
+  Phase-2 (claude-side) fields and regenerates a `## Recovery` block with
+  concrete `tmux attach` / `claude --resume … --plugin-dir …` commands once the
+  worker has bound. A `## Crash Recovery` section in the orchestration SKILL
+  documents the recovery flow and the underlying Claude Code session-file
+  timing.
+- **3-layer orchestration architecture.** The orchestration-scheduling-task
+  skill is now an explicit L1 / L2 / L3 hierarchy: L1 (main agent) orchestrates
+  and polls worker state inline (read-only, never touches a pane); a new L2
+  `orch-driver-agent` subagent is dispatched on demand to do the heavy pane
+  driving for one worker (start claude in bypass mode, clear the confirmation
+  pages, run `/execute-task`, or intervene when stuck) and writes only
+  `monitor.md`; L3 is the tmux + independent claude running `/execute-task`,
+  invisible to the upper layers. User Q&A is never relayed upward — L1 only
+  notifies "task X needs you in window Y" and the user attaches directly. The
+  SKILL ships a hierarchy diagram and a responsibility-boundary table.
+- **`scripts/test-e2e-layered.sh`** — a cross-platform (Linux + macOS) real-claude
+  acceptance script that verifies the layered architecture end-to-end: spawn is
+  container-only, the parent-shell invariant holds, first-launch is exactly-once
+  idempotent, and dispatch-bound binds after the first LLM round-trip.
+
+### Changed
+- **execute-task schedules by the dependency graph, not list order.** The main
+  agent now maximizes parallelism at every dispatch point: independent SubTasks
+  (and any fan-out of reviews/research) that share a single upstream are
+  dispatched together once that upstream is done, instead of being serialized by
+  their list numbering. Documented as a standing discipline in the SKILL and the
+  controller prompt.
+- **`ZYZ_MAX_PARALLEL_WORKERS` defaults to `-1` (unlimited).** Set a positive
+  integer to cap. Each worker is a full tmux + worktree + claude process, so a
+  resource caveat is documented; the cap still counts paused workers as
+  occupying a slot.
+- Renamed the status-file `## Code Review` section (and the review-agent's
+  `## Code And Test Review Standard`) to **Implementation Review**, aligning the
+  term with what the phase actually reviews and with the sibling `## Design
+  Review` / `## Final Aggregate Review` sections.
+
+### Removed
+- **`orch-spawn-worker.sh --auto-start` is removed entirely** (and the
+  `ZYZ_AUTO_START_WORKER` env var). It was a defective half-baked launcher: its
+  blind `send-keys` did not handle the trust-folder / bypass-risk confirmation
+  pages, and its readiness probe was fooled by the confirmation-page menu arrow
+  — the root cause of prior first-launch races. Spawn is now container-only and
+  never starts claude; the L2 `orch-driver-agent` is the sole launcher and
+  handles the confirmation pages and readiness correctly. **Breaking:** any
+  caller passing `--auto-start` (a 3rd argument) now gets an argument error
+  (exit 2).
+
 ## [0.5.2] — 2026-06-20
 
 ### Added
