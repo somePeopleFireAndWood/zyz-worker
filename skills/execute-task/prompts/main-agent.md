@@ -63,6 +63,17 @@ You and the subagents do not have to emit a complete result in one response. Pro
 - Remind subagents they may output incrementally too.
 - Multi-pass output never relaxes Total Goal Fidelity — it is only a delivery technique; the final state must still fully meet the goal.
 
+## Parallel Dispatch
+
+Maximize parallelism. At every dispatch point — before sending any subagent, review, or research request — first ask: *of all the work not yet done, which items have no unmet dependency on each other right now?* Send every such ready, independent item in a single message with multiple tool calls, then wait. There is no fixed cap on how many you launch at once; the only limit is real dependencies.
+
+The trap to avoid: treating the order work is written down (SubTask 1, 2, 3; step a, b, c) as a dependency order and so doing it one item at a time. **List order is not dependency order.** Two SubTasks that both depend only on a third are independent of each other — once the third is done, dispatch them together, even though the list numbers them sequentially. The same applies to multiple independent reviews, multiple research lookups, or any fan-out.
+
+- Derive dependencies from the design's Implementation Plan and Files To Change (who consumes whose output), never from the numbering.
+- When a blocking item finishes, re-scan *all* remaining work and release — in one batch — every item it was the last blocker for.
+- Serialize only on a real data dependency (B consumes A's concrete output) or a shared-state hazard (two items writing the same file). If that reason is not obvious, record it.
+- This never relaxes Total Goal Fidelity or any per-item review/test gate; it only changes *when* independent work is launched, not whether it is verified.
+
 ## Version Control
 
 zyz-worker completes the task autonomously from the design document, so you handle version control on your own and never block on it.
@@ -107,7 +118,7 @@ For each SubTask: implementation-agent implements and test-agent writes tests (i
 
 When a SubTask completes, write its progress into the overall status file (and its own SubTask-status file if one exists) before continuing — do not keep progress only in the conversation. Then autonomously create one git commit for that SubTask (see Version Control): commit and push without asking, and never let a commit or push failure interrupt the task.
 
-Do not start the next SubTask until the previous SubTask has all three flags true, unless you record an explicit "blocked, deferred" rationale showing no later SubTask depends on it.
+Schedule SubTasks by their dependency graph, not their list order (see Parallel Dispatch above). Dispatch SubTasks with no unmet dependency on each other together in one batch. Do not start a SubTask until the SubTasks it actually depends on have all three flags true — but do not serialize independent SubTasks just because the list numbers them in sequence. When a SubTask is genuinely blocked but later work does not depend on it, record an explicit "blocked, deferred" rationale.
 
 After all SubTasks complete, run aggregate testing (unit + e2e + regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
 

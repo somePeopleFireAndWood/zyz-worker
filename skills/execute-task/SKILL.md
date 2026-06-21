@@ -164,6 +164,19 @@ Not splitting is also valid for simple tasks.
 
 In most cases implementation-agent and test-agent can work at the same time: both derive their work from the approved design document, so test-agent does not need to wait for the implementation to exist before writing tests. Dispatch them together (in a single batch) unless the design makes the tests depend on a concrete implementation detail that is not yet settled. Their outputs still converge at the test-run step (implementation-agent runs tests after both finish).
 
+#### 3.0.2 Maximize parallelism: schedule by the dependency graph, not the list order
+
+This is a general scheduling discipline, not limited to the implementation/test pair. At every dispatch point — before sending any subagent, review, or research request — the main agent must first ask: *of all the work that is not yet done, which items have no unmet dependency on each other right now?* Send every such ready, independent item in a single batch (one message with multiple tool calls), then wait.
+
+The common failure this prevents: treating the order things are written down (SubTask 1, 2, 3; step a, b, c) as if it were a dependency order, and so doing them one at a time. List order is not dependency order. Two SubTasks that both depend only on a third are independent of *each other* and must be dispatched together once that third is done — even though the list shows them sequentially. The same holds for multiple independent reviews, multiple research lookups, or any fan-out of work.
+
+Concretely:
+
+- Derive dependencies from the design's Implementation Plan and Files To Change (who reads/writes whose output), never from the numbering.
+- When a blocking item completes, re-scan *all* remaining work and release every item it was the last blocker for — in one batch, not one at a time.
+- Run items sequentially only when there is a real data dependency (item B consumes item A's concrete output) or a shared-state hazard (two items writing the same file). Record that reason if it is not obvious.
+- Parallelism is a scheduling technique only; it never relaxes Total Goal Fidelity, the per-item review/test gates, or the dependency correctness below.
+
 #### 3.A No-split path
 
 When the task is not split, run a single iteration:
@@ -197,7 +210,7 @@ Do not start SubTask N+1 until SubTask N has all three flags true, unless the ma
 - a written rationale showing no later SubTask has a static dependency on SubTask N's code path (per the design's Implementation Plan and Files To Change);
 - an entry added to `## Progress > Blocked` and the SubTask's `Notes`.
 
-SubTasks default to sequential execution. Parallel SubTask execution is allowed only when the main agent records explicit no-dependency rationale in `## SubTasks > Notes`.
+SubTasks are scheduled by their dependency graph, not by their list order (see §3.0.2). Dispatch independent SubTasks — those with no unmet dependency on each other — together in one batch. The dependency-correctness rule above still holds for each chain: do not start a SubTask until the SubTasks it actually depends on have all three flags true. So in a typical fan-out where ST2 and ST3 both depend only on ST1, run ST1 first, then dispatch ST2 and ST3 in parallel once ST1 is done — do not serialize ST2 then ST3 just because the list numbers them in order. Record a real data dependency or shared-file hazard in `## SubTasks > Notes` when it forces two SubTasks to run sequentially.
 
 #### 3.C Aggregate testing and aggregate review
 
