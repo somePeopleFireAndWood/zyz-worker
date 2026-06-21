@@ -686,38 +686,45 @@ $(printf '%s\n' "$b_err" | sed 's/^/      | /')"
 run_T6() {
     say_header "T6  git tag verification"
 
+    # Tag and annotation track the single source of truth $EXPECTED_VERSION,
+    # so a version bump only needs the EXPECTED_VERSION edit at the top — not
+    # a second edit here. Expected tag = "v$EXPECTED_VERSION"; expected
+    # annotation body contains "zyz-worker $EXPECTED_VERSION".
+    local tag="v$EXPECTED_VERSION"
+    local annotation="zyz-worker $EXPECTED_VERSION"
+
     if ! command -v git >/dev/null 2>&1; then
-        skip "T6 git tag -l v0.5.0 returns 'v0.5.0' (git not available)"
-        skip "T6 git show v0.5.0 shows annotated tag with 'zyz-worker 0.5.0' (git not available)"
+        skip "T6 git tag -l $tag returns '$tag' (git not available)"
+        skip "T6 git show $tag shows annotated tag with '$annotation' (git not available)"
         return
     fi
 
     # Check from REPO_ROOT (we cd'd at startup).
     local tag_listing
-    tag_listing="$(git -C "$REPO_ROOT" tag -l v0.5.0 2>/dev/null || true)"
-    if [ "$tag_listing" != "v0.5.0" ]; then
+    tag_listing="$(git -C "$REPO_ROOT" tag -l "$tag" 2>/dev/null || true)"
+    if [ "$tag_listing" != "$tag" ]; then
         # Tag not yet created — likely test-agent runs before main-agent's
         # tag step in the staged 1->5 implementation order.  Per the user
         # prompt: mark SKIP, not FAIL.
-        skip "T6 git tag -l v0.5.0 returns 'v0.5.0' (tag not yet created at test runtime)"
-        skip "T6 git show v0.5.0 shows annotated tag with 'zyz-worker 0.5.0' (tag not yet created at test runtime)"
+        skip "T6 git tag -l $tag returns '$tag' (tag not yet created at test runtime)"
+        skip "T6 git show $tag shows annotated tag with '$annotation' (tag not yet created at test runtime)"
         return
     fi
 
-    pass "T6 git tag -l v0.5.0 returns 'v0.5.0' (single line)"
+    pass "T6 git tag -l $tag returns '$tag' (single line)"
 
     local show_out show_rc
-    show_out="$(git -C "$REPO_ROOT" show v0.5.0 2>&1)"
+    show_out="$(git -C "$REPO_ROOT" show "$tag" 2>&1)"
     show_rc=$?
     if [ "$show_rc" -ne 0 ]; then
-        fail "T6 git show v0.5.0 failed (rc=$show_rc).  Output:
+        fail "T6 git show $tag failed (rc=$show_rc).  Output:
 $(printf '%s\n' "$show_out" | head -n 20 | sed 's/^/      | /')"
         return
     fi
-    if printf '%s\n' "$show_out" | grep -qF "zyz-worker 0.5.0"; then
-        pass "T6 git show v0.5.0 contains annotated tag content 'zyz-worker 0.5.0'"
+    if printf '%s\n' "$show_out" | grep -qF "$annotation"; then
+        pass "T6 git show $tag contains annotated tag content '$annotation'"
     else
-        fail "T6 git show v0.5.0 does NOT contain 'zyz-worker 0.5.0'.  First 20 lines:
+        fail "T6 git show $tag does NOT contain '$annotation'.  First 20 lines:
 $(printf '%s\n' "$show_out" | head -n 20 | sed 's/^/      | /')"
     fi
 }
