@@ -353,7 +353,7 @@ Map the observable state of a runtime directory to an interpretation as follows:
 Phase-2 binding is lazy because of *when* Claude Code persists its session files. On the verified host (Claude Code v2.1.152, macOS), Claude writes BOTH of these only after the session's first successful LLM round-trip — never at startup:
 
 - `~/.claude/sessions/<pid>.json` — the session pointer. Its filename `<pid>` equals the claude process PID, and it carries `{sessionId, cwd, ...}`. `orch-check-worker.sh` reads `sessionId` from it.
-- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — the full transcript. `encoded-cwd` is the worktree's PHYSICAL path (`pwd -P`, so symlinks like macOS `/var → /private/var` resolve) with every `/` replaced by `-`.
+- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — the full transcript. `encoded-cwd` is the worktree's PHYSICAL path (`pwd -P`, so symlinks like macOS `/var → /private/var` resolve) with both `/` and `.` replaced by `-`, then consecutive `-` squeezed into one. `orch-check-worker.sh` does NOT reconstruct this directory name to locate the transcript: it discovers the JSONL by session-id (a globally-unique UUID) via `find ~/.claude/projects -name "<sessionId>.jsonl"`, so discovery is robust to claude's exact path-encoding rule. The recorded `encoded-cwd` field is kept honest for diagnostics and the recovery command path, but binding does not depend on it.
 
 Consequences a recovery operator should understand:
 

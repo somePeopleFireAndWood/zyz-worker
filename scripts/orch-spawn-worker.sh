@@ -329,14 +329,18 @@ tmux send-keys -t "$TMUX_SESSION" \
 # encoded-cwd is computed from the PHYSICAL path (`pwd -P`) of the worktree,
 # NOT the raw $WORKTREE: claude records the cwd it actually entered, and on
 # macOS standard temp dirs (/var/folders/...) are symlinks to /private/var/...
-# Using the symlinked form would make transcript-path never bind.
+# Using the symlinked form would make any path derived from it diverge.
+# encoded-cwd matches Claude Code's ~/.claude/projects/<dir> naming: physical
+# path with both `/` and `.` replaced by `-`, then consecutive `-` squeezed.
+# NOTE: orch-check-worker.sh discovers the transcript by session-id, not by this
+# field — it is kept for diagnostics and the recovery command path.
 DISPATCH_FILE="$RUNTIME_DIR/dispatch.md"
 TMUX_PANE_INFO="$(tmux list-panes -t "$TMUX_SESSION" -F '#{window_id} #{pane_id} #{pane_pid}' | head -1)"
 TMUX_WINDOW_ID="$(echo "$TMUX_PANE_INFO" | awk '{print $1}')"
 TMUX_PANE_ID="$(echo "$TMUX_PANE_INFO" | awk '{print $2}')"
 SHELL_PID="$(echo "$TMUX_PANE_INFO" | awk '{print $3}')"
 WORKTREE_PHYS="$(cd "$WORKTREE" && pwd -P)"
-ENCODED_CWD="$(echo "$WORKTREE_PHYS" | tr '/' '-')"
+ENCODED_CWD="$(echo "$WORKTREE_PHYS" | tr '/.' '--' | tr -s '-')"
 
 TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 cat > "$TMP_DISPATCH" <<EOF

@@ -53,7 +53,7 @@
 #       match how orch-spawn-worker.sh records encoded-cwd).
 #
 # Exit codes:
-#     0   all 4 assertions passed
+#     0   all assertions passed (A1.1, A1.2, A2, A3, A4)
 #     1   one or more assertions failed
 #     3   a required dependency (tmux / git / claude) is missing from PATH
 #
@@ -284,13 +284,6 @@ capture() {
     tmux capture-pane -p -t "$PANE_ID" 2>/dev/null || true
 }
 
-# Return 0 if the pane looks like a ready claude UI. We accept any of several
-# indicators because the exact glyph/banner varies by claude version.
-pane_is_ready() {
-    local content="$1"
-    printf '%s\n' "$content" | grep -qE '❯ |bypass permissions on|Bypass permissions on|Welcome to Claude|/execute-task|for shortcuts'
-}
-
 # Return 0 if the pane is showing the trust-folder confirmation page.
 pane_is_trust_page() {
     local content="$1"
@@ -301,6 +294,26 @@ pane_is_trust_page() {
 pane_is_bypass_page() {
     local content="$1"
     printf '%s\n' "$content" | grep -qiE 'Bypass Permissions mode|bypass permissions\?|Yes, I accept|WARNING:.*[Bb]ypass'
+}
+
+# Return 0 if the pane looks like a ready claude UI. We accept any of several
+# indicators because the exact glyph/banner varies by claude version.
+#
+# CRITICAL: a confirmation page is NEVER "ready". The trust-folder and
+# bypass-permissions risk pages render a selection menu whose cursor line is
+# "❯ 1. No, exit" — that line contains the "❯ " glyph, so a naive ready-glyph
+# match would fire on the confirmation page and the A2 loop would `break` before
+# ever clearing it (claude then stays stuck on the page forever). Exclude the
+# confirmation pages FIRST so the readiness check can never be satisfied by a
+# menu-selection arrow. Also tighten the "❯ " match: a real ready prompt is
+# "❯ " followed by whitespace or the user's typed text, NOT "❯ <digit>." (a
+# numbered menu option).
+pane_is_ready() {
+    local content="$1"
+    if pane_is_trust_page "$content" || pane_is_bypass_page "$content"; then
+        return 1
+    fi
+    printf '%s\n' "$content" | grep -qE '❯ ([^0-9]|$)|bypass permissions on|Bypass permissions on|Welcome to Claude|/execute-task|for shortcuts'
 }
 
 # Count claude processes that are direct children of the recorded pane shell.
@@ -330,7 +343,7 @@ if [ "$SPAWN_RC" -ne 0 ]; then
     fail "A3 exactly-once idempotency (skipped: spawn failed)"
     fail "A4 dispatch-bound (skipped: spawn failed)"
     echo
-    echo "E2E RESULT: $PASSED/4 assertions passed"
+    echo "E2E RESULT: $PASSED passed, $FAILED failed"
     exit 1
 fi
 
@@ -350,7 +363,7 @@ if [ ! -f "$DISPATCH_FILE" ]; then
     fail "A3 exactly-once idempotency (skipped: no dispatch.md)"
     fail "A4 dispatch-bound (skipped: no dispatch.md)"
     echo
-    echo "E2E RESULT: $PASSED/4 assertions passed"
+    echo "E2E RESULT: $PASSED passed, $FAILED failed"
     exit 1
 fi
 
@@ -365,7 +378,7 @@ if [ -z "$SHELL_PID" ] || [ -z "$PANE_ID" ]; then
     fail "A3 exactly-once idempotency (skipped: incomplete dispatch.md)"
     fail "A4 dispatch-bound (skipped: incomplete dispatch.md)"
     echo
-    echo "E2E RESULT: $PASSED/4 assertions passed"
+    echo "E2E RESULT: $PASSED passed, $FAILED failed"
     exit 1
 fi
 info "shell-pid=$SHELL_PID  tmux-pane-id=$PANE_ID  plugin-root=$DISPATCH_PLUGIN_ROOT"
@@ -541,7 +554,7 @@ fi
 # 3. Output
 # ===========================================================================
 echo
-echo "E2E RESULT: $PASSED/4 assertions passed"
+echo "E2E RESULT: $PASSED passed, $FAILED failed"
 
 if [ "$FAILED" -gt 0 ]; then
     exit 1

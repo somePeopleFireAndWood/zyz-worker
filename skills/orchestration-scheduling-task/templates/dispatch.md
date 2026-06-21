@@ -11,8 +11,11 @@ source-repo: <absolute path>      # the project git work tree the worktree was c
 branch: <branch name>             # the task branch
 base: <base branch>               # base the branch was created from
 plugin-root: <absolute path>      # passed as `claude --plugin-dir` on resume
-encoded-cwd: <"/"→"-" form of pwd -P of worktree>
-                                  # used to locate ~/.claude/projects/<encoded-cwd>/
+encoded-cwd: <claude-projects-dir form of pwd -P of worktree>
+                                  # both "/" and "." -> "-", then consecutive
+                                  # "-" squeezed; matches ~/.claude/projects/<dir>.
+                                  # Diagnostics only — transcript discovery is by
+                                  # session-id (see Phase-2 note below).
 claude-pid:                       # Phase-2; filled by orch-check-worker.sh
 claude-session-id:                # Phase-2; filled by orch-check-worker.sh
 transcript-path:                  # Phase-2; filled by orch-check-worker.sh
@@ -25,9 +28,9 @@ first-seen-iso:                   # Phase-2; set when the trio above first compl
   dispatch.md template
   ====================
 
-  Writer (Phase-1): orch-spawn-worker.sh, as the LAST step of its preflight
-  (immediately before the optional auto-start `claude` send-keys). The Phase-1
-  fields are deterministic and never empty:
+  Writer (Phase-1): orch-spawn-worker.sh, as the LAST step of its preflight.
+  Spawn is container-only — it never starts claude (the L2 orch-driver-agent
+  is the sole launcher). The Phase-1 fields are deterministic and never empty:
     task-id, spawn-iso, tmux-session, tmux-window-id, tmux-pane-id, shell-pid,
     worktree, source-repo, branch, base, plugin-root, encoded-cwd.
   dispatch.md presence therefore means "spawn ran preflight to completion"
@@ -37,7 +40,10 @@ first-seen-iso:                   # Phase-2; set when the trio above first compl
   Writer (Phase-2): orch-check-worker.sh, lazily, on subsequent polls. It fills:
     claude-pid          — newest direct child of shell-pid named `claude`
     claude-session-id   — .sessionId from ~/.claude/sessions/<claude-pid>.json
-    transcript-path     — ~/.claude/projects/<encoded-cwd>/<claude-session-id>.jsonl
+    transcript-path     — ~/.claude/projects/<dir>/<claude-session-id>.jsonl,
+                          discovered by session-id (a unique UUID) via
+                          `find ~/.claude/projects -name "<sid>.jsonl"`, NOT by
+                          reconstructing <dir> from encoded-cwd
                           (only once that file actually exists)
     first-seen-iso      — set on the poll where all three above first become set
   These stay empty until claude registers and the first LLM round-trip writes a

@@ -300,7 +300,10 @@ if [ -f "$DISPATCH_FILE" ]; then
     TRANSCRIPT="$(fm_field "$DISPATCH_FILE" transcript-path)"
     FIRST_SEEN="$(fm_field "$DISPATCH_FILE" first-seen-iso)"
     DISPATCH_SHELL_PID="$(fm_field "$DISPATCH_FILE" shell-pid)"
-    DISPATCH_ENCODED_CWD="$(fm_field "$DISPATCH_FILE" encoded-cwd)"
+    # encoded-cwd is preserved verbatim into the rewrite (rewrite_dispatch_atomic
+    # re-reads it directly from the file via fm_field). It is no longer used for
+    # transcript discovery — Step C finds the JSONL by session-id — so it is not
+    # read into a local here.
 
     NEEDS_REWRITE="false"
 
@@ -336,12 +339,19 @@ except Exception:
         fi
     fi
 
-    # Step C: discover transcript file once session-id and encoded-cwd are known.
-    # Only set transcript-path if the JSONL actually exists (it appears after the
-    # first LLM round-trip, which can lag claude registration by seconds/minutes).
-    if [ -n "$CLAUDE_SID" ] && [ -n "$DISPATCH_ENCODED_CWD" ] && [ -z "$TRANSCRIPT" ]; then
-        CAND_TRANSCRIPT="$HOME/.claude/projects/$DISPATCH_ENCODED_CWD/$CLAUDE_SID.jsonl"
-        if [ -f "$CAND_TRANSCRIPT" ]; then
+    # Step C: discover the transcript file once session-id is known. We find the
+    # JSONL by session-id (a UUID, globally unique under ~/.claude/projects/)
+    # rather than by reconstructing claude's encoded-cwd directory name. Claude's
+    # project-dir encoding (both `/` and `.` -> `-`, then squeeze consecutive `-`)
+    # is more complex than a plain tr '/' '-' and is version-dependent; find-by-sid
+    # sidesteps it entirely and always lands on claude's real file. The transcript
+    # only appears after the first LLM round-trip, which can lag claude
+    # registration by seconds/minutes, so only set transcript-path if a match
+    # actually exists. find with `2>/dev/null` yields an empty string on no match
+    # (safe under set -e), guarded by the `-n` test below.
+    if [ -n "$CLAUDE_SID" ] && [ -z "$TRANSCRIPT" ]; then
+        CAND_TRANSCRIPT="$(find "$HOME/.claude/projects" -name "$CLAUDE_SID.jsonl" 2>/dev/null | head -1)"
+        if [ -n "$CAND_TRANSCRIPT" ] && [ -f "$CAND_TRANSCRIPT" ]; then
             TRANSCRIPT="$CAND_TRANSCRIPT"
             NEEDS_REWRITE="true"
         fi

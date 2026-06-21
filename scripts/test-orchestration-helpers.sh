@@ -1896,7 +1896,7 @@ T8_SKIP_ALL() {
         "dispatch.md shell-pid process is alive (kill -0) (a)" \
         "dispatch.md worktree is an absolute path that exists (a)" \
         "dispatch.md source-repo is an absolute path that exists (a)" \
-        "dispatch.md encoded-cwd equals pwd -P of worktree, /->- (a)" \
+        "dispatch.md encoded-cwd equals pwd -P of worktree, / and . -> -, squeezed (a)" \
         "dispatch.md plugin-root equals repo root (CLAUDE_PLUGIN_ROOT unset) (a)" \
         "dispatch.md Phase-2 key claude-pid empty (a)" \
         "dispatch.md Phase-2 key claude-session-id empty (a)" \
@@ -1919,6 +1919,8 @@ T8_SKIP_ALL() {
         "field-clear re-bind: claude-session-id == new uuid (c2)" \
         "field-clear re-bind: transcript-path updated to new jsonl (c2)" \
         "field-clear re-bind: first-seen-iso repopulated (c2)" \
+        "find-by-sid: transcript discovered under non-matching projects dir (c3)" \
+        "find-by-sid: dispatch-bound=true with mismatched encoded-cwd dir (c3)" \
         "runtime/<task-id>/ gone after cleanup --force (d)" \
         "runtime/.archive/<task-id>-*/dispatch.md exists after cleanup (d)" \
         "archived dispatch.md has same task-id: line as original (d)" \
@@ -2176,7 +2178,7 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
         skip "T8 dispatch.md shell-pid process is alive (kill -0) (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md worktree is an absolute path that exists (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md source-repo is an absolute path that exists (a) (skipped: dispatch.md absent)"
-        skip "T8 dispatch.md encoded-cwd equals pwd -P of worktree, /->- (a) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md encoded-cwd equals pwd -P of worktree, / and . -> -, squeezed (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md plugin-root equals repo root (CLAUDE_PLUGIN_ROOT unset) (a) (skipped: dispatch.md absent)"
         for k in claude-pid claude-session-id transcript-path first-seen-iso; do
             skip "T8 dispatch.md Phase-2 key $k empty (a) (skipped: dispatch.md absent)"
@@ -2285,22 +2287,30 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
         *)  T8_FAIL "dispatch.md source-repo='$sr' is not an absolute path (a)" ;;
     esac
 
-    # ---- encoded-cwd EXACTLY equals pwd -P of worktree with / -> - -----
+    # ---- encoded-cwd EXACTLY equals pwd -P of worktree, / and . -> -, squeezed
     # THIS IS THE KEY ASSERTION: it catches the macOS /var -> /private/var
     # symlink issue.  We recompute the expected value INDEPENDENTLY from the
-    # recorded worktree value, using the same `cd && pwd -P | tr / -` idiom
-    # the spawn script uses.  If spawn had used raw $WORKTREE instead of
-    # `pwd -P`, the physical-path resolution diverges and this FAILS.
+    # recorded worktree value, using the same `cd && pwd -P | tr '/.' '--' |
+    # tr -s '-'` idiom the spawn script uses to mirror Claude Code's
+    # ~/.claude/projects/<dir> naming (both `/` and `.` -> `-`, then squeeze
+    # consecutive `-`).  If spawn had used raw $WORKTREE instead of `pwd -P`,
+    # the physical-path resolution diverges and this FAILS.
+    #
+    # REGRESSION GUARD (fix-encoded-cwd-transcript): the T8 temp worktree path
+    # is an mktemp dir whose basename contains a `.` (e.g. zyz-orch-t8.Ur0RKX),
+    # so this recomputation exercises the `.`-in-path case directly.  The old
+    # rule (`tr / -`) preserved the `.` and produced a value the corrected
+    # spawn no longer writes; this assertion passing IS the regression guard.
     local enc enc_expected
     enc="$(t8_fm "$DISPATCH" encoded-cwd 2>/dev/null || true)"
     enc_expected=""
     if [ -n "$wt" ] && [ -d "$wt" ]; then
-        enc_expected="$(cd "$wt" && pwd -P | tr / -)"
+        enc_expected="$(cd "$wt" && pwd -P | tr '/.' '--' | tr -s '-')"
     fi
     if [ -n "$enc" ] && [ -n "$enc_expected" ] && [ "$enc" = "$enc_expected" ]; then
-        T8_PASS "dispatch.md encoded-cwd equals pwd -P of worktree, /->- (a)"
+        T8_PASS "dispatch.md encoded-cwd equals pwd -P of worktree, / and . -> -, squeezed (a)"
     else
-        T8_FAIL "dispatch.md encoded-cwd='$enc' != expected '$enc_expected' (recomputed from worktree '$wt' via cd+pwd -P|tr / -) (a)"
+        T8_FAIL "dispatch.md encoded-cwd='$enc' != expected '$enc_expected' (recomputed from worktree '$wt' via cd+pwd -P | tr '/.' '--' | tr -s '-') (a)"
     fi
 
     # ---- plugin-root equals repo root (CLAUDE_PLUGIN_ROOT was unset) ----
@@ -2402,6 +2412,8 @@ t8_run_phase2_section() {
         "field-clear re-bind: claude-session-id == new uuid (c2)"
         "field-clear re-bind: transcript-path updated to new jsonl (c2)"
         "field-clear re-bind: first-seen-iso repopulated (c2)"
+        "find-by-sid: transcript discovered under non-matching projects dir (c3)"
+        "find-by-sid: dispatch-bound=true with mismatched encoded-cwd dir (c3)"
     )
     t8_skip_phase2() {
         # $1 = reason suffix appended to each label.
@@ -2729,6 +2741,89 @@ EOF
         T8_PASS "field-clear re-bind: first-seen-iso repopulated (c2)"
     else
         T8_FAIL "field-clear re-bind: first-seen-iso is EMPTY after re-bind (c2)"
+    fi
+
+    # =====================================================================
+    # T8(c3) — find-by-session-id regression guard (fix-encoded-cwd-transcript).
+    # =====================================================================
+    # THE BUG: orch-check-worker.sh Step C used to RECONSTRUCT the transcript
+    # path from the dispatch.md encoded-cwd field
+    # ($HOME/.claude/projects/<encoded-cwd>/<sid>.jsonl).  For any worktree path
+    # containing a `.` the recorded encoded-cwd diverged from claude's actual
+    # project-dir name (claude squeezes `.`/`/` to a single `-`), so the lookup
+    # landed in the wrong directory, never found the JSONL, and dispatch-bound
+    # stayed false forever.
+    #
+    # THE FIX: Step C now discovers the transcript BY SESSION-ID
+    # (`find "$HOME/.claude/projects" -name "<sid>.jsonl"`), which is robust no
+    # matter how claude encodes the directory name.
+    #
+    # THIS CASE proves the fix: we clear the Phase-2 fields, point the pointer
+    # json at a fresh sid, and place that sid's transcript under a projects
+    # subdir whose name is DELIBERATELY DIFFERENT from the dispatch.md
+    # encoded-cwd field.  If discovery still depended on encoded-cwd the helper
+    # would miss it and never bind.  With find-by-sid it MUST still discover the
+    # file and bind.  The sid is a fresh unique UUID, so there is exactly one
+    # `<sid>.jsonl` anywhere under the temp $FAKE_HOME/.claude/projects tree and
+    # the helper's `find ... | head -1` is unambiguous.
+    #
+    # Clear the 4 Phase-2 fields again (same idiom as c2) so the check helper
+    # re-runs Step C from scratch.
+    local cleared_tmp3="$DISPATCH.t8clear3.$$"
+    awk '
+        /^claude-pid:/        { print "claude-pid:";        next }
+        /^claude-session-id:/ { print "claude-session-id:"; next }
+        /^transcript-path:/   { print "transcript-path:";   next }
+        /^first-seen-iso:/    { print "first-seen-iso:";    next }
+        { print }
+    ' "$DISPATCH" >"$cleared_tmp3" 2>/dev/null && mv -f "$cleared_tmp3" "$DISPATCH"
+
+    # A projects subdir whose name does NOT match $ENCODED_CWD.  Using a literal
+    # sentinel name makes the mismatch obvious and guarantees it differs from any
+    # real encoded-cwd (which is always an absolute-path-derived dash string).
+    local MISMATCH_DIRNAME="deliberately-not-the-encoded-cwd-dir"
+    local MISMATCH_PROJ_DIR="$FAKE_HOME/.claude/projects/$MISMATCH_DIRNAME"
+    mkdir -p "$MISMATCH_PROJ_DIR"
+
+    # Fresh, unique UUID so its basename is globally unique under the temp
+    # projects tree — the helper's `find -name "<sid>.jsonl" | head -1` lands on
+    # exactly this file regardless of traversal order.
+    local SID_C3="c3c3c3c3-dddd-eeee-ffff-010101010101"
+    cat >"$POINTER" <<EOF
+{"pid": $FAKE_PID, "sessionId": "$SID_C3", "cwd": "$WORKTREE_PHYS"}
+EOF
+    local TRANSCRIPT_C3="$MISMATCH_PROJ_DIR/$SID_C3.jsonl"
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":"t8 c3 find-by-sid row"}}' >"$TRANSCRIPT_C3"
+
+    local c3_out_file c3_err_file c3_out c3_rc
+    c3_out_file="$TMPROOT/check-c3.out"
+    c3_err_file="$TMPROOT/check-c3.err"
+    (
+        cd "$TMPROOT" || exit 99
+        HOME="$FAKE_HOME" bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null
+    ) >"$c3_out_file" 2>"$c3_err_file"
+    c3_rc=$?
+    c3_out="$(cat "$c3_out_file" 2>/dev/null || true)"
+
+    local c3_transcript
+    c3_transcript="$(t8_fm "$DISPATCH" transcript-path 2>/dev/null || true)"
+
+    # (1) The transcript was discovered under the NON-matching projects dir,
+    #     proving discovery is by session-id, not by encoded-cwd reconstruction.
+    if [ "$c3_transcript" = "$TRANSCRIPT_C3" ]; then
+        T8_PASS "find-by-sid: transcript discovered under non-matching projects dir (c3)"
+    else
+        T8_FAIL "find-by-sid: transcript-path='$c3_transcript' != expected '$TRANSCRIPT_C3' (check exit=$c3_rc; helper did not find the JSONL by session-id under a dir whose name != encoded-cwd).  stderr:
+$(sed 's/^/      | /' "$c3_err_file" 2>/dev/null)  (c3)"
+    fi
+
+    # (2) The trio completed and the helper reports dispatch-bound=true even
+    #     though the projects subdir name does not match dispatch.md encoded-cwd.
+    if printf '%s\n' "$c3_out" | grep -qx 'dispatch-bound=true'; then
+        T8_PASS "find-by-sid: dispatch-bound=true with mismatched encoded-cwd dir (c3)"
+    else
+        T8_FAIL "find-by-sid: missing 'dispatch-bound=true' after placing transcript under a non-matching projects dir (check exit=$c3_rc).  Full stdout:
+$(printf '%s\n' "$c3_out" | sed 's/^/      | /')  (c3)"
     fi
 }
 
