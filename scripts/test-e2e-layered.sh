@@ -12,6 +12,8 @@
 #           does NOT double-launch)
 #        -> dispatch-bound (a trivial LLM round-trip materializes the transcript
 #           so orch-check-worker.sh flips dispatch-bound=true)
+#        -> command-resolves (the namespaced `/zyz-worker:execute-task <task-id>`
+#           the driver sends does NOT produce "Unknown command" in the pane)
 #
 # Usage:
 #     bash scripts/test-e2e-layered.sh [--keep]
@@ -31,7 +33,10 @@
 # real prompt ("reply with PONG") to force the first LLM round-trip, because the
 # session pointer + transcript files are only written by Claude Code AFTER that
 # first round-trip (see skills/orchestration-scheduling-task/SKILL.md
-# "How dispatch.md binding works"). One round-trip per run.
+# "How dispatch.md binding works"). A5 then sends one more real command
+# (`/zyz-worker:execute-task <task-id>`) to prove the namespaced slash command
+# resolves in the worker session — two round-trips per run (A4 PONG + A5
+# command).
 #
 # Cross-platform notes (this is the whole point — it must run on Linux AND
 # macOS bash 3.2):
@@ -53,7 +58,7 @@
 #       match how orch-spawn-worker.sh records encoded-cwd).
 #
 # Exit codes:
-#     0   all assertions passed (A1.1, A1.2, A2, A3, A4)
+#     0   all assertions passed (A1.1, A1.2, A2, A3, A4, A5)
 #     1   one or more assertions failed
 #     3   a required dependency (tmux / git / claude) is missing from PATH
 #
@@ -338,10 +343,11 @@ SPAWN_RC=$?
 if [ "$SPAWN_RC" -ne 0 ]; then
     fail "A1 spawn exited $SPAWN_RC (expected 0)"
     dump_pane "spawn output" "$SPAWN_OUT"
-    # Without dispatch.md the rest cannot run; emit FAILs for A2-A4 and finish.
+    # Without dispatch.md the rest cannot run; emit FAILs for A2-A5 and finish.
     fail "A2 parent-shell invariant (skipped: spawn failed)"
     fail "A3 exactly-once idempotency (skipped: spawn failed)"
     fail "A4 dispatch-bound (skipped: spawn failed)"
+    fail "A5 command-resolves (skipped: spawn failed)"
     echo
     echo "E2E RESULT: $PASSED passed, $FAILED failed"
     exit 1
@@ -362,6 +368,7 @@ if [ ! -f "$DISPATCH_FILE" ]; then
     fail "A2 parent-shell invariant (skipped: no dispatch.md)"
     fail "A3 exactly-once idempotency (skipped: no dispatch.md)"
     fail "A4 dispatch-bound (skipped: no dispatch.md)"
+    fail "A5 command-resolves (skipped: no dispatch.md)"
     echo
     echo "E2E RESULT: $PASSED passed, $FAILED failed"
     exit 1
@@ -377,6 +384,7 @@ if [ -z "$SHELL_PID" ] || [ -z "$PANE_ID" ]; then
     fail "A2 parent-shell invariant (skipped: incomplete dispatch.md)"
     fail "A3 exactly-once idempotency (skipped: incomplete dispatch.md)"
     fail "A4 dispatch-bound (skipped: incomplete dispatch.md)"
+    fail "A5 command-resolves (skipped: incomplete dispatch.md)"
     echo
     echo "E2E RESULT: $PASSED passed, $FAILED failed"
     exit 1
@@ -548,6 +556,50 @@ else
     dump_pane "orch-check-worker.sh output" "$(bash "$CHECK_SCRIPT" "$TASK_ID" "$LIST_DIR" 2>&1 || true)"
     dump_pane "dispatch.md" "$(cat "$DISPATCH_FILE" 2>/dev/null)"
     dump_pane "pane content" "$(capture)"
+fi
+
+# ===========================================================================
+# A5 — command-resolves (the namespaced /execute-task spelling the driver sends
+#      actually resolves; consumes API quota: one more command into the SAME
+#      already-launched session — no new claude process)
+# ===========================================================================
+echo
+echo "=== A5: command-resolves (no 'Unknown command'; CONSUMES API QUOTA) ==="
+
+# Send the exact spelling the L2 orch-driver-agent sends — the namespaced
+# `/zyz-worker:execute-task <task-id>` — into the SAME recorded pane that A2-A4
+# used. Background: in current Claude Code the bare `/execute-task` does NOT
+# resolve (plugin commands register namespaced-only AND `execute-task` also
+# exists as a skill — name collision), so a worker fed the bare form dies at the
+# very first hop with `Unknown command: /execute-task`. The namespaced form must
+# resolve.
+info "sending '/zyz-worker:execute-task $TASK_ID' into pane $PANE_ID"
+tmux send-keys -t "$PANE_ID" "/zyz-worker:execute-task $TASK_ID" Enter
+
+# PASS contract is a NEGATIVE assertion: within the same bounded poll deadline
+# the readiness probe uses (~30s), the pane must NOT contain `Unknown command`.
+# We do NOT reuse pane_is_ready as a positive signal — its alternation already
+# substring-matches `/execute-task`, so the echoed command text would
+# self-satisfy any positive "resolved" check. We only observe that the command
+# RESOLVED (was accepted / the worker began the workflow); we do NOT wait for
+# the execute-task workflow to complete. The EXIT-trap teardown kills the
+# session afterward.
+A5_UNKNOWN=0
+A5_DEADLINE=$(( $(date +%s) + 30 ))
+while [ "$(date +%s)" -lt "$A5_DEADLINE" ]; do
+    A5_CONTENT="$(capture)"
+    if printf '%s\n' "$A5_CONTENT" | grep -qF "Unknown command"; then
+        A5_UNKNOWN=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$A5_UNKNOWN" -eq 0 ]; then
+    pass "A5 '/zyz-worker:execute-task' resolved (no 'Unknown command' in pane within 30s)"
+else
+    fail "A5 pane shows 'Unknown command' — the slash command did NOT resolve"
+    dump_pane "pane content (Unknown command observed)" "$(capture)"
 fi
 
 # ===========================================================================

@@ -3053,6 +3053,84 @@ run_T7() {
 }
 
 # ---------------------------------------------------------------------------
+# T9. orch-driver-agent send-spelling guard (fix-worker-slashcmd, Change 3).
+#
+# Deterministic (no API / no tmux / no claude) regression guard that locks the
+# slash-command spelling the L2 driver sends into the worker pane.  Background:
+# in current Claude Code, plugin commands register namespaced-only
+# (`/zyz-worker:execute-task`); the bare `/execute-task` does NOT resolve
+# because `execute-task` also exists as a skill (name collision).  So both
+# driver mirror copies MUST send the namespaced spelling.
+#
+# For BOTH agents/orch-driver-agent.md and subagents/orch-driver-agent.md:
+#   (a) PRESENT: the backtick-wrapped namespaced send token
+#         `/zyz-worker:execute-task <task-id>`
+#   (b) ABSENT:  the backtick-wrapped BARE send token
+#         `/execute-task <task-id>`
+#       The `<task-id>`-adjacent anchor is what distinguishes a *send
+#       instruction* from retained bare diagnostic prose (e.g.
+#       "the `/execute-task` slash command was rejected", "an already-running
+#       `/zyz-worker:execute-task`").  Those keep the bare `/execute-task`
+#       WITHOUT an adjacent ` <task-id>`, so this anchor does not flag them.
+#       (Decision: design review finding F1.)
+#   (c) MIRROR byte-equality: the "Send the command" step line must be
+#       byte-identical between the two files, so one mirror cannot be fixed
+#       while the other is missed (design review Suggestion).
+#
+# All matching is fixed-string (`grep -F`) to avoid brittle whitespace/regex
+# assumptions.  NOTE (design Risk F7): the namespaced literal below is coupled
+# to plugin.json `name: zyz-worker`; a future plugin rename must update this
+# guard in lockstep with both driver files.
+# ---------------------------------------------------------------------------
+run_T9() {
+    say_header "T9  orch-driver-agent send-spelling guard (fix-worker-slashcmd)"
+
+    local drv_agent="agents/orch-driver-agent.md"
+    local drv_sub="subagents/orch-driver-agent.md"
+
+    # Exact backtick-wrapped anchors (fixed strings — NOT regex).
+    local present_token='`/zyz-worker:execute-task <task-id>`'
+    local absent_token='`/execute-task <task-id>`'
+
+    # (a) + (b): per-file present / absent assertions.
+    local f
+    for f in "$drv_agent" "$drv_sub"; do
+        check_grep_fixed "$f" \
+            "T9 namespaced send token '$present_token'" \
+            "$present_token"
+        check_grep_absent "$f" \
+            "T9 bare send token '$absent_token' (must not regress to bare /execute-task)" \
+            "$absent_token"
+    done
+
+    # (c) MIRROR byte-equality of the "Send the command" step line.
+    #
+    # The send-step line is the ONE line in each file that carries the literal
+    # "**Send the command.**" anchor; it also carries the namespaced send token.
+    # We pull that single line from each file with `grep -F` on the anchor and
+    # assert the two are byte-identical.  Anchoring on "**Send the command.**"
+    # (rather than the namespaced token, which also appears on the intervene
+    # re-send line) guarantees exactly one line is extracted per file.
+    local send_anchor='**Send the command.**'
+    if [ ! -f "$REPO_ROOT/$drv_agent" ] || [ ! -f "$REPO_ROOT/$drv_sub" ]; then
+        fail "T9 mirror send-line byte-equality (one or both driver files missing: $drv_agent / $drv_sub)"
+    else
+        local line_agent line_sub
+        line_agent="$(grep -F -- "$send_anchor" "$REPO_ROOT/$drv_agent" 2>/dev/null || true)"
+        line_sub="$(grep -F -- "$send_anchor" "$REPO_ROOT/$drv_sub" 2>/dev/null || true)"
+        if [ -z "$line_agent" ] || [ -z "$line_sub" ]; then
+            fail "T9 mirror send-line byte-equality: '$send_anchor' line not found in $drv_agent (got '$line_agent') and/or $drv_sub (got '$line_sub')"
+        elif [ "$line_agent" = "$line_sub" ]; then
+            pass "T9 mirror send-line byte-equality (agents/ and subagents/ 'Send the command' lines identical)"
+        else
+            fail "T9 mirror send-line DRIFT between $drv_agent and $drv_sub:
+      | agents/    : $line_agent
+      | subagents/ : $line_sub"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 echo "Running orchestration-scheduling-task test suite"
@@ -3067,6 +3145,7 @@ run_T5
 run_T6
 run_T7
 run_T8
+run_T9
 
 echo
 echo "============================================================"

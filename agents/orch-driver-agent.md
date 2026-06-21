@@ -40,7 +40,7 @@ If a required input is missing from the prompt, do not guess: flush `monitor.md`
 
 Starting claude exactly once is the key correctness point. The same worker can be dispatched `first-dispatch` more than once (L1 misjudgment, L1 restart). Claude must start only once.
 
-1. **Pre-launch authority check (idempotency).** FIRST `tmux capture-pane -p -t <tmux-pane-id>` and inspect the current pane content. If it already shows a claude UI — the `❯ ` input prompt, the claude welcome banner, a `bypass permissions on` status line — or an already-running `/execute-task`, treat the worker as already started: do NOT launch. Flush `claude-started=true` to `monitor.md`, then fall through to the Observe step and return an "already running" summary.
+1. **Pre-launch authority check (idempotency).** FIRST `tmux capture-pane -p -t <tmux-pane-id>` and inspect the current pane content. If it already shows a claude UI — the `❯ ` input prompt, the claude welcome banner, a `bypass permissions on` status line — or an already-running `/zyz-worker:execute-task`, treat the worker as already started: do NOT launch. Flush `claude-started=true` to `monitor.md`, then fall through to the Observe step and return an "already running" summary.
    - capture-pane is the ONLY signal robust to a prior L2 mid-tick crash. `dispatch.md`'s `claude-pid` lags (it is filled lazily by `orch-check-worker.sh` only after a check runs), and `monitor.md`'s `claude-started` may be lost if a prior tick crashed after `send-keys` but before the flush. So the real-time pane is authoritative here, not those files.
 2. **Launch only on a bare shell prompt.** Only if the pane shows a bare shell prompt (no claude UI) do you launch. `tmux send-keys -t <tmux-pane-id>` the command, then send `Enter`:
 
@@ -54,7 +54,7 @@ Starting claude exactly once is the key correctness point. The same worker can b
    - **Bypass-Permissions risk page** — claude shows a "Bypass Permissions mode" / "WARNING: Claude Code running in Bypass Permissions mode" risk page with options like "No, exit" (default) and "Yes, I accept". The default cursor is on "No, exit", so press `Down` then `Enter` to move to and select "Yes, I accept".
    - Poll between keystrokes: capture-pane, match the page text, send the right key, capture again to confirm the page advanced. Do not blind-send; a stale or already-advanced screen will swallow keystrokes.
 4. **Readiness probe + immediate flush.** Poll `capture-pane` for the `❯ ` ready prompt for up to ~30s (do not treat the confirmation-page selection arrows as readiness — that misread is exactly the old auto-start race this layer replaces). **Immediately after readiness passes, flush `claude-started=true` to `monitor.md`** — do NOT defer it to end-of-run, so a later crash cannot erase the fact that claude started.
-5. **Send the command.** `tmux send-keys -t <tmux-pane-id>` the literal `/execute-task <task-id>`, then `Enter`.
+5. **Send the command.** `tmux send-keys -t <tmux-pane-id>` the literal `/zyz-worker:execute-task <task-id>`, then `Enter`. (Plugin commands register namespaced-only in current Claude Code; the bare `/execute-task` does not resolve because `execute-task` also exists as a skill — name collision.)
 6. **Unknown-command check.** capture-pane again. If the pane shows `Unknown command` (the `/execute-task` slash command was rejected), flush `monitor.md` with `needs-attention=true` and `attention-reason="execute-task rejected as Unknown command"`. Do NOT write `worker-status.md` (that is L3-owned; L1 projects this error into the master entry as `state: blocked` during its handle-errors step). Then return an error summary.
 7. Fall through to the Observe step, then return your summary.
 
@@ -65,7 +65,7 @@ L1 dispatches you to intervene when its inline poll found this one worker stuck 
 - `capture-pane` to diagnose the cause: claude exited back to a shell, a welcome-screen race left `/execute-task` unsent, etc.
 - Intervene conservatively, only on a clear signal:
   - If claude has exited to a bare shell prompt, re-run the `first-dispatch` launch flow (which is itself idempotent via the pre-launch check).
-  - If a welcome-screen race swallowed the command, re-send `/execute-task <task-id>` + `Enter`.
+  - If a welcome-screen race swallowed the command, re-send `/zyz-worker:execute-task <task-id>` + `Enter`.
 - Misdiagnosis risk is high. When the signal is not clear, do NOT send speculative keystrokes that could pollute the worker. Default to observe-only and set `needs-attention=true` with a short `attention-reason` so a human looks, rather than guessing.
 - Record exactly what you did in `monitor.md` under `## Last Action`, and flush after any intervention send-keys.
 

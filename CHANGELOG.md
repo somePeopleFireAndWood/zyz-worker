@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(reserved for next release; intentionally empty after each release tag)
+### Fixed
+- **Orchestration workers no longer fail at dispatch with `Unknown command:
+  /execute-task`.** The L2 `orch-driver-agent` sent the bare slash command
+  `/execute-task <task-id>` into the worker pane, but in current Claude Code
+  (verified v2.1.153) plugin **commands** register namespaced-only
+  (`/zyz-worker:execute-task`) while plugin **skills** register bare — and
+  because `execute-task` ships as *both* a command (`commands/execute-task.md`)
+  and a skill (`skills/execute-task/`), the bare `/execute-task` collides and
+  never resolves. Every dispatched worker therefore rejected the command and the
+  whole `orchestration-scheduling-task` pipeline died at its first hop. The
+  driver now sends the namespaced `/zyz-worker:execute-task <task-id>` at every
+  pane-facing point (first-dispatch send, intervene re-send, and the pre-launch
+  "already-running" heuristic) in both `agents/orch-driver-agent.md` and its
+  mirror `subagents/orch-driver-agent.md`; the Unknown-command *detection* and
+  human-facing symptom strings are intentionally left bare. Found during
+  real-claude e2e acceptance of 0.6.1.
+- **`scripts/test-e2e-layered.sh` gains assertion A5**, which actually sends
+  `/zyz-worker:execute-task <task-id>` into the launched worker and asserts the
+  pane shows no `Unknown command` within the readiness deadline. The prior A1–A4
+  only proved a worker could *bind* a claude session (via a "reply with PONG"
+  round-trip); they never sent the real slash command, which is exactly why the
+  command-registration break shipped green. A5 closes that acceptance gap (cost:
+  one extra LLM round-trip per run).
+- **`scripts/test-orchestration-helpers.sh` gains a deterministic guard (T9)**
+  that requires the namespaced send token and forbids the bare send token in
+  both driver mirrors, and asserts the "Send the command" line is byte-identical
+  across them — locking the fix with no API/tmux/claude dependency.
 
 ## [0.6.1] — 2026-06-21
 
