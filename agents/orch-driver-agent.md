@@ -32,7 +32,7 @@ Everything you need is passed in the dispatch prompt (self-contained; you share 
 - `shell-pid` — the pane shell's pid. The claude you start must become a DIRECT child of this pid.
 - `worktree` — the worker's git worktree path.
 - `plugin-root` — the plugin dir to pass to `claude --plugin-dir`.
-- `intent` — `first-dispatch` or `intervene`.
+- `intent` — `first-dispatch`, `intervene`, or `relay-confirmation`.
 
 If a required input is missing from the prompt, do not guess: flush `monitor.md` with `needs-attention=true` + an `attention-reason` naming the missing input and return an error summary.
 
@@ -69,7 +69,17 @@ L1 dispatches you to intervene when its inline poll found this one worker stuck 
 - Misdiagnosis risk is high. When the signal is not clear, do NOT send speculative keystrokes that could pollute the worker. Default to observe-only and set `needs-attention=true` with a short `attention-reason` so a human looks, rather than guessing.
 - Record exactly what you did in `monitor.md` under `## Last Action`, and flush after any intervention send-keys.
 
-## Observe And Set needs-user (Both Intents)
+## intent=relay-confirmation
+
+L1 dispatches you here when the user wrote `confirmed` for a worker that is at `phase=awaiting-confirmation`. The user has confirmed delivery; your only job is to relay that confirmation into the worker pane so the worker (L3) advances itself to `phase=done`.
+
+- `tmux send-keys -t <tmux-pane-id>` ONE human-readable confirmation message into the recorded pane, then `Enter`. For example: `用户已确认完工：请将 worker-status 的 phase 推进到 done 并完成收尾。` (or an equivalent clear English line). Send a single message — do not spam the pane.
+- You do NOT write the worker's `phase` yourself — the worker writes `phase=done`. You only deliver the confirmation; keeping the worker as the sole writer of its phase preserves the single source of truth.
+- You do NOT touch the master entry (L1-owned), and you do NOT read any L3 internals.
+- Flush `monitor.md` with `driver-intent=relay-confirmation` and a one-line `## Last Action` recording the relay. L1 reads `driver-intent` to keep the relay idempotent (at most one relay per confirmation).
+- Then fall through to the Observe step (it sets `needs-user`/`needs-attention` from the live poll as usual) and return a one-line summary, e.g. `worker <id>: relayed user confirmation, observing`.
+
+## Observe And Set needs-user (All Intents)
 
 After driving (or after the pre-launch short-circuit), observe overall state:
 
@@ -101,7 +111,7 @@ After driving (or after the pre-launch short-circuit), observe overall state:
   ---
   task-id: <task-id>
   last-driver-iso: <iso>            # this run's time
-  driver-intent: first-dispatch | intervene
+  driver-intent: first-dispatch | intervene | relay-confirmation
   claude-started: true | false      # set true immediately after the readiness probe passes
   needs-user: true | false          # only projected from worker-status wait-state=waiting-user
   needs-user-window: <tmux session> # which window the user must attach to; non-empty when needs-user=true

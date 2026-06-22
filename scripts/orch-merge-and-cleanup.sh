@@ -4,8 +4,12 @@
 # branch, mark the master entry completed, push, and clean up the worktree.
 #
 # This is the LEGACY combined path, triggered by the `approved` token (merge +
-# `state: completed` + cleanup, atomically). The decoupled flow may instead use
-# orch-confirm.sh (mark done only, `confirmed` token) and orch-merge.sh (merge +
+# `state: completed` + cleanup, atomically). It is a deliberate exception to the
+# "completed mirrors worker phase=done" invariant: the worker is cleaned up here,
+# so there is no worker phase=done behind this `completed`. The decoupled flow may
+# instead use the `confirmed` token (which relays the user's confirmation to the
+# worker so it writes `phase=done`, and the orchestrator then mirrors
+# `state: completed` — see the orchestration gate step) and orch-merge.sh (merge +
 # push only, `merge` token) separately. Behavior here is unchanged.
 #
 # Order (critical — see design-spec §E.6):

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.6.5] — 2026-06-22
+
+This release **supersedes the 0.6.4 confirmation/done model.** 0.6.4 wrongly made the worker phase `awaiting-confirmation` an absorbing (non-reversible) terminal and removed the worker-level "done" exit entirely. That conflicted with the actual semantics (a worker awaiting confirmation is exactly the state most likely to roll back when the user asks for changes) and left standalone/worker-window confirmation with no terminal of its own.
+
+### Fixed
+- **`awaiting-confirmation` is now reversible.** 0.6.4 made it the sole absorbing phase; that was wrong. A worker that self-declared finished and is awaiting confirmation must be able to roll back (e.g. the user's review asks for changes → back to `implementation`).
+- **Fixed the `in-progress` definition contradiction.** The orchestration state machine defined `in-progress` as "phase not awaiting-confirmation" while the projection rules projected `awaiting-confirmation` into a state — a direct contradiction. `in-progress` is now "worker in a working phase (`design`..`delivery`) with `wait-state=none`", and `awaiting-confirmation` projects to the new `awaiting-user-confirmation` state.
+
+### Added
+- **Worker phase `done` reintroduced as the sole non-reversible absorbing terminal.** It means the USER has confirmed delivery and is written ONLY after explicit user confirmation (worker-window direct, or relayed from L1) — never autonomously, never self-advanced from `awaiting-confirmation`. In standalone mode `phase=done` is itself the terminal.
+- **New L1 state `awaiting-user-confirmation`.** The orchestrator projects a worker's `phase=awaiting-confirmation` into `state: awaiting-user-confirmation` (orchestrator-written, not in the user-writable set), distinct from `paused` (mid-task waiting on a Q&A/resource). A worker's `phase=done` mirrors to `state: completed`.
+- **Dual confirmation channel, single source of truth (`worker phase=done`).** (A) The user confirms directly in the worker window → the worker writes `phase=done`. (B) The user writes the `confirmed` token in the master entry → L1 dispatches an L2 `orch-driver-agent` with `intent=relay-confirmation` to `send-keys` the confirmation into the worker pane → the worker writes `phase=done` → L1 mirrors `state: completed` on the next poll. L1 never writes `completed` directly from the `confirmed` token; `completed` always mirrors a `phase=done` (the legacy `approved` atomic merge+complete+cleanup remains a deliberate exception, since the worker is cleaned up). The relay is **idempotent** — at most one relay per confirmation, deduplicated via the worker's `monitor.md` `driver-intent`, re-armed only if the worker goes stale. The gate step is now the third L1 site that dispatches an L2 (alongside dispatch/`first-dispatch` and poll/`intervene`).
+
+### Removed
+- **`scripts/orch-confirm.sh` is retired.** It directly wrote `state: completed` on the `confirmed` token, which violated the single-source-of-truth invariant; the `confirmed` token now relays to the worker (which writes `phase=done`) instead. References removed from the README scripts tree, `orch-merge.sh`/`orch-merge-and-cleanup.sh` header comments, and the gate-step exit handling.
+
 ## [0.6.4] — 2026-06-22
 
 ### Changed

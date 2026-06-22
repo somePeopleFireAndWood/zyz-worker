@@ -17,7 +17,8 @@
 #       task-id=<id> state=<state> phase=<phase> wait-state=<state> last-seen=<iso-or-dash>
 #     Missing fields are reported as `-`.
 #     A `state:` field that is missing, unparseable, or not one of
-#     (not-analyzed | blocked | ready | in-progress | paused | completed)
+#     (not-analyzed | blocked | ready | in-progress | paused |
+#      awaiting-user-confirmation | completed)
 #     is reported as `state=not-analyzed`.
 #
 #   Errors (stderr):
@@ -108,7 +109,7 @@ is_legal_task_id() {
 
 is_legal_state_value() {
     case "$1" in
-        not-analyzed|blocked|ready|in-progress|paused|completed) return 0 ;;
+        not-analyzed|blocked|ready|in-progress|paused|awaiting-user-confirmation|completed) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -154,7 +155,7 @@ for f in "${sorted_files[@]}"; do
     phase="-"
     wait_state="-"
 
-    if [ "$state" = "in-progress" ] || [ "$state" = "paused" ]; then
+    if [ "$state" = "in-progress" ] || [ "$state" = "paused" ] || [ "$state" = "awaiting-user-confirmation" ]; then
         ws_file="$LIST_DIR/runtime/$task_id/worker-status.md"
         if [ -f "$ws_file" ] && [ -r "$ws_file" ]; then
             p="$(fm_field "$ws_file" phase)"

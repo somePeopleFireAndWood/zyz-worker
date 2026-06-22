@@ -144,6 +144,62 @@ check_grep_absent() {
     fi
 }
 
+# check_no_affirmative_direct_write <file> <description>
+# S-1 correction guard: assert <file> makes NO AFFIRMATIVE, present-tense claim
+# that the `confirmed` token (or the orchestrator on it) writes `state:
+# completed` DIRECTLY — that is the RETIRED 0.6.5 semantics (the direct write
+# is gone; `completed` only ever mirrors a worker `phase=done`).
+#
+# The subtlety this guard exists for (and why a plain check_grep_absent is
+# WRONG here): the CORRECT, landed wording deliberately RESTATES the retired
+# phrase in NEGATED / past-tense-retirement form, e.g.
+#   - orch-merge.sh:    "The `confirmed` token no longer writes `state: completed` directly — it now relays ..."
+#   - CHANGELOG:        "L1 never writes `completed` directly from the `confirmed` token ..."
+#   - CHANGELOG Removed:"It directly wrote `state: completed` on the `confirmed` token, which violated ..."
+# A fixed-string absence check on "writes state: completed directly" would
+# FALSE-POSITIVE on all of these correct lines.  So we detect the direct-write
+# CLAIM line (a write verb applied to `state: completed`, with the `directly`
+# modifier, on a line that also mentions the `confirmed` token), then EXEMPT any
+# such line that carries a negation / retirement marker (no longer | never |
+# not | wrote [past-tense retirement narration] | retired | violated |
+# instead).  Only an UN-negated, present-tense affirmative direct-write claim
+# fails.
+#
+# This is line-oriented (the claim is always written on one line in these
+# files).  ERE, case-insensitive.
+check_no_affirmative_direct_write() {
+    local file="$1"
+    local desc="$2"
+    if [ ! -f "$REPO_ROOT/$file" ]; then
+        fail "$file missing (cannot scan $desc)"
+        return
+    fi
+    # Direct-write CLAIM signature: a line mentioning the `confirmed` token AND a
+    # write verb applied to `state: completed` (backticks optional) AND the
+    # `directly` modifier.  Either order of write-verb vs. `directly`.
+    local claim_re='confirmed'
+    local writes_re='writes?[[:space:]]+`?state: completed`?[[:space:]]+directly|directly[[:space:]]+writes?[[:space:]]+`?state: completed'
+    # Negation / retirement exemption markers.
+    local exempt_re='no longer|never|[^a-z]not |wrote|retired|violated|instead'
+    local claim_lines
+    claim_lines="$(grep -inE -- "$writes_re" "$REPO_ROOT/$file" 2>/dev/null \
+        | grep -iE -- "$claim_re" || true)"
+    if [ -z "$claim_lines" ]; then
+        pass "$file has no affirmative confirmed-token direct-write wording ($desc)"
+        return
+    fi
+    # Some line matched the direct-write phrase.  Fail only if at least one such
+    # line is NOT negated / retirement-marked.
+    local offenders
+    offenders="$(printf '%s\n' "$claim_lines" | grep -ivE -- "$exempt_re" || true)"
+    if [ -z "$offenders" ]; then
+        pass "$file direct-write phrase present only in negated/retirement form ($desc)"
+    else
+        fail "$file contains an AFFIRMATIVE confirmed-token direct-write claim ($desc) — RETIRED in 0.6.5 (completed must mirror worker phase=done, never be direct-written from the confirmed token).  Offending line(s):
+$(printf '%s\n' "$offenders" | sed 's/^/      | /')"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Static lists shared across tests
 # ---------------------------------------------------------------------------
@@ -154,7 +210,6 @@ HELPER_SCRIPTS=(
     "scripts/orch-heartbeat-daemon.sh"
     "scripts/orch-cleanup-worker.sh"
     "scripts/orch-merge-and-cleanup.sh"
-    "scripts/orch-confirm.sh"
     "scripts/orch-merge.sh"
 )
 
@@ -185,8 +240,12 @@ run_T1() {
     # slash command
     check_file_exists "commands/orchestrate-tasks.md"
 
-    # Helper scripts (incl. orch-confirm.sh / orch-merge.sh, done/merge
-    # decouple): exist + executable
+    # Helper scripts (incl. orch-merge.sh, done/merge decouple): exist +
+    # executable.  NOTE: orch-confirm.sh is RETIRED (0.6.5 confirmation/done
+    # state-model fix) — the `confirmed` token now relays through L2
+    # (intent=relay-confirmation) so the worker writes phase=done, instead of
+    # orch-confirm.sh directly writing `state: completed`.  Its retirement is
+    # locked by the positive non-existence assertion below.
     local s
     for s in "${HELPER_SCRIPTS[@]}"; do
         check_file_exists "$s"
@@ -194,6 +253,15 @@ run_T1() {
             check_file_executable "$s"
         fi
     done
+
+    # orch-confirm.sh must NOT exist (retired in 0.6.5).  Asserting its absence
+    # positively means a future re-introduction of the direct-write path turns
+    # this check red.
+    if [ ! -e "$REPO_ROOT/scripts/orch-confirm.sh" ]; then
+        pass "orch-confirm.sh is retired (file absent; confirmed now relays via L2 relay-confirmation)"
+    else
+        fail "orch-confirm.sh still exists but was retired in 0.6.5 (confirmed must relay via L2 relay-confirmation, not direct-write state: completed): scripts/orch-confirm.sh"
+    fi
 
     # The test script itself
     check_file_exists "scripts/test-orchestration-helpers.sh"
@@ -473,10 +541,38 @@ run_T3() {
     # execute-task SKILL.md
     local etsk="skills/execute-task/SKILL.md"
     check_grep "$etsk" "'## Orchestrated Mode' heading" '^## Orchestrated Mode([[:space:]]|$)'
-    check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'awaiting-confirmation'" \
-        "awaiting-confirmation"
-    check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'absorbing'" \
-        "absorbing"
+
+    # ---- absorbing-state contract: done is absorbing, awaiting-confirmation
+    #      is reversible (0.6.5 confirmation/done state-model fix, design F5) ---
+    # PRIOR STATE OF THIS BLOCK (now retired): it asserted that execute-task
+    # SKILL.md merely *contained* the two independent fixed-strings
+    # `awaiting-confirmation` AND `absorbing`.  Both words still appear after the
+    # 0.6.5 fix (awaiting-confirmation is still a phase; done is now the
+    # absorbing one), so that pair PASSED VACUOUSLY and its description lied —
+    # it claimed awaiting-confirmation was the absorbing terminal.
+    #
+    # The 0.6.5 contract INVERTS the rule: `awaiting-confirmation` is reversible
+    # (a review of an awaiting-confirmation worker that asks for changes rolls it
+    # back to implementation); the SOLE non-reversible / absorbing terminal is
+    # `done`, written only after explicit user confirmation.  These three
+    # discriminating anchors are present in the NEW prose and ABSENT from the OLD
+    # (which said the non-reversible phase was `awaiting-confirmation`), so each
+    # would FAIL if the old awaiting-confirmation-absorbing wording were still in
+    # place — i.e. they are non-vacuous.
+    #
+    # (1) The non-reversible phase is `done` (NOT awaiting-confirmation).
+    check_grep "$etsk" "absorbing rule: the non-reversible phase is \`done\`" \
+        'non-reversible phase is `done`'
+    # (2) `done` is tied to the word "absorbing" (the new roll-back-rule heading
+    #     reads "phase may roll back, except \`done\` which is absorbing").
+    check_grep_fixed "$etsk" "absorbing rule: \`done\` is the absorbing terminal" \
+        'except `done` which is absorbing'
+    # (3) `awaiting-confirmation` is explicitly REVERSIBLE.  ERE: from the
+    #     awaiting-confirmation token to "remains reversible" within one
+    #     sentence (no intervening period), so a future edit that re-froze
+    #     awaiting-confirmation as absorbing would no longer match.
+    check_grep "$etsk" "absorbing rule: \`awaiting-confirmation\` remains reversible" \
+        'awaiting-confirmation[^.]*remains reversible'
 
     # ---- delivery test-gate (registration-style hard gate) --------------
     # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/design-test-gate.md
@@ -581,6 +677,169 @@ run_T3() {
     #      ($skill = orch SKILL.md, defined above in this function.)
     check_grep_fixed "$skill" "T3''' SKILL.md completed-state 'decoupled' anchor" \
         "decoupled"
+
+    # ---- T3'''' (0.6.5 confirmation/done state-model fix) ----------------
+    # The 0.6.5 fix re-introduces worker phase `done` as the sole absorbing
+    # terminal, makes `awaiting-confirmation` reversible, adds a new L1 state
+    # `awaiting-user-confirmation`, and routes the `confirmed` token through an
+    # L2 driver intent `relay-confirmation` (retiring orch-confirm.sh's
+    # direct-write).  These doc-grep anchors pin the new contract wording the
+    # implementation must land; the absorbing-rule anchors themselves live in
+    # the execute-task SKILL.md block above (design F5).
+
+    # (B1) Worker phase enum gains `done`.  Two mirror sites carry the 7-value
+    #      enum string: the orchestration SKILL.md "Worker status frontmatter"
+    #      excerpt and the worker-status.md template comment.  The execute-task
+    #      SKILL.md carries the canonical phase line too.  We anchor on the
+    #      `awaiting-confirmation | done | error` tail (fixed string) so the
+    #      check FAILS on the OLD `awaiting-confirmation | error` enum (no
+    #      `done`) and PASSES only once `done` is spliced back in.
+    local worker_status_tpl="skills/orchestration-scheduling-task/templates/worker-status.md"
+    check_grep_fixed "$etsk" "B1 execute-task SKILL.md phase enum has '| done | error'" \
+        "awaiting-confirmation | done | error"
+    check_grep_fixed "$skill" "B1 orch SKILL.md worker-status excerpt phase enum has '| done | error'" \
+        "awaiting-confirmation | done | error"
+    check_grep_fixed "$worker_status_tpl" "B1 worker-status.md template phase enum has '| done | error'" \
+        "awaiting-confirmation | done | error"
+
+    # (B3) L1 state enum gains `awaiting-user-confirmation`.  The orchestration
+    #      SKILL.md state enum (and its state-machine prose) must list it.
+    #      `awaiting-user-confirmation` does not exist anywhere in the tree
+    #      before this change, so a bare presence check is already
+    #      discriminating.
+    check_grep_fixed "$skill" "B3 orch SKILL.md state enum has 'awaiting-user-confirmation'" \
+        "awaiting-user-confirmation"
+
+    # (B4) Projection asserts (doc-grep on main-agent.md; design S2: T5 can only
+    #      verify the helper PASSES the phase value through, not the L1
+    #      projection — the projection rule itself is doc-only).  The main-agent
+    #      project/poll step must map:
+    #        phase=awaiting-confirmation -> state: awaiting-user-confirmation
+    #        phase=done                  -> state: completed
+    #      ($main = orch prompts/main-agent.md, defined above in this function.)
+    #
+    #      (a) awaiting-user-confirmation appears in the projection bullet
+    #          (fixed string; absent from the OLD "keep state: in-progress"
+    #          projection).
+    check_grep_fixed "$main" "B4 main-agent.md projects awaiting-confirmation -> awaiting-user-confirmation" \
+        "awaiting-user-confirmation"
+    #      (b) phase=done is tied to completed in the projection.  ERE from the
+    #          `phase=done` token to `completed` within one bullet (no
+    #          intervening period), so it FAILS if the done->completed row is
+    #          missing.
+    check_grep "$main" "B4 main-agent.md projects phase=done -> completed" \
+        'phase=done[^.]*completed'
+
+    # (B5) scan accepts awaiting-user-confirmation as a legal state (not coerced
+    #      to not-analyzed).  orch-scan-tasks.sh's legal-state case branch must
+    #      include the new value.  doc-grep on the script source (the legal
+    #      values are an inline `case` alternation), fixed string.
+    check_grep_fixed "scripts/orch-scan-tasks.sh" \
+        "B5 orch-scan-tasks.sh legal-state case accepts 'awaiting-user-confirmation'" \
+        "awaiting-user-confirmation"
+
+    # (B6) gate routes `confirmed` to L2 relay-confirmation (NOT orch-confirm.sh).
+    #      The 0.6.5 gate step replaces the direct `state: completed` write with
+    #      an L2 dispatch (intent=relay-confirmation) that send-keys a human-
+    #      readable confirmation into the worker pane; the worker then writes
+    #      phase=done and L1 mirrors completed on the next poll.
+    #      (a) the gate must mention relay-confirmation (fixed string; absent
+    #          from the OLD gate that called orch-confirm.sh).
+    check_grep_fixed "$main" "B6 main-agent.md gate routes confirmed via 'relay-confirmation'" \
+        "relay-confirmation"
+    #      (b) the gate must NOT call orch-confirm.sh anymore (retired path).
+    check_grep_absent "$main" "B6 main-agent.md gate no longer calls 'orch-confirm.sh'" \
+        "orch-confirm.sh"
+    #      (c) F1 idempotency: relay is dispatched at most once per
+    #          confirmation, de-duped by reading the worker's monitor.md
+    #          `driver-intent` record (an existing relay-confirmation record
+    #          means do-not-resend).  We anchor the F1 re-dispatch guard on TWO
+    #          discriminating facts a non-idempotent (every-tick re-send) gate
+    #          would lack:
+    #            - the "at most once" idempotency phrase (ERE, case-insensitive
+    #              via char classes so it matches either "AT MOST ONCE" or
+    #              "at most once" — the design does not pin the casing); and
+    #            - the gate reads `driver-intent` from monitor.md for the relay
+    #              de-dup (the concrete de-dup mechanism the design F1 names; the
+    #              old poll step read only claude-started/needs-* fields, never
+    #              driver-intent, so this is non-vacuous).
+    check_grep "$main" "B6 main-agent.md gate relay idempotency 'at most once' (any case)" \
+        '[Aa][Tt] [Mm][Oo][Ss][Tt] [Oo][Nn][Cc][Ee]'
+    check_grep_fixed "$main" "B6 main-agent.md gate reads monitor.md 'driver-intent' for relay de-dup" \
+        "driver-intent"
+
+    # (B9) monitor.md template driver-intent enum gains relay-confirmation.
+    #      The persisted-schema enum comment in the template must list all three
+    #      intents.  We anchor on the bare value (fixed string; absent from the
+    #      OLD `first-dispatch | intervene` enum).
+    local monitor_tpl="skills/orchestration-scheduling-task/templates/monitor.md"
+    check_grep_fixed "$monitor_tpl" "B9 monitor.md template driver-intent enum has 'relay-confirmation'" \
+        "relay-confirmation"
+
+    # ---- S-1 (0.6.5): confirmed-token retired-wording absent ------------
+    # The 0.6.5 fix RETIRES scripts/orch-confirm.sh entirely.  B7 / T1 / T11a
+    # already lock the SCRIPT FILE's absence and B6 locks that main-agent.md's
+    # gate no longer calls it.  But the design F3 / acceptance-criteria
+    # (design.md L196: "orch-confirm.sh 已 retire（含 README/orch-merge.sh 注释/
+    # exit 处理 bullet 全部清除）") require the retirement to be COMPLETE: the
+    # satellite files that USED to reference orch-confirm.sh's direct
+    # `state: completed` write must have that wording purged too, or the
+    # retirement is half-done and a reader is left a stale pointer to a deleted
+    # script.  This guard pins the F3 purge so it cannot silently regress —
+    # mirroring the design's closing whole-repo grep on `orch-confirm`
+    # (design.md L203).
+    #
+    # Each file must NOT contain the literal `orch-confirm` anywhere:
+    #   - README.md           — the scripts/ directory tree (design L211) must
+    #                           no longer list orch-confirm.sh.
+    #   - scripts/orch-merge.sh — its header comment (design L10) used to point
+    #                           at orch-confirm.sh; it now describes the relay
+    #                           path instead and must not name the retired
+    #                           script.
+    #   - scripts/orch-merge-and-cleanup.sh — defensive third site (design L168
+    #                           flags its header as a candidate); the legacy
+    #                           `approved` path is unchanged, but it must not
+    #                           reference the retired orch-confirm.sh either.
+    # `check_grep_absent` is fixed-string (`grep -qF`), so the `orch-confirm`
+    # substring also catches `orch-confirm.sh` / `scripts/orch-confirm.sh`.
+    local s1_file
+    for s1_file in \
+        "README.md" \
+        "scripts/orch-merge.sh" \
+        "scripts/orch-merge-and-cleanup.sh"
+    do
+        check_grep_absent "$s1_file" \
+            "S-1 $s1_file has no retired 'orch-confirm' wording (F3 purge)" \
+            "orch-confirm"
+    done
+
+    # ---- S-1 correction: confirmed-token DIRECT-WRITE wording absent ----
+    # Purging the orch-confirm.sh NAME (above) is not enough: a file could drop
+    # the script name yet still carry stale prose asserting that the `confirmed`
+    # token writes `state: completed` DIRECTLY — the retired semantics.  The
+    # 0.6.5 invariant is that `completed` ALWAYS mirrors a worker `phase=done`
+    # (for the confirmed/relay channel); no doc may make an affirmative,
+    # present-tense direct-write claim.  check_no_affirmative_direct_write
+    # detects that claim while EXEMPTING the deliberately-restated negated /
+    # past-tense-retirement forms the correct wording uses ("no longer writes
+    # ... directly", "never writes ... directly", "directly wrote ... violated")
+    # — see the helper's header for why a plain check_grep_absent would
+    # false-positive on the correct landed wording.
+    #
+    # Cover the gate doc (the primary site that USED to direct-write), the
+    # master-entry template `confirmed` token comment, and the three satellite
+    # files already guarded above for the script name.
+    local s1_dw_file
+    for s1_dw_file in \
+        "skills/orchestration-scheduling-task/prompts/main-agent.md" \
+        "skills/orchestration-scheduling-task/templates/master-list-task-entry.md" \
+        "README.md" \
+        "scripts/orch-merge.sh" \
+        "scripts/orch-merge-and-cleanup.sh"
+    do
+        check_no_affirmative_direct_write "$s1_dw_file" \
+            "S-1 confirmed-token direct-write claim retired in $s1_dw_file"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -1239,7 +1498,7 @@ run_T5() {
 
     # Rollback is now allowed among working phases (the helper is a pure
     # pass-through reader; the absorbing-state rule is a worker-side contract
-    # verified at the doc level in T2, not enforced by orch-check-worker.sh).
+    # verified at the doc level in T3, not enforced by orch-check-worker.sh).
     write_worker_status "$runtime" review none
     t5_assert_check "$list_dir" "foo" "phase" "review"
     write_worker_status "$runtime" implementation none
@@ -1247,12 +1506,37 @@ run_T5() {
     write_worker_status "$runtime" review none
     t5_assert_check "$list_dir" "foo" "phase" "review"
 
-    # awaiting-confirmation is the terminal worker-side state (replaces the old
-    # `done`).  The helper just echoes whatever phase the file holds.
+    # `awaiting-confirmation` is the worker's furthest SELF-reachable phase
+    # (self-declared finished, awaiting user confirmation).  It is NOT terminal:
+    # the 0.6.5 state-model fix makes it reversible, and re-introduces `done` as
+    # the sole absorbing terminal — written by the worker ONLY after explicit
+    # user confirmation.  The helper just echoes whatever phase the file holds;
+    # the absorbing rule (done is non-reversible; awaiting-confirmation is
+    # reversible) is a worker-side CONTRACT verified by doc-grep in T3 (design
+    # B2/F5), NOT enforced by orch-check-worker.sh — so this data-plane test only
+    # proves the helper carries each value through, including `done`.
     write_worker_status "$runtime" delivery none
     t5_assert_check "$list_dir" "foo" "phase" "delivery"
     write_worker_status "$runtime" awaiting-confirmation none
     t5_assert_check "$list_dir" "foo" "phase" "awaiting-confirmation"
+
+    # F6: prove the helper passes the re-introduced `done` terminal through
+    # verbatim (write_worker_status interpolates `phase: $phase` with NO enum
+    # validation — verified by reading the helper — so an unknown/new phase
+    # string is carried as-is; this is exactly the pass-through the new contract
+    # relies on for L1 to mirror `done` -> `state: completed`).
+    write_worker_status "$runtime" done none
+    t5_assert_check "$list_dir" "foo" "phase" "done"
+
+    # Rollback pass-through (the new contract allows awaiting-confirmation to
+    # roll back): write awaiting-confirmation, then roll back to implementation,
+    # and prove the data plane carries the rollback the helper does NOT forbid.
+    # (The absorbing-rule guarantee that `done` itself never rolls back is a
+    # doc-level worker contract, asserted by T3 B2 — not by this helper.)
+    write_worker_status "$runtime" awaiting-confirmation none
+    t5_assert_check "$list_dir" "foo" "phase" "awaiting-confirmation"
+    write_worker_status "$runtime" implementation none
+    t5_assert_check "$list_dir" "foo" "phase" "implementation"
 
     # Heartbeat staleness: backdate heartbeat and expect heartbeat-status=stale.
     write_heartbeat "$hb" stale
@@ -3274,6 +3558,21 @@ run_T9() {
       | subagents/ : $line_sub"
         fi
     fi
+
+    # ---- B8 (0.6.5 confirmation/done state-model fix, design F7): the new L2
+    #      driver intent `relay-confirmation` must be present in BOTH driver
+    #      mirror copies.  This is the presence half of the F7 double-safety
+    #      (the body-diff half is in T10, which extends the mirror guard to the
+    #      driver pair).  `relay-confirmation` does not exist in the tree before
+    #      this change, so a bare presence check per file is already
+    #      discriminating; pinning BOTH copies ensures one mirror cannot gain
+    #      the intent while the other is missed.
+    local drvf
+    for drvf in "$drv_agent" "$drv_sub"; do
+        check_grep_fixed "$drvf" \
+            "B8 driver intent 'relay-confirmation' present in $drvf" \
+            "relay-confirmation"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -3383,153 +3682,75 @@ run_T10() {
     t10_mirror_diff "agents/review-agent.md" \
                     "subagents/review-agent.md" \
                     "review-agent"
+
+    # ---- B8 (0.6.5, design F7): extend the mirror body-diff to the L2 driver
+    #      pair so the new `relay-confirmation` section cannot drift between the
+    #      two copies (T9 already pins its PRESENCE in both; this pins their
+    #      BODIES identical).
+    #
+    #      BASELINE DIVERGENCE (verified by reading both driver files): the
+    #      agents/ copy carries a leading `---`...`---` YAML frontmatter block
+    #      (name/description/tools) followed by a blank line before the
+    #      `# orchDriverAgent Prompt` heading; the subagents/ copy is
+    #      frontmatter-free and starts directly with that heading.  This is the
+    #      SAME shape as the implementation/review pairs, so the SAME normalizer
+    #      handles it: strip_frontmatter drops the agents/ YAML block, and
+    #      t10_normalize_body's `sed '/./,$!d'` trims the surviving leading
+    #      blank line.  UNLIKE the execute-task pairs, the driver pair's
+    #      role-intro line is BYTE-IDENTICAL on both sides ("You are
+    #      orchDriverAgent (the L2 driver) for the zyz-worker
+    #      orchestration-scheduling-task skill."), so t10_normalize_body's
+    #      role-intro substitution simply does not fire on it — and it does not
+    #      need to, because identical lines diff clean.  No new normalization is
+    #      required; the existing one is a strict superset that leaves the driver
+    #      bodies green on a correct baseline while still catching ANY drift in
+    #      the new relay-confirmation section (or anywhere else).
+    t10_mirror_diff "agents/orch-driver-agent.md" \
+                    "subagents/orch-driver-agent.md" \
+                    "orch-driver-agent"
 }
 
 # ---------------------------------------------------------------------------
-# T11. Done/merge decouple — orch-confirm.sh + orch-merge.sh path unit tests.
+# T11. Confirmation/merge path unit tests.
 #
-# Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/
-# design-done-merge-decouple.md: `state: completed` is decoupled from merge.
-# Two NEW helper scripts implement the split:
-#   - orch-confirm.sh <task-id> <list-dir>          — checks the `confirmed`
-#     token, writes `state: completed`, touches NO git and NO worktree.
-#     Exit codes: 0 success / 2 arg / 4 master-entry-missing / 10 no token.
-#     It has NO git/tmux dependency, so T11(a) runs UNCONDITIONALLY (static).
-#   - orch-merge.sh <task-id> <list-dir> <base>     — checks the `merge` token,
-#     merges the task branch into base + pushes, leaves `state:` UNCHANGED and
-#     does NOT clean up the worktree.  It mirrors orch-merge-and-cleanup.sh's
-#     conventions (hard-requires tmux + git at entry), so T11(b) is gated on
-#     tmux+git exactly like T6.
+# T11(a) — orch-confirm.sh RETIREMENT guard (0.6.5 confirmation/done
+#   state-model fix).  Background: the 0.6.4 done/merge-decouple shipped an
+#   orch-confirm.sh that, on the `confirmed` token, DIRECTLY wrote
+#   `state: completed` (no git, no worktree).  The 0.6.5 fix RETIRES that
+#   script: `state: completed` must only ever be a MIRROR of a worker writing
+#   `phase=done`, so the `confirmed` token now relays through an L2 driver
+#   (intent=relay-confirmation) that send-keys a confirmation into the worker
+#   pane; the worker writes `phase=done` and L1 projects `completed` on the
+#   next poll (single source of truth = worker phase=done).  The legacy
+#   `approved` path (orch-merge-and-cleanup.sh: atomic merge + completed +
+#   cleanup) is a deliberate exception and is unchanged (design RC2).
 #
-# These two tests will FAIL until the parallel implementation lands the new
-# scripts — that is expected and intentional; they are written to the
-# documented contract (exit codes, stdout tokens, behavior).
+#   The OLD T11a tested the now-deleted direct-write path (confirmed -> exit 0
+#   + confirm-status=success + state: completed).  That path no longer exists,
+#   so T11a is REWRITTEN to LOCK the retirement: the script must be absent, and
+#   the confirmed->relay contract is asserted by the gate doc-greps in T3 (B6).
+#   This guard is static (no git/tmux needed) and runs UNCONDITIONALLY.
 #
-# t11_confirm_master_entry <list-dir> <task-id> <token-line-or-empty>
-# Writes a minimal master entry under <list-dir>/tasks/<task-id>.md with
-# state: in-progress.  When <token-line> is non-empty it is appended as the body
-# of a `## Pending Merge Approval` section (e.g. "confirmed by T11-test");
-# when empty, NO Pending Merge Approval section is written (the negative case).
-# Mirrors the write_master_entry / t4p_write_master_entry helpers' shape.
+# T11(b) — orch-merge.sh <task-id> <list-dir> <base>: checks the `merge` token,
+#   merges the task branch into base + pushes, leaves `state:` UNCHANGED and
+#   does NOT clean up the worktree.  It mirrors orch-merge-and-cleanup.sh's
+#   conventions (hard-requires tmux + git at entry), so T11(b) is gated on
+#   tmux+git exactly like T6.  T11(b) is UNCHANGED by the 0.6.5 fix.
 # ---------------------------------------------------------------------------
-t11_confirm_master_entry() {
-    local list_dir="$1"
-    local task_id="$2"
-    local token_line="$3"
-    mkdir -p "$list_dir/tasks"
-    {
-        echo "---"
-        echo "task-id: $task_id"
-        echo "project: t11-mock"
-        echo "state: in-progress"
-        echo "priority: normal"
-        echo "branch: task/$task_id"
-        echo "base: main"
-        # Worktree path lives UNDER the (tmproot-rooted) list-dir so the
-        # negative-merge assertion can prove orch-confirm.sh leaves it absent
-        # without racing a fixed /tmp path another process might create.
-        echo "worktree: $list_dir/worktree/$task_id"
-        echo "tmux-session: zyz-task-$task_id"
-        echo "blocked-by: []"
-        echo "merged-with: []"
-        echo "deps-tentative: false"
-        echo "last-seen:"
-        echo "heartbeat-stale-sec: 300"
-        echo "created-at: 2026-06-22"
-        echo "updated-at: 2026-06-22"
-        echo "---"
-        echo ""
-        echo "# $task_id"
-        echo ""
-        echo "## Description"
-        echo ""
-        echo "T11 done/merge-decouple fixture."
-        if [ -n "$token_line" ]; then
-            echo ""
-            echo "## Pending Merge Approval"
-            echo ""
-            echo "$token_line"
-        fi
-    } >"$list_dir/tasks/$task_id.md"
-}
 
-# T11(a) — orch-confirm.sh `confirmed`-only path (static, no git/tmux needed).
+# T11(a) — orch-confirm.sh retirement guard (static; no git/tmux needed).
 run_T11_confirm() {
-    say_header "T11a orch-confirm.sh confirmed-only path (no git)"
+    say_header "T11a orch-confirm.sh retirement guard (confirmed now relays via L2)"
 
-    local confirm="$REPO_ROOT/scripts/orch-confirm.sh"
-    if [ ! -x "$confirm" ]; then
-        skip "T11a orch-confirm.sh confirmed -> exit 0 + confirm-status=success (script missing or not executable)"
-        skip "T11a orch-confirm.sh writes state: completed (script missing or not executable)"
-        skip "T11a orch-confirm.sh did NOT require a git repo / worktree untouched (script missing or not executable)"
-        skip "T11a orch-confirm.sh without 'confirmed' token -> exit 10 (script missing or not executable)"
-        return
-    fi
-
-    local T11_ROOT
-    T11_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t11a.XXXXXX")"
-    # NOTE: deliberately NO `trap ... EXIT` here.  T11 runs AFTER T8, and T8
-    # installs (and never clears) `trap "t8_teardown" EXIT` — the chained
-    # teardown that the whole suite relies on to fire its final F8 residue check
-    # + tmproot removal at process exit.  Installing an EXIT trap here would
-    # clobber that chain (and clearing it with `trap - EXIT` would drop it
-    # entirely).  This group has no mid-function early `return` after the mktemp
-    # below, so a plain inline `rm -rf` at the end is sufficient and leak-free.
-
-    # ---- Positive case: a master entry WITH the `confirmed` token. -------
-    # The list-dir is a plain tmpdir with NO git repo anywhere — proving
-    # orch-confirm.sh does its job without merging anything.
-    local list_pos="$T11_ROOT/list-pos"
-    t11_confirm_master_entry "$list_pos" "foo" "confirmed by T11-test"
-    local entry_pos="$list_pos/tasks/foo.md"
-
-    # The worktree path the fixture entry names (never created — assert it
-    # stays untouched, i.e. orch-confirm must not create or delete it).  It is
-    # rooted under the tmproot list-dir (see t11_confirm_master_entry), so no
-    # unrelated process can race it into existence.
-    local declared_wt="$list_pos/worktree/foo"
-
-    local out rc
-    out="$(bash "$confirm" foo "$list_pos" </dev/null 2>&1)"
-    rc=$?
-
-    # (1) exit 0 + stdout confirm-status=success.
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF 'confirm-status=success'; then
-        pass "T11a orch-confirm.sh confirmed -> exit 0 + confirm-status=success"
+    # The direct-write path is RETIRED: scripts/orch-confirm.sh must NOT exist.
+    # Its absence is the contract — `confirmed` now routes through the gate to
+    # an L2 relay-confirmation dispatch (asserted by T3 B6), and `completed` is
+    # never written except as a mirror of worker phase=done.
+    if [ ! -e "$REPO_ROOT/scripts/orch-confirm.sh" ]; then
+        pass "T11a orch-confirm.sh is retired (file absent; confirmed relays via L2 relay-confirmation, not a direct state: completed write)"
     else
-        fail "T11a orch-confirm.sh confirmed: got exit=$rc, stdout did not contain 'confirm-status=success'.  Output:
-$(printf '%s\n' "$out" | sed 's/^/      | /')"
+        fail "T11a orch-confirm.sh still exists but was retired in 0.6.5 — the confirmed token must relay through L2 (intent=relay-confirmation) so the worker writes phase=done; a direct-write to state: completed violates the single-source-of-truth invariant: scripts/orch-confirm.sh"
     fi
-
-    # (2) master entry frontmatter now has state: completed.
-    if grep -qE '^state:[[:space:]]*completed' "$entry_pos"; then
-        pass "T11a orch-confirm.sh writes state: completed into master entry"
-    else
-        fail "T11a orch-confirm.sh did NOT set state: completed.  Frontmatter:
-$(sed -n '1,20p' "$entry_pos" 2>/dev/null | sed 's/^/      | /')"
-    fi
-
-    # (3) NEGATIVE: no merge happened.  There is no git repo in this fixture,
-    #     so the only thing to verify is that orch-confirm.sh did NOT require
-    #     one (it exited 0 above, not 3 missing-dep / not a git error) AND that
-    #     the declared worktree dir was neither created nor otherwise touched
-    #     (it never existed; confirm must leave it absent — no cleanup, no add).
-    if [ "$rc" -eq 0 ] && [ ! -e "$declared_wt" ]; then
-        pass "T11a orch-confirm.sh did NOT require a git repo and left the declared worktree untouched (no merge, no cleanup)"
-    else
-        fail "T11a orch-confirm.sh negative-merge assertion failed: exit=$rc (expected 0, i.e. no git dep) and declared worktree '$declared_wt' exists=$([ -e "$declared_wt" ] && echo yes || echo no) (expected absent)"
-    fi
-
-    # ---- Negative case: a FRESH master entry LACKING the token. ----------
-    # A second entry with NO `## Pending Merge Approval` section must exit 10
-    # ("no matching token", per the cross-script convention).
-    local list_neg="$T11_ROOT/list-neg"
-    t11_confirm_master_entry "$list_neg" "bar" ""
-    run_and_check_exit 10 \
-        "T11a orch-confirm.sh without 'confirmed' token -> exit 10" \
-        bash "$confirm" bar "$list_neg"
-
-    rm -rf "$T11_ROOT"
 }
 
 # T11(b) — orch-merge.sh `merge`-only path (real git fixture, gated tmux+git).

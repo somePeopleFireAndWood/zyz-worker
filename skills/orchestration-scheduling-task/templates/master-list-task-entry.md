@@ -3,8 +3,8 @@ task-id: <task-id>                # immutable; matches the filename without `.md
 project: <project-name>           # user-maintained; label only; default = basename source-repo when omitted
 source-repo: ~/workspace/<repo>   # required; supports ~/; absolute or ~/ form
 state: not-analyzed               # user-writable:  not-analyzed | blocked | ready | completed
-                                  # orchestrator-only: in-progress | paused
-                                  # All 6 values are accepted by orch-scan-tasks.sh;
+                                  # orchestrator-only: in-progress | paused | awaiting-user-confirmation
+                                  # All 7 values are accepted by orch-scan-tasks.sh;
                                   # users should only hand-write one of the first four.
 priority: normal                  # low | normal | high
 branch: task/<task-id>            # default; override if needed
@@ -73,9 +73,11 @@ updated-at: <yyyy-mm-dd>
   orchestrator never initiates any of them autonomously — each requires the user
   to write the matching token in this section. Tokens (routing order merge → confirm → cleanup):
 
-  - `confirmed` — mark `state: completed` (user-confirmed delivery). Does NOT
-    merge to base. Does NOT clean up the worktree. The most common "done without
-    merge" case. Use this when finishing via PR (see PR-flow note below).
+  - `confirmed` — records the user's confirmation; the orchestrator relays it to the
+    worker (dispatching an L2 `relay-confirmation`), which advances to `phase=done`;
+    the orchestrator then mirrors `state: completed` (it does NOT write `completed`
+    directly). Does NOT merge to base. Does NOT clean up the worktree. The most common
+    "done without merge" case. Use this when finishing via PR (see PR-flow note below).
   - `merge` (or `merge: <base>`) — merge the task branch into base + push. Does
     NOT change `state`. Does NOT clean up the worktree. A `<base>` in the token
     overrides the frontmatter `base:` field (default `main`).
@@ -93,7 +95,8 @@ updated-at: <yyyy-mm-dd>
 
   PR flow: to finish via PR, let the worker reach `phase=awaiting-confirmation`,
   open/review/merge the PR yourself (outside zyz-worker), then write `confirmed`
-  (NOT `merge`) here so the orchestrator records `state: completed` without running
+  (NOT `merge`) here. The orchestrator relays the confirmation to the worker, which
+  writes `phase=done`; the orchestrator then mirrors `state: completed` without running
   any git merge. See `## State Machine` → "PR flow" in
   `skills/orchestration-scheduling-task/SKILL.md`.
 
