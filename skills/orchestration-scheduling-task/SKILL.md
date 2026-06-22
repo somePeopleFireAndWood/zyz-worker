@@ -79,6 +79,11 @@ Orchestration is a **3-layer call hierarchy**. The split exists because interact
 │   conservative│ │               │ │               │
 │   send-keys   │ │               │ │               │
 │   rescue      │ │               │ │               │
+│ · relay-conf: │ │               │ │               │
+│   send-keys a │ │               │ │               │
+│   user        │ │               │ │               │
+│   confirmation│ │               │ │               │
+│   into pane   │ │               │ │               │
 │ · set needs-  │ │               │ │               │
 │   user (only  │ │               │ │               │
 │   waiting-    │ │               │ │               │
@@ -192,7 +197,7 @@ Use these templates when creating master-list artifacts:
 - **Master entries are co-written with the user.** The orchestrator writes via `tmpfile + rename`. **Before the user edits a master entry in an external editor, the user must `Ctrl-C` the orchestrator** so the flock releases. Restart the orchestrator once the edit is saved.
 - **Each worker writes only its own runtime files.** A worker writes `worker-status.md`, `question.md`, and uses `heartbeat` via the daemon. The orchestrator reads but never writes a worker's runtime files (except for archival during cleanup). The orchestrator writes the master entry; the worker never writes the master entry.
 - **Heuristic analysis is always tentative.** Dependency, project, merge-with suggestions written by the orchestrator carry `deps-tentative: true` in the master entry frontmatter until the user flips it to `false`.
-- **No automatic state change, merge, or cleanup.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates them autonomously. Tokens: `confirmed` (mark `state: completed`, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`.
+- **No automatic state change, merge, or cleanup.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates them autonomously. Tokens: `confirmed` (relay the user's confirmation to the worker so it writes `phase=done`, which the orchestrator then mirrors to `state: completed`; no direct state write, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`.
 - **`task-id` is whitelisted.** Helper scripts reject any `task-id` that does not match `^[a-zA-Z0-9_-]+$`. The `tmux` session, git branch, worktree path, and runtime dir all embed the literal `task-id`.
 - **Worker tmux session name is fixed-prefix `zyz-task-<task-id>`.** Default git branch is `task/<task-id>`. Default merge base is `main`; override via master entry frontmatter `base:` field.
 - **Heartbeat thresholds default to 300 s** (fresh / suspect / stale tiers per §A.6 of the design spec). When the worker reports `wait-state=waiting-user`, the threshold widens to 900 s. Do not drop below 120 s except on a strictly local (non-network) filesystem.
@@ -237,7 +242,7 @@ The lock guards only orchestrator-vs-orchestrator concurrency. User-vs-orchestra
 task-id: <task-id>            # immutable
 project: <project name>       # user maintained; label only; default = basename source-repo when omitted
 source-repo: ~/workspace/<repo>  # required; absolute path or ~/-prefixed; supports ~/ expansion
-state: not-analyzed           # not-analyzed | blocked | ready | in-progress | paused | completed
+state: not-analyzed           # not-analyzed | blocked | ready | in-progress | paused | awaiting-user-confirmation | completed
 priority: normal              # low | normal | high
 branch: task/<task-id>        # default; user can override
 base: main                    # merge base; user can override
@@ -252,13 +257,13 @@ created-at: <date>
 updated-at: <date>
 ```
 
-Legal user-written values for `state:` are `not-analyzed | blocked | ready | completed`. The orchestrator writes `in-progress | paused` on its own.
+Legal user-written values for `state:` are `not-analyzed | blocked | ready | completed`. The orchestrator writes `in-progress | paused | awaiting-user-confirmation` on its own (`awaiting-user-confirmation` is orchestrator-projected from the worker's phase, never user-written).
 
 ### Worker status frontmatter (excerpt)
 
 ```yaml
 task-id: <task-id>
-phase: design | implementation | testing | review | delivery | awaiting-confirmation | error
+phase: design | implementation | testing | review | delivery | awaiting-confirmation | done | error
 phase-since: <iso>
 wait-state: none | waiting-user | waiting-subagent | waiting-resource
 waiting-reason: <free text; non-empty when wait-state != none>
@@ -270,16 +275,17 @@ The worker flushes status before any suspend, before dispatching a subagent, and
 
 ## State Machine
 
-Six explicit states + one orchestrator-derived state (`stale`):
+Seven explicit states + one orchestrator-derived state (`stale`):
 
 | State | Meaning | Set by |
 |---|---|---|
 | `not-analyzed` | Task is new; orchestrator has not analyzed it yet. | template default / scan |
 | `blocked` | Dependencies unmet, or worker reported `phase=error`. | orchestrator |
 | `ready` | No blockers; dispatchable. | orchestrator |
-| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; phase not awaiting-confirmation/error. | orchestrator |
+| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; worker in a working phase (`design`..`delivery`) with `wait-state=none`. | orchestrator |
 | `paused` | Worker dispatched; `wait-state != none`. | orchestrator (projects worker's wait-state) |
-| `completed` | User-confirmed delivery (user wrote `confirmed` or legacy `approved` in `## Pending Merge Approval`). Merge to base may or may not have happened — done is decoupled from merge. Set only by the orchestrator on explicit user instruction (never autonomously). `completed` remains terminal and immutable; post-delivery changes go through a NEW superseding task. | orchestrator |
+| `awaiting-user-confirmation` | Worker reached `phase=awaiting-confirmation` (self-declared finished, awaiting the user's confirmation). Distinct from `paused` (which is mid-task waiting on a Q&A/resource). | orchestrator (projects worker phase) |
+| `completed` | Delivery confirmed: the worker reached `phase=done` (user confirmed — worker-window direct, or via an L1-relayed confirmation) and the orchestrator mirrored it; OR the legacy `approved` token ran the atomic merge+complete+cleanup. Merge to base may or may not have happened (done is decoupled from merge). Terminal and immutable; post-delivery changes go through a NEW superseding task. | orchestrator |
 | `stale` (derived) | Heartbeat past stale threshold OR `phase-since` unchanged for 5 ticks. Master entry `state:` is **not** rewritten; stale is reported via the `## Notes` section and the `last-seen` field. | orchestrator |
 
 Transitions (informal):
@@ -287,10 +293,11 @@ Transitions (informal):
 - `not-analyzed` → `ready` (analysis ok, no blockers) | `blocked` (analysis ok but deps unmet)
 - `blocked` → `ready` (deps met or error resolved)
 - `ready` → `in-progress` (orchestrator dispatches)
-- `in-progress` → `paused` (worker writes `wait-state != none`) | `completed` (worker reaches `phase=awaiting-confirmation`; user writes `confirmed` or `approved`; orchestrator writes `completed` — merge is an independent action that may have happened, may happen later, or may never happen) | `blocked` (worker writes `phase=error`)
+- `in-progress` → `paused` (worker writes `wait-state != none`) | `awaiting-user-confirmation` (worker writes `phase=awaiting-confirmation`) | `blocked` (worker writes `phase=error`)
 - `paused` → `in-progress` (worker writes `wait-state=none`)
+- `awaiting-user-confirmation` → `in-progress` (worker rolls back, e.g. the user asked for changes) | `completed` (worker writes `phase=done` after the user confirms — directly in the worker window, or via the L1 `confirmed`→relay path — and the orchestrator mirrors `phase=done` into `completed`; OR the legacy `approved` atomic path)
 
-`completed` is terminal and immutable: there is no transition out of it. A worker reaching `phase=awaiting-confirmation` does not by itself change `state`; only the orchestrator-written `completed` (set on explicit user confirmation, whether or not the branch was merged) is what the orchestrator reasons about when judging whether downstream tasks may start (see the Dependency Unlock guidance in `prompts/main-agent.md`). Post-delivery changes are made by creating a NEW task that supersedes the completed one; never re-open or roll back `completed`.
+A worker reaching `phase=awaiting-confirmation` projects to `state: awaiting-user-confirmation`. `completed` is reached only when the worker writes `phase=done` (after user confirmation) and the orchestrator mirrors it — or via the legacy `approved` atomic path; never directly from the `confirmed` token. `completed` is terminal and immutable; it is what the orchestrator reasons about when judging whether downstream tasks may start (see the Dependency Unlock guidance in `prompts/main-agent.md`). Post-delivery changes go through a NEW superseding task; never re-open or roll back `completed`.
 
 Full state machine and the phase mapping table for `execute-task` workflow positions live in the design spec (§A and §D.5 of `.zyz-worker/tasks/orchestration-scheduling-task/design-spec.md`).
 
@@ -387,6 +394,6 @@ This skill is coupled to `execute-task`. If `execute-task` ever introduces a new
 
 If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh`, the Phase-2 lazy fill in `scripts/orch-check-worker.sh`, the `## Crash Recovery` section above, and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
 
-If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state.
+If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state. The L2 driver is dispatched from **three** L1 sites — **dispatch** (`intent=first-dispatch`), **poll** (`intent=intervene`, only for a stuck worker), and **gate** (`intent=relay-confirmation`, to relay a user confirmation into the worker pane). If the L2 driver's contract or its `intent` enum changes, keep all three dispatch sites and the `intent` enum (driver files + `templates/monitor.md` `driver-intent`) in lockstep.
 
 The notify mechanism is deliberately a structured signature `(task-id, window, reason)` where `reason ∈ {needs-user, needs-attention, error}`. This version only prints to the conversation window and `SUMMARY.md`; that signature is the **future-webhook extension point** — a webhook / IM channel mounts there. There is intentionally no `orch-notify.sh` script (notify is L1's own conversation output); if a channel is added later, keep the signature fixed and wire the new channel behind it.

@@ -6,10 +6,13 @@
 #
 # This is the decoupled "merge only" path: the user wrote `merge` (or
 # `merge: <base>`) in the master entry `## Pending Merge Approval` section to
-# merge the task branch to base, but delivery is recorded separately (the
-# `confirmed` token / orch-confirm.sh writes `state: completed`) and the worktree
-# is removed separately (`cleanup-approved` / orch-cleanup-worker.sh). The legacy
-# combined path is orch-merge-and-cleanup.sh (the `approved` token).
+# merge the task branch to base, but delivery is recorded separately. The
+# `confirmed` token no longer writes `state: completed` directly — it now relays
+# the user's confirmation to the worker (see the orchestration gate step), which
+# advances to `phase=done`; the orchestrator then mirrors `state: completed`. The
+# worktree is removed separately (`cleanup-approved` / orch-cleanup-worker.sh).
+# The legacy combined path is orch-merge-and-cleanup.sh (the `approved` token).
+# This script only merges; it never writes `state:`.
 #
 # Order (mirrors orch-merge-and-cleanup.sh, minus the state write and cleanup):
 #

@@ -208,7 +208,6 @@ subagents/
 │   ├── orch-check-worker.sh
 │   ├── orch-heartbeat-daemon.sh
 │   ├── orch-cleanup-worker.sh
-│   ├── orch-confirm.sh
 │   ├── orch-merge.sh
 │   └── orch-merge-and-cleanup.sh
 ├── skills/
