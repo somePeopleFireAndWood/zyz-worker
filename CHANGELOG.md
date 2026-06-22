@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.6.3] — 2026-06-22
+
+### Changed
+- (semantic-breaking) Worker `phase` state machine: removed the worker-written `done` phase; the furthest state a worker self-reaches is now `awaiting-confirmation` (self-declared finished, awaiting user confirmation). The real "done" = delivery is recorded by the orchestrator as master-entry `state: completed` only after a successful merge. Phase may now roll back among design/implementation/testing/review/delivery to reflect real iteration; only `awaiting-confirmation` is absorbing (never rolls back). Dependency unlock continues to gate on `completed` (post-merge) — a worker reaching `awaiting-confirmation` does NOT unlock downstream tasks. Post-delivery changes go through a superseding new task, never a re-open.
+
+### Removed
+- The `done` value from the worker `phase` enum (replaced by `awaiting-confirmation`).
+
+### Fixed
+- Orchestration cleanup/merge now actually remove `~/`-form worktrees: `scripts/orch-cleanup-worker.sh` and `scripts/orch-merge-and-cleanup.sh` quoted the `~/` strip pattern (`${WORKTREE#"~/"}`) so tilde no longer mis-expands and skips removal.
+- Orchestrated-mode contract now requires `worker-status.md` to be valid YAML frontmatter wrapped in `---` fences; `scripts/orch-check-worker.sh` emits `worker-status-malformed=true` for a fence-less file so the orchestrator can diagnose it.
+
 ## [0.6.2] — 2026-06-21
 
 ### Fixed

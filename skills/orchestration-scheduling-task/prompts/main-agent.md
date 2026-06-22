@@ -73,7 +73,7 @@ For each `not-analyzed` task whose master entry has missing `source-repo:`, or `
 
 ### plan
 
-- Walk `blocked` tasks: if all their `blocked-by` references are `completed`, move them to `ready`.
+- Walk `blocked` tasks: if all their `blocked-by` references are `completed`, move them to `ready`. A blocked task unlocks only when every `blocked-by` dependency reaches `completed` (i.e. has been merged); a worker reaching `phase=awaiting-confirmation` does NOT unlock downstream — this is the deliberate "gate on completed" choice, so downstream tasks always build on merged code.
 - Apply the parallel cap from `ZYZ_MAX_PARALLEL_WORKERS`:
   - **`-1` (default, unlimited):** do **not** cap. Dispatch every `ready` task this tick. When several new workers are dispatched at once, their L2 drivers are launched in parallel (one message, multiple `Agent` calls) — the same dependency-graph parallel discipline as execute-task SKILL.md §3.0.2 (schedule by the dependency graph, not list order).
   - **Positive integer:** cap as before. Count currently `in-progress` + `paused` tasks as `currentInFlight`. The cap **counts `paused` as occupying a slot** because the worker's tmux session is still live. Walk `ready` tasks in priority order (`high > normal > low`, then created-at ascending) and pick up to `cap - currentInFlight` for dispatch.
@@ -107,7 +107,7 @@ This step is **L1 inline and unconditional** — it never dispatches an L2 and n
 - If `heartbeat-status=suspect`: do not mark stale yet; next tick decides.
 - If the worker's `phase-since` has not changed for 5 consecutive ticks: treat as soft-stale. Write a "phase-since unchanged for 5 ticks" note. Mark this tick as having a stale worker.
 - Project worker state into master entry `state:` (see also **project** below; this is the same projection):
-  - `phase=done` → keep `state: in-progress` until user approves merge in `## Pending Merge Approval`. Add the approval section if not already present.
+  - `phase=awaiting-confirmation` → keep `state: in-progress` until user approves merge in `## Pending Merge Approval`. Add the approval section if not already present.
   - `phase=error` → see **handle errors** below.
   - `wait-state != none` → `state: paused`.
   - `wait-state = none` → `state: in-progress`.
@@ -127,7 +127,7 @@ For a worker whose **this-tick** poll still reports `wait-state=waiting-user`: *
 
 L1 projects each worker's **overall state** into its master entry. Writing the master entry is L1's job, but it uses only overall-state fields — it never reads L3 internals.
 
-- Use the live poll result (the `state:` projection already described in the **poll** step: `phase=done` / `phase=error` / `wait-state` → `state:`).
+- Use the live poll result (the `state:` projection already described in the **poll** step: `phase=awaiting-confirmation` / `phase=error` / `wait-state` → `state:`).
 - Also read that worker's `monitor.md` (`<list-dir>/runtime/<task-id>/monitor.md`, L2-owned) for the L2-level overall flags: `claude-started`, `needs-user`, `needs-attention`, `attention-reason`, `last-summary`. Reflect `needs-attention` into the **handle errors** step below. Do **not** read any L3 internals; `monitor.md` carries overall driver state only.
 - L1 **never writes** `monitor.md` (L2-owned) and never writes `worker-status.md` (L3-owned). It only reads both.
 
@@ -181,7 +181,7 @@ Branches are evaluated in order; the first match wins. The 300 s mark is intenti
 
 ```
 # branch="imminent-completion"
-if any worker phase=delivery for more than 1 tick:
+if any worker phase=delivery OR phase=awaiting-confirmation for more than 1 tick:
     delaySeconds = 120
 
 # branch="stale"

@@ -258,7 +258,7 @@ Legal user-written values for `state:` are `not-analyzed | blocked | ready | com
 
 ```yaml
 task-id: <task-id>
-phase: design | implementation | testing | review | delivery | done | error
+phase: design | implementation | testing | review | delivery | awaiting-confirmation | error
 phase-since: <iso>
 wait-state: none | waiting-user | waiting-subagent | waiting-resource
 waiting-reason: <free text; non-empty when wait-state != none>
@@ -277,9 +277,9 @@ Six explicit states + one orchestrator-derived state (`stale`):
 | `not-analyzed` | Task is new; orchestrator has not analyzed it yet. | template default / scan |
 | `blocked` | Dependencies unmet, or worker reported `phase=error`. | orchestrator |
 | `ready` | No blockers; dispatchable. | orchestrator |
-| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; phase not done/error. | orchestrator |
+| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; phase not awaiting-confirmation/error. | orchestrator |
 | `paused` | Worker dispatched; `wait-state != none`. | orchestrator (projects worker's wait-state) |
-| `completed` | Implementation done; merge passed; cleanup done. | orchestrator |
+| `completed` | Implementation done; merge passed; cleanup done. Set by the orchestrator only AFTER a successful merge — this is the real "done" (delivery recorded), distinct from the worker's `awaiting-confirmation`. `completed` is an immutable historical fact: post-delivery changes are made by creating a NEW task that supersedes it, never by re-opening or rolling back `completed`. | orchestrator |
 | `stale` (derived) | Heartbeat past stale threshold OR `phase-since` unchanged for 5 ticks. Master entry `state:` is **not** rewritten; stale is reported via the `## Notes` section and the `last-seen` field. | orchestrator |
 
 Transitions (informal):
@@ -287,8 +287,10 @@ Transitions (informal):
 - `not-analyzed` → `ready` (analysis ok, no blockers) | `blocked` (analysis ok but deps unmet)
 - `blocked` → `ready` (deps met or error resolved)
 - `ready` → `in-progress` (orchestrator dispatches)
-- `in-progress` → `paused` (worker writes `wait-state != none`) | `completed` (worker writes `phase=done` and user approves merge) | `blocked` (worker writes `phase=error`)
+- `in-progress` → `paused` (worker writes `wait-state != none`) | `completed` (worker reaches `phase=awaiting-confirmation`, user approves merge, orchestrator merges successfully then writes `completed`) | `blocked` (worker writes `phase=error`)
 - `paused` → `in-progress` (worker writes `wait-state=none`)
+
+`completed` is terminal and immutable: there is no transition out of it. A worker reaching `phase=awaiting-confirmation` does not by itself unlock anything — only the orchestrator-written `completed` (post-merge) does. Post-delivery changes are made by creating a NEW task that supersedes the completed one; never re-open or roll back `completed`.
 
 Full state machine and the phase mapping table for `execute-task` workflow positions live in the design spec (§A and §D.5 of `.zyz-worker/tasks/orchestration-scheduling-task/design-spec.md`).
 

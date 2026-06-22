@@ -65,7 +65,7 @@ updated-at: <yyyy-mm-dd>
 ## Pending Merge Approval
 
 <!--
-  Orchestrator-written after the worker reports `phase=done`. The orchestrator
+  Orchestrator-written after the worker reports `phase=awaiting-confirmation`. The orchestrator
   records the PR URL or local merge command here.
 
   The user writes the literal token `approved` in this section to authorize

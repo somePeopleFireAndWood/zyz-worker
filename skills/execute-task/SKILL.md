@@ -258,7 +258,7 @@ When the environment variable `ZYZ_WORKER_STATUS_FILE` is set, this skill runs i
 
 The required fields in `worker-status.md` are:
 
-- `phase` — one of `design | implementation | testing | review | delivery | done | error`
+- `phase` — one of `design | implementation | testing | review | delivery | awaiting-confirmation | error`
 - `phase-since` — ISO timestamp of when the current `phase` was entered
 - `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
 - `waiting-reason` — free text, non-empty only when `wait-state != none`
@@ -268,7 +268,8 @@ The required fields in `worker-status.md` are:
 Hard rules in orchestrated mode:
 
 - **Flush before any suspend.** Before suspending, before dispatching a subagent, after receiving a subagent result, and on entering any new workflow phase, write `ZYZ_WORKER_STATUS_FILE` atomically (tmpfile + rename). Never edit the file in place.
-- **`phase` is monotonically furthest-reached.** Treat `phase` as monotonically furthest-reached: once written as `phase=implementation`, never roll back to `phase=design`; once written as `phase=review`, never roll back to `phase=implementation` even when the review loop iterates the implementation; once written as `phase=delivery`, never roll back.
+- **`worker-status.md` must be a valid YAML frontmatter document.** Write all required snapshot fields enclosed in a single pair of `---` fences, with the very first line of the file being `---`, the fields next, and a closing `---` line. A bare field dump without fences (e.g. a file that starts directly with `phase: review`) is malformed: the orchestrator's frontmatter parser reads nothing and cannot see this worker's progress. The shipped `skills/orchestration-scheduling-task/templates/worker-status.md` template already has the correct shape — match it.
+- **`phase` may roll back, except `awaiting-confirmation` which is absorbing.** `phase` MAY move both forward and backward among `design`, `implementation`, `testing`, `review`, `delivery`, and `awaiting-confirmation` to reflect real iteration — e.g. a review that returns to substantial implementation work rolls the phase back from `review` to `implementation`. The ONLY non-reversible phase is `awaiting-confirmation`: once written, never change it to an earlier phase. It is the **absorbing** state, meaning the worker self-declares finished and is awaiting user confirmation; the worker never self-reaches any later state. `error` remains reversible — after the error is fixed, resume to a working phase.
 - **`wait-state` is orthogonal to `phase`.** Set `wait-state` independently from `phase`. Set `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource` with a non-empty `waiting-reason` before suspending; set `wait-state=none` immediately on resume.
 - **Async user Q&A goes through files.** Use `ZYZ_QUESTION_FILE` and `ZYZ_ANSWER_FILE` when the user is not attached to the tmux pane. After consuming an `answer.md`, rename it to `answer.md.consumed.<question-id>`.
 - **Two status files, not one.** Orchestrated mode keeps the existing `.zyz-worker/tasks/<task-id>/status.md` as the worker's detailed task status (used by execute-task workflow), and adds `worker-status.md` at the path in `ZYZ_WORKER_STATUS_FILE` as the orchestrator-facing snapshot. The two files do not replace each other.
@@ -282,12 +283,14 @@ Phase mapping (when each phase value must be written to `worker-status.md`):
 | §3.A step 1 / §3.B step 1 — implementation-agent dispatched | `implementation` | before dispatching the subagent |
 | §3.A step 2 / §3.B step 2 — test-agent / running tests | `testing` | before dispatching / before running |
 | §3.A step 5 / §3.B step 5 — review-agent dispatched | `review` | before dispatching |
-| §3.B step 6 — review → implementation revisions loop | `review` (held; do not roll back) | no flush |
+| §3.B step 6 — review → implementation revisions loop | `review` (held by default; MAY roll back to `implementation` if it genuinely returns to substantial implementation work — rollback is allowed) | no flush |
 | §3.C aggregate testing | `testing` | on entry |
 | §3.C aggregate review | `review` | on entry |
 | §4 Deliver | `delivery` | on entry |
-| final report shipped | `done` | last write |
+| final report shipped (worker's furthest self-reachable state) | `awaiting-confirmation` | last write |
 | unrecoverable error | `error` (set `wait-state=none`) | immediately |
+
+The worker never writes a "done" phase. The real "done" = delivery is recorded by the orchestrator (L1) as master-entry `state: completed`, and only after a successful merge — see `skills/orchestration-scheduling-task/SKILL.md` `## State Machine`.
 
 If `ZYZ_WORKER_STATUS_FILE` is unset, ignore this entire section — the skill runs in standalone mode and behaves exactly as the rest of the document describes.
 

@@ -470,8 +470,10 @@ run_T3() {
     # execute-task SKILL.md
     local etsk="skills/execute-task/SKILL.md"
     check_grep "$etsk" "'## Orchestrated Mode' heading" '^## Orchestrated Mode([[:space:]]|$)'
-    check_grep_fixed "$etsk" "phase monotonicity contract 'monotonically furthest'" \
-        "monotonically furthest"
+    check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'awaiting-confirmation'" \
+        "awaiting-confirmation"
+    check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'absorbing'" \
+        "absorbing"
 
     # Each of the 6 agent files: heading + 'wait-state'
     local af
@@ -1141,7 +1143,7 @@ run_T5() {
     write_heartbeat "$hb" fresh
 
     # Phase walkthrough: design -> implementation -> implementation+waiting-subagent ->
-    # implementation+none -> testing -> review -> delivery -> done.
+    # implementation+none -> testing -> review -> delivery -> awaiting-confirmation.
     write_worker_status "$runtime" design none
     t5_assert_check "$list_dir" "foo" "phase" "design"
     t5_assert_check "$list_dir" "foo" "wait-state" "none"
@@ -1166,8 +1168,22 @@ run_T5() {
     write_worker_status "$runtime" delivery none
     t5_assert_check "$list_dir" "foo" "phase" "delivery"
 
-    write_worker_status "$runtime" done none
-    t5_assert_check "$list_dir" "foo" "phase" "done"
+    # Rollback is now allowed among working phases (the helper is a pure
+    # pass-through reader; the absorbing-state rule is a worker-side contract
+    # verified at the doc level in T2, not enforced by orch-check-worker.sh).
+    write_worker_status "$runtime" review none
+    t5_assert_check "$list_dir" "foo" "phase" "review"
+    write_worker_status "$runtime" implementation none
+    t5_assert_check "$list_dir" "foo" "phase" "implementation"
+    write_worker_status "$runtime" review none
+    t5_assert_check "$list_dir" "foo" "phase" "review"
+
+    # awaiting-confirmation is the terminal worker-side state (replaces the old
+    # `done`).  The helper just echoes whatever phase the file holds.
+    write_worker_status "$runtime" delivery none
+    t5_assert_check "$list_dir" "foo" "phase" "delivery"
+    write_worker_status "$runtime" awaiting-confirmation none
+    t5_assert_check "$list_dir" "foo" "phase" "awaiting-confirmation"
 
     # Heartbeat staleness: backdate heartbeat and expect heartbeat-status=stale.
     write_heartbeat "$hb" stale
@@ -1181,6 +1197,67 @@ run_T5() {
     # 5-tick stagnation; that is orchestrator-level logic and is therefore
     # outside the scope of this unit test.  Documenting via SKIP.
     skip "T5 phase-since 5-tick stagnation (orchestrator-level; not testable in helper unit test per §A.6/§F.2)"
+
+    # ---- BUG-2: malformed-frontmatter guard ---------------------------------
+    # Per design §BUG-2: a worker-status.md written as a bare field dump (NO
+    # `---` fence, file starts directly with `phase: ...`) is a contract defect
+    # — fm_field never enters frontmatter, so every field reads empty and L1
+    # sees no progress.  As a backstop, orch-check-worker.sh now emits the
+    # literal line `worker-status-malformed=true` for such fence-less files so
+    # L1 can diagnose it.  This case is gated by the same tmux requirement as
+    # the rest of T5 (orch-check-worker.sh hard-requires tmux at entry).
+    #
+    # We overwrite worker-status.md with a fence-less dump AFTER the well-formed
+    # walkthrough above so earlier asserts are unaffected.
+    {
+        echo "phase: review"
+        echo "phase-since: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "wait-state: none"
+        echo "waiting-reason:"
+        echo "expected-resume-by:"
+        echo "last-flush: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >"$runtime/worker-status.md"
+    local malformed_out malformed_rc
+    malformed_out="$(bash "$script" "foo" "$list_dir" </dev/null 2>&1)"
+    malformed_rc=$?
+    if [ "$malformed_rc" -ne 0 ]; then
+        fail "T5 BUG-2 orch-check-worker.sh exited $malformed_rc on fence-less worker-status (expected 0).  Output:
+$(printf '%s\n' "$malformed_out" | sed 's/^/      | /')"
+    elif printf '%s\n' "$malformed_out" | grep -qE '^worker-status-malformed=true([[:space:]]|$)'; then
+        pass "T5 BUG-2 fence-less worker-status.md yields 'worker-status-malformed=true'"
+    else
+        fail "T5 BUG-2 fence-less worker-status.md did NOT yield 'worker-status-malformed=true'.  Output:
+$(printf '%s\n' "$malformed_out" | sed 's/^/      | /')"
+    fi
+
+    # ---- BUG-1: tilde-expansion regression ----------------------------------
+    # Per design §BUG-1: cleanup/merge expanded a `~/`-form worktree with an
+    # UNQUOTED ${WORKTREE#~/}, where bash treats the leading `~` of the pattern
+    # as a tilde metacharacter (expanding it to $HOME/ before matching), so the
+    # literal `~/` prefix is never stripped → a no-op → path becomes
+    # $HOME/~/... (nonexistent) → removal silently skipped.  The fix uses the
+    # QUOTED ${WORKTREE#"~/"} form (matching orch-spawn-worker.sh).
+    #
+    # (1) Pure unit assertion: prove the quoted form strips `~/` while the
+    #     unquoted form is a no-op on this shell.
+    local wt='~/x/y'
+    local bad="$HOME/${wt#~/}"      # buggy (unquoted) form
+    local good="$HOME/${wt#"~/"}"   # fixed (quoted) form
+    if [ "$good" = "$HOME/x/y" ]; then
+        pass "T5 BUG-1 quoted \${WORKTREE#\"~/\"} strip yields \$HOME/x/y"
+    else
+        fail "T5 BUG-1 quoted strip wrong: got '$good', expected '$HOME/x/y'"
+    fi
+    if [ "$bad" != "$good" ]; then
+        pass "T5 BUG-1 unquoted \${WORKTREE#~/} strip is a no-op (demonstrates the bug)"
+    else
+        skip "T5 BUG-1 unquoted form coincidentally equal on this shell"
+    fi
+    # (2) Behavioral grep guard: the two fixed scripts must use the QUOTED form.
+    check_grep_fixed "scripts/orch-cleanup-worker.sh" \
+        "BUG-1 cleanup uses quoted \${WORKTREE#\"~/\"}" '${WORKTREE#"~/"}'
+    check_grep_fixed "scripts/orch-merge-and-cleanup.sh" \
+        "BUG-1 merge uses quoted \${WORKTREE#\"~/\"}" '${WORKTREE#"~/"}'
 
     # Clean trap; T6 sets its own.
     trap - EXIT
@@ -1218,8 +1295,8 @@ T6_SKIP_ALL() {
         "worktree foo resolves to source-repo work (F.2)" \
         "worktree bar resolves to source-repo work2 (F.2)" \
         "worktree foo and bar resolve to DIFFERENT .git dirs (F.2)" \
-        "orch-check-worker.sh reports phase=done after mock worker (foo)" \
-        "orch-check-worker.sh reports phase=done after mock worker (bar) (F.2)" \
+        "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (foo)" \
+        "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2)" \
         "orch-merge-and-cleanup.sh exits 0 (foo)" \
         "orch-merge-and-cleanup.sh exits 0 (bar) (F.2)" \
         "master entry foo state: completed after merge" \
@@ -1501,8 +1578,8 @@ $(printf '%s\n' "$spawn_out" | sed 's/^/      | /')"
             "worktree foo resolves to source-repo work (F.2)" \
             "worktree bar resolves to source-repo work2 (F.2)" \
             "worktree foo and bar resolve to DIFFERENT .git dirs (F.2)" \
-            "orch-check-worker.sh reports phase=done after mock worker (foo)" \
-            "orch-check-worker.sh reports phase=done after mock worker (bar) (F.2)" \
+            "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (foo)" \
+            "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2)" \
             "orch-merge-and-cleanup.sh exits 0 (foo)" \
             "orch-merge-and-cleanup.sh exits 0 (bar) (F.2)" \
             "master entry foo state: completed after merge" \
@@ -1681,9 +1758,9 @@ $(printf '%s\n' "$spawn2_out" | sed 's/^/      | /')"
         skip "T6 worktree foo and bar resolve to DIFFERENT .git dirs (F.2) (skipped: spawn bar failed or git-common-dir unresolved)"
     fi
 
-    # --- Send keys: a tiny bash mock worker writes phase=done in each pane ---
+    # --- Send keys: a tiny bash mock worker writes phase=awaiting-confirmation in each pane ---
     # We send a small inline bash command that overwrites worker-status.md
-    # with phase=done.  We do NOT start `claude` (per design).
+    # with phase=awaiting-confirmation.  We do NOT start `claude` (per design).
     local now
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -1694,7 +1771,7 @@ $(printf '%s\n' "$spawn2_out" | sed 's/^/      | /')"
         echo "cat > '$LIST_DIR/runtime/$tid/worker-status.md' <<MOCKEOF
 ---
 task-id: $tid
-phase: done
+phase: awaiting-confirmation
 phase-since: $now
 wait-state: none
 waiting-reason:
@@ -1718,28 +1795,28 @@ MOCKEOF"
     fi
     sleep 2
 
-    # Verify phase=done via the helper, for each task.
+    # Verify phase=awaiting-confirmation via the helper, for each task.
     local check_out check_rc
     check_out="$(bash "$check" foo "$LIST_DIR" </dev/null 2>&1)"
     check_rc=$?
-    if [ "$check_rc" -eq 0 ] && printf '%s\n' "$check_out" | grep -qE '^phase=done([[:space:]]|$)'; then
-        T6_PASS "orch-check-worker.sh reports phase=done after mock worker (foo)"
+    if [ "$check_rc" -eq 0 ] && printf '%s\n' "$check_out" | grep -qE '^phase=awaiting-confirmation([[:space:]]|$)'; then
+        T6_PASS "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (foo)"
     else
-        T6_FAIL "orch-check-worker.sh did NOT report phase=done for foo (rc=$check_rc).  Output:
+        T6_FAIL "orch-check-worker.sh did NOT report phase=awaiting-confirmation for foo (rc=$check_rc).  Output:
 $(printf '%s\n' "$check_out" | sed 's/^/      | /')"
     fi
     if [ "$spawn2_rc" -eq 0 ]; then
         local check_out_bar check_rc_bar
         check_out_bar="$(bash "$check" bar "$LIST_DIR" </dev/null 2>&1)"
         check_rc_bar=$?
-        if [ "$check_rc_bar" -eq 0 ] && printf '%s\n' "$check_out_bar" | grep -qE '^phase=done([[:space:]]|$)'; then
-            T6_PASS "orch-check-worker.sh reports phase=done after mock worker (bar) (F.2)"
+        if [ "$check_rc_bar" -eq 0 ] && printf '%s\n' "$check_out_bar" | grep -qE '^phase=awaiting-confirmation([[:space:]]|$)'; then
+            T6_PASS "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2)"
         else
-            T6_FAIL "orch-check-worker.sh did NOT report phase=done for bar (rc=$check_rc_bar).  Output:
+            T6_FAIL "orch-check-worker.sh did NOT report phase=awaiting-confirmation for bar (rc=$check_rc_bar).  Output:
 $(printf '%s\n' "$check_out_bar" | sed 's/^/      | /')"
         fi
     else
-        skip "T6 orch-check-worker.sh reports phase=done after mock worker (bar) (F.2) (skipped: spawn bar failed)"
+        skip "T6 orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2) (skipped: spawn bar failed)"
     fi
 
     # --- Write 'approved' to each master entry's ## Pending Merge Approval ---

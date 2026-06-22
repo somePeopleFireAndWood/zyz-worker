@@ -76,11 +76,11 @@ For any long-running work, write progress, decisions, blockers, and the next ste
 
 If `ZYZ_WORKER_STATUS_FILE` is set in the environment, this role is running under an orchestrator (the `orchestration-scheduling-task` skill). Before suspending or before returning a final result, write a minimal status snapshot to that file path. The fields are:
 
-- `phase` — one of `design | implementation | testing | review | delivery | done | error`
+- `phase` — one of `design | implementation | testing | review | delivery | awaiting-confirmation | error`
 - `phase-since` — ISO timestamp of when the current `phase` was entered
 - `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
 - `waiting-reason` — free text; non-empty only when `wait-state != none`
 - `expected-resume-by` — ISO timestamp; non-empty only when `wait-state != none`
 - `last-flush` — ISO timestamp of this write
 
-Write atomically (tmpfile + rename). Never edit the file in place. Treat `phase` as monotonically furthest-reached — never roll back. The orchestrator only sees what this file says; in-context memory does not count. See also [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md).
+Write atomically (tmpfile + rename). Never edit the file in place. Treat `phase` as roll-back-allowed except `awaiting-confirmation`, which is the absorbing final state a worker can self-reach — once written, never roll back to an earlier phase. The orchestrator only sees what this file says; in-context memory does not count. See also [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md).

@@ -1,6 +1,6 @@
 {
   "name": "zyz-worker",
-  "version": "0.6.2+codex.20260621232019",
+  "version": "0.6.3+codex.20260622140104",
   "description": "A worker plugin scaffold for agent CLIs such as Codex and Claude Code.",
   "author": {
     "name": "yu",

@@ -110,7 +110,7 @@ BRANCH="$(fm_field "$MASTER_ENTRY" branch)"
 
 WORKTREE="$(fm_field "$MASTER_ENTRY" worktree)"
 case "$WORKTREE" in
-    "~/"*) WORKTREE="$HOME/${WORKTREE#~/}" ;;
+    "~/"*) WORKTREE="$HOME/${WORKTREE#"~/"}" ;;
 esac
 
 # ---------------------------------------------------------------------------
