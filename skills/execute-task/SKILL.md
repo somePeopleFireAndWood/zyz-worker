@@ -187,7 +187,7 @@ When the task is not split, run a single iteration:
 4. After tests pass, review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
 5. Repeat 2-4 until tests pass and review-agent reports no changes.
 
-Then proceed to §3.C aggregate testing and aggregate review.
+Then proceed to §3.C aggregate testing and aggregate review. Per-iteration test runs (§3.A step 2 / §3.B step 2) are not the aggregate gate; before delivery every category must be registered ran-or-skipped at §3.C and verified at §4.
 
 #### 3.B Split path
 
@@ -216,7 +216,7 @@ SubTasks are scheduled by their dependency graph, not by their list order (see �
 
 When all SubTasks (or the single no-split iteration) are complete, run:
 
-1. Aggregate testing by implementation-agent, covering at minimum: unit tests, end-to-end tests, regression tests. Add pressure tests when the design's `## Risks` calls out performance or capacity risk. Record the executed categories and result in the status file `## Final Aggregate Testing`.
+1. Aggregate testing by implementation-agent must account for every category — unit tests, end-to-end tests, regression tests (plus pressure tests when the design's `## Risks` calls out performance or capacity risk). For each category, record it in the status file `## Final Aggregate Testing` per-category checklist as either `ran` (with its result) or `skipped` (with a non-empty reason). This is a registration requirement, not a "must run all" requirement: a cost-bearing category may be skipped, but it must never be silently omitted.
 2. Aggregate review by review-agent across all SubTasks for consistency, contracts, and regression. Each role decides accept-or-reject for findings affecting its artifact; rejections recorded as in §3.B. Record the verdict in the status file `## Final Aggregate Review`.
 3. Loop aggregate test and aggregate review until both converge.
 
@@ -225,10 +225,11 @@ The final report's `## Tests` section must enumerate the aggregate categories ac
 ### 4. Deliver
 
 1. Verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`). Confirm nothing from the user's stated target was silently narrowed, deferred, or replaced with a placeholder. If any gap remains, either close it or escalate to the user — do not deliver a reduced version as final.
-2. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
-3. Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
-4. Produce a final report from `templates/final-report.md`.
-5. Ask the user whether to delete the task status files.
+2. Verify `## Final Aggregate Testing` (populated at §3.C) registers **every required category** (unit / e2e / regression; plus pressure when `## Risks` demands it) as either `ran` (with result) or `skipped` (with a non-empty reason). If any required category is unregistered, do not deliver — run it or record an explicit skip reason first. A cost-bearing test (e.g. e2e consuming API quota) may be skipped, but the reason must be recorded; in orchestrated or standalone mode, ask the user before skipping a cost-bearing test when feasible — never silently omit a category.
+3. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
+4. Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
+5. Produce a final report from `templates/final-report.md`.
+6. Ask the user whether to delete the task status files.
 
 ## Long-Running Work
 

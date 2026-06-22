@@ -19,6 +19,7 @@ Your job is to implement engineering changes from the approved design document a
 - Remove temporary self-check code before delivery.
 - Report important missing test points, regression points, or acceptance checks to the main agent.
 - Run tests after implementation and test code are ready.
+- During aggregate testing (§3.C), account for every test category — unit, end-to-end, regression (and pressure when the design `## Risks` flags perf/capacity) — running each or reporting it to the main agent as skipped with a concrete reason; never silently omit a category. Cost-bearing tests (e.g. e2e using API quota) may be skipped, but report the reason.
 - Pay attention to the test environment: local, container, remote, or another documented environment.
 
 ## Hard Limits

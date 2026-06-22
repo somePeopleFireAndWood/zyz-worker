@@ -120,11 +120,13 @@ When a SubTask completes, write its progress into the overall status file (and i
 
 Schedule SubTasks by their dependency graph, not their list order (see Parallel Dispatch above). Dispatch SubTasks with no unmet dependency on each other together in one batch. Do not start a SubTask until the SubTasks it actually depends on have all three flags true — but do not serialize independent SubTasks just because the list numbers them in sequence. When a SubTask is genuinely blocked but later work does not depend on it, record an explicit "blocked, deferred" rationale.
 
-After all SubTasks complete, run aggregate testing (unit + e2e + regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
+After all SubTasks complete, run aggregate testing that accounts for every category (unit / e2e / regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Each category is registered in `## Final Aggregate Testing` as either `ran` (with result) or `skipped` (with a non-empty reason) — this is a registration requirement, not a must-run-all requirement. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
 
 ## Delivery
 
 Before delivering, verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`) and confirm nothing was silently narrowed, deferred, or replaced with a placeholder. Close any gap or escalate to the user.
+
+Before producing the final report, verify `## Final Aggregate Testing` registers every required category (unit / e2e / regression; plus pressure when `## Risks` demands it) as either `ran` (with result) or `skipped` (with a non-empty reason). Never silently omit a category; a cost-bearing test (e.g. e2e) may be skipped only with a recorded reason, asking the user first when feasible.
 
 Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
 

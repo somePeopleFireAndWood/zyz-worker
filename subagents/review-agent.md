@@ -44,6 +44,7 @@ Check that:
 - Rejected findings include sound reasons.
 - Test results are consistent with the changed behavior.
 - No obvious risks, regressions, or missing validation remain.
+- Aggregate testing registers every required category (unit / e2e / regression; plus pressure when `## Risks` demands it) as ran-with-result or skipped-with-a-concrete-reason — no category is silently omitted before delivery.
 
 ## Incremental Output
 

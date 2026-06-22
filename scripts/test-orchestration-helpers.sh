@@ -475,6 +475,29 @@ run_T3() {
     check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'absorbing'" \
         "absorbing"
 
+    # ---- delivery test-gate (registration-style hard gate) --------------
+    # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/design-test-gate.md
+    # §4: the Deliver step gains a pre-delivery gate that requires EVERY
+    # required test category (unit / e2e / regression; plus pressure when
+    # `## Risks` demands it) to be registered ran/skipped before delivery.
+    # The literal string `every required category` is the contract anchor
+    # (RC3) — it is unique to the §4 gate sentence, so deleting the gate
+    # turns this check red.
+    check_grep_fixed "$etsk" "§4 delivery test-gate anchor 'every required category'" \
+        "every required category"
+
+    # ---- task-status template per-category Final Aggregate Testing -------
+    # Per design-test-gate.md §模板结构化: `## Final Aggregate Testing` in the
+    # task-status template becomes a per-category checklist with one line per
+    # category using the `(ran: <result> | skipped: <reason>)` grammar.  E2E
+    # and Regression are the two categories the user specifically worried get
+    # silently skipped, so we anchor on those two labels at minimum.
+    local etsk_tpl="skills/execute-task/templates/task-status.md"
+    check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category E2E line" \
+        "- E2E:"
+    check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category Regression line" \
+        "- Regression:"
+
     # Each of the 6 agent files: heading + 'wait-state'
     local af
     for af in "${AGENT_FILES[@]}"; do
@@ -3208,6 +3231,115 @@ run_T9() {
 }
 
 # ---------------------------------------------------------------------------
+# T10. agents/ <-> subagents/ mirror body-equality guard (test-gate ST, S1).
+#
+# The execute-task subagent role prompts live in TWO places that must stay in
+# sync: the canonical Claude Code subagent copies under agents/ (which carry a
+# leading `---\nname: ...\n---` YAML frontmatter block) and the legacy mirrors
+# under subagents/ (which are frontmatter-free, starting directly with a `# `
+# heading).  Per design-test-gate.md §guard 测试 (S1): there was NO test
+# asserting these two pairs stay body-identical, so a mirror bullet added on
+# one side (e.g. the new aggregate-testing registration responsibility on
+# implementation-agent, or the new four-category review standard on
+# review-agent) could silently drift on the other.  This guard closes that gap.
+#
+# Method (mirrors the test-rename-and-conventions.sh T5 `diff <(grep -v ...)`
+# precedent, which we may not edit there — so it is implemented here):
+#   1. strip_frontmatter() removes the agents/ file's leading `---`...`---`
+#      YAML block, leaving the body.
+#   2. The subagents/ mirror is frontmatter-free (verified by reading both
+#      files), so its body starts immediately — no stripping needed there.
+#   3. TWO intentional, known body divergences exist between the stripped
+#      agents/ body and the subagents/ body, BOTH predating the test-gate
+#      change and NEITHER part of the mirrored responsibility/standard bullets:
+#        (i)  a LEADING BLANK LINE: after the agents/ frontmatter fence there is
+#             a blank line before the `# ...Agent Prompt` heading, whereas the
+#             subagents/ files start directly with that heading.  strip_frontmatter
+#             removes only the `---`...`---` block, so that blank survives.
+#        (ii) the intro sentence:
+#               agents/    : "You are <role> for the zyz-worker execute-task workflow."
+#               subagents/ : "You are <role> for the execute-task skill."
+#      Like T5's `grep -v '^description:'` filter, t10_normalize_body() collapses
+#      BOTH of these away IDENTICALLY on each side (drop leading blank lines, then
+#      canonicalize the role-intro line) before diffing — so the guard is green on
+#      a correct baseline while still failing loudly if ANY OTHER line — including
+#      the newly added mirror bullets — drifts.
+# ---------------------------------------------------------------------------
+
+# strip_frontmatter <file>
+# Prints <file> with a leading YAML frontmatter block removed (if present).
+# A frontmatter block is the first `---`...`---` fence starting at line 1; the
+# fence lines themselves and everything between them are dropped, the body that
+# follows is printed verbatim.  A file with no leading `---` is printed as-is.
+strip_frontmatter() {
+    awk '
+        NR==1 && $0=="---" { infm=1; next }
+        infm && $0=="---"  { infm=0; next }
+        !infm              { print }
+    ' "$1"
+}
+
+# t10_normalize_body  (stdin -> stdout)
+# Canonicalizes the TWO known-divergent aspects so the agents/ (frontmatter-
+# stripped) and subagents/ bodies compare equal where they are intentionally
+# allowed to differ, while every OTHER line must still match byte for byte:
+#   (i)  drop LEADING blank lines.  `sed '/./,$!d'` deletes lines from the start
+#        of input up to (but not including) the first line containing any
+#        non-blank character — i.e. it trims a leading run of blank lines and
+#        leaves the rest untouched.  This erases the blank line that survives
+#        after the agents/ frontmatter fence (subagents/ has none).
+#   (ii) canonicalize the role-intro line.  Both phrasings start with
+#        "You are <Role> for the " and end differently ("zyz-worker execute-task
+#        workflow." vs "execute-task skill."); collapse the whole line to a fixed
+#        sentinel.
+# Applied IDENTICALLY to both sides; this is the only normalization.
+t10_normalize_body() {
+    sed '/./,$!d' \
+        | sed -E 's/^You are .* for the (zyz-worker execute-task workflow|execute-task skill)\.$/You are <ROLE> for the execute-task workflow./'
+}
+
+# t10_mirror_diff <agents-relpath> <subagents-relpath> <label>
+# Strips the agents/ frontmatter, normalizes both known baseline divergences on
+# both sides, and diffs the result.  PASS if identical, FAIL (printing the diff)
+# otherwise.
+t10_mirror_diff() {
+    local agent_rel="$1"
+    local sub_rel="$2"
+    local label="$3"
+    local agent_abs="$REPO_ROOT/$agent_rel"
+    local sub_abs="$REPO_ROOT/$sub_rel"
+
+    if [ ! -f "$agent_abs" ] || [ ! -f "$sub_abs" ]; then
+        fail "T10 $label mirror body-equality (one or both files missing: $agent_rel / $sub_rel)"
+        return
+    fi
+
+    local diff_out
+    diff_out="$(
+        diff \
+            <(strip_frontmatter "$agent_abs" | t10_normalize_body) \
+            <(t10_normalize_body <"$sub_abs")
+    )"
+    if [ -z "$diff_out" ]; then
+        pass "T10 $agent_rel and $sub_rel bodies are byte-identical (mirror drift guard)"
+    else
+        fail "T10 $agent_rel and $sub_rel mirror bodies DIVERGED (outside the role-intro / leading-blank normalization):
+$(printf '%s\n' "$diff_out" | sed 's/^/      | /')"
+    fi
+}
+
+run_T10() {
+    say_header "T10  agents/ <-> subagents/ mirror body-equality (test-gate S1)"
+
+    t10_mirror_diff "agents/implementation-agent.md" \
+                    "subagents/implementation-agent.md" \
+                    "implementation-agent"
+    t10_mirror_diff "agents/review-agent.md" \
+                    "subagents/review-agent.md" \
+                    "review-agent"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 echo "Running orchestration-scheduling-task test suite"
@@ -3223,6 +3355,7 @@ run_T6
 run_T7
 run_T8
 run_T9
+run_T10
 
 echo
 echo "============================================================"
