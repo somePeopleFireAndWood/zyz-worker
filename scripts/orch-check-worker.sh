@@ -385,4 +385,12 @@ printf 'waiting-reason=%s\n' "$WAITING_REASON"
 printf 'expected-resume-by=%s\n' "$EXPECTED_RESUME_BY"
 printf 'dispatch-bound=%s\n' "$DISPATCH_BOUND"
 
+# Malformed-frontmatter guard: a worker-status.md that exists but has no `---`
+# fence is a bare field dump that fm_field cannot parse (all fields read empty).
+# Emit an explicit marker so the orchestrator can diagnose "fence-less file" vs
+# "genuinely empty". Read-only; no output when the file is absent or well-formed.
+if [ -f "$WORKER_STATUS_FILE" ] && ! grep -qE '^---[[:space:]]*$' "$WORKER_STATUS_FILE"; then
+    echo "worker-status-malformed=true"
+fi
+
 exit 0

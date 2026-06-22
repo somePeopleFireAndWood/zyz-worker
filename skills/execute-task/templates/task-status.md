@@ -84,11 +84,13 @@ Per-SubTask scoreboard:
 
 ## Final Aggregate Testing
 
-(Filled at §3.C after all SubTasks or the single no-split iteration complete.)
+(Filled at §3.C after all SubTasks or the single no-split iteration complete. Each required category must be registered before delivery — see §4 delivery gate.)
 
-- Categories Run: (unit / e2e / regression / pressure)
-- Test Command:
-- Result:
+- Unit: (ran: <result> | skipped: <reason>)
+- E2E: (ran: <result> | skipped: <reason>)
+- Regression: (ran: <result> | skipped: <reason>)
+- Pressure: (ran: <result> | skipped: <reason> | n/a: no perf/capacity risk)
+- Test Command(s):
 - Failing Cases:
 
 ## Final Aggregate Review

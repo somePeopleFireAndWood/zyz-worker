@@ -1,9 +1,10 @@
 ---
 task-id: <task-id>
-phase: design                     # design | implementation | testing | review | delivery | done | error
-                                  # `phase` is monotonically furthest-reached. Once `phase=review`
-                                  # has been written, never roll back to `phase=implementation` — even when
-                                  # iterating inside the review loop. Same for `phase=delivery`.
+phase: design                     # design | implementation | testing | review | delivery | awaiting-confirmation | error
+                                  # `phase` may roll back among design/implementation/testing/review/delivery to
+                                  # reflect real iteration (e.g. review→implementation rework). The ONLY exception is
+                                  # `awaiting-confirmation`: once written, never roll back — it is the absorbing
+                                  # final state a worker self-reaches (self-declared finished, awaiting confirmation).
 phase-since: <iso>                # ISO timestamp of when the current `phase` was entered
 wait-state: none                  # none | waiting-user | waiting-subagent | waiting-resource
                                   # `wait-state` is orthogonal to `phase`.
@@ -25,7 +26,7 @@ last-flush: <iso>                 # ISO timestamp of this flush
   Write atomically (tmpfile + rename). Never edit in place.
 
   Flush triggers (per the design spec §A.5):
-    1. Entering a new `phase` (including `phase=done` and `phase=error`).
+    1. Entering a new `phase` (including `phase=awaiting-confirmation` and `phase=error`).
     2. Setting `wait-state` from `none` to a non-`none` value (suspension).
     3. Setting `wait-state` back to `none` (resume).
     4. Before dispatching a SubAgent.

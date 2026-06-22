@@ -20,7 +20,7 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
 
 - **Do not directly modify a worker's code, tests, or design document.** Workers run `execute-task` themselves.
 - **Do not enter a worker's tmux pane and answer on behalf of the user.** L1 never touches a pane at all — no `send-keys`, no `capture-pane`. If a worker is `waiting-user`, the **notify** step prints "task X needs you in window Y" and writes a `## Needs User` note in `<list-dir>/SUMMARY.md`; the user attaches and answers L3 directly. (Interactive pane driving — only ever for first launch or stuck-worker rescue — is delegated to the L2 `orch-driver-agent`, never used to answer for the user.)
-- **Do not merge or cleanup worktree without explicit approval.** `## Pending Merge Approval` must contain `approved` before `scripts/orch-merge-and-cleanup.sh` is invoked. Stale-worker cleanup requires `cleanup-approved`.
+- **Do not change state, merge, or cleanup worktree without explicit approval.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates one autonomously. Tokens: `confirmed` (mark `state: completed`, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`.
 - **Do not run two orchestrator instances against the same `<list-dir>`.** Acquire `<list-dir>/.orchestrator.lock` via `flock` at startup. If locked, exit immediately.
 - **Do not rewrite the master entry `state:` field for stale workers.** Stale is surfaced through the `## Notes` body section and the `last-seen` frontmatter field. The master entry `state:` is rewritten only on real transitions (ready / blocked / in-progress / paused / completed).
 - **Do not silently mutate user-owned fields.** The user owns `task-id`, `project`, `priority`, `branch`, `base`, `blocked-by`, `merged-with`, and the `## Description` body. The orchestrator may pre-fill values in the tentative phase, but once `deps-tentative: false`, leave these fields alone.
@@ -66,14 +66,14 @@ For each `not-analyzed` task:
   - Which other tasks could/should be merged with it (look at `merged-with` and at text references)?
 - Write the analysis into `## Orchestrator Analysis` as tentative bullets. Set `deps-tentative: true` in frontmatter.
 - Decide the next state:
-  - If `blocked-by` is empty (or all referenced tasks are `completed`) → `state: ready`.
+  - If `blocked-by` is empty → `state: ready`. If it has deps, do not mechanically gate on `completed` alone — see the judgment in the **plan** step's unblock walk.
   - Else → `state: blocked`.
 
 For each `not-analyzed` task whose master entry has missing `source-repo:`, or `source-repo:` that is not absolute after `~/` expansion, or points at a directory that is not a git work tree: write `needs source-repo: <reason>` into the `## Orchestrator Analysis` section. **Do not** change `state:` — leave it `not-analyzed`. Do not dispatch.
 
 ### plan
 
-- Walk `blocked` tasks: if all their `blocked-by` references are `completed`, move them to `ready`.
+- Walk `blocked` tasks. A dependency reaching `completed` is necessary but, since `completed` no longer implies merged-to-base, NOT mechanically sufficient. For each blocked task whose `blocked-by` deps are all `completed`, judge per-task whether it can really start: is each dependency's output actually available to this task (merged into this task's `base`, or only living on the dependency's own branch)? Are all its other `blocked-by` deps satisfied? Which branch should its worktree be based on — `main` if deps are merged, or (if a dependency is `completed`-but-unmerged and this task needs its code) set this task's `base:` to the dependency's branch to chain off it, rather than basing on stale `main`. Record the judgment and the chosen base in the task's `## Orchestrator Analysis`; set `ready` only when it can truly start, else keep it `blocked` with the reason recorded. A worker merely reaching `phase=awaiting-confirmation` (not yet `completed`) never unlocks downstream.
 - Apply the parallel cap from `ZYZ_MAX_PARALLEL_WORKERS`:
   - **`-1` (default, unlimited):** do **not** cap. Dispatch every `ready` task this tick. When several new workers are dispatched at once, their L2 drivers are launched in parallel (one message, multiple `Agent` calls) — the same dependency-graph parallel discipline as execute-task SKILL.md §3.0.2 (schedule by the dependency graph, not list order).
   - **Positive integer:** cap as before. Count currently `in-progress` + `paused` tasks as `currentInFlight`. The cap **counts `paused` as occupying a slot** because the worker's tmux session is still live. Walk `ready` tasks in priority order (`high > normal > low`, then created-at ascending) and pick up to `cap - currentInFlight` for dispatch.
@@ -107,7 +107,7 @@ This step is **L1 inline and unconditional** — it never dispatches an L2 and n
 - If `heartbeat-status=suspect`: do not mark stale yet; next tick decides.
 - If the worker's `phase-since` has not changed for 5 consecutive ticks: treat as soft-stale. Write a "phase-since unchanged for 5 ticks" note. Mark this tick as having a stale worker.
 - Project worker state into master entry `state:` (see also **project** below; this is the same projection):
-  - `phase=done` → keep `state: in-progress` until user approves merge in `## Pending Merge Approval`. Add the approval section if not already present.
+  - `phase=awaiting-confirmation` → keep `state: in-progress` until the user writes a delivery token (`confirmed` / `approved` / `merge` / `cleanup-approved`, or `rejected: <reason>`) in `## Pending Merge Approval`. Add the approval section if not already present.
   - `phase=error` → see **handle errors** below.
   - `wait-state != none` → `state: paused`.
   - `wait-state = none` → `state: in-progress`.
@@ -127,7 +127,7 @@ For a worker whose **this-tick** poll still reports `wait-state=waiting-user`: *
 
 L1 projects each worker's **overall state** into its master entry. Writing the master entry is L1's job, but it uses only overall-state fields — it never reads L3 internals.
 
-- Use the live poll result (the `state:` projection already described in the **poll** step: `phase=done` / `phase=error` / `wait-state` → `state:`).
+- Use the live poll result (the `state:` projection already described in the **poll** step: `phase=awaiting-confirmation` / `phase=error` / `wait-state` → `state:`).
 - Also read that worker's `monitor.md` (`<list-dir>/runtime/<task-id>/monitor.md`, L2-owned) for the L2-level overall flags: `claude-started`, `needs-user`, `needs-attention`, `attention-reason`, `last-summary`. Reflect `needs-attention` into the **handle errors** step below. Do **not** read any L3 internals; `monitor.md` carries overall driver state only.
 - L1 **never writes** `monitor.md` (L2-owned) and never writes `worker-status.md` (L3-owned). It only reads both.
 
@@ -145,15 +145,23 @@ L1 projects each worker's **overall state** into its master entry. Writing the m
 
 ### gate
 
-For each task whose master entry `## Pending Merge Approval` section contains the literal token `approved`:
+Read each task's `## Pending Merge Approval` tokens and route. The orchestrator runs these helpers; it never initiates a delivery action autonomously. Routing is deterministic (order merge → confirm → cleanup):
 
-- Call `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`. The base branch comes from the master entry `base:` field (default `main`).
-- On exit 0: master entry `state:` will already be `completed` (the helper wrote it after merge but before push/cleanup); update `updated-at` and append the merge result to `## Notes`. Record `pr-url=…` if non-empty.
-- On exit 12 (merge conflict): set `state: paused`, append a note explaining the conflict, drop cadence to 180 s. Do **not** retry automatically.
-- On exit 13 (push failed but merge succeeded and `state=completed` already written): leave `state: completed`, append a "push pending" note. The user can retry the script once their network/auth is fixed.
-- On exit 10 (no `approved` token): defensive guard; never expected because the gate already checked. If hit, append a note and continue.
+- If `approved` is present → `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>` (legacy: merge + completed + cleanup, atomic). The base branch comes from the master entry `base:` field (default `main`). `approved` short-circuits: any `confirmed` / `merge` / `cleanup-approved` present the same tick are ignored.
+- Otherwise, in this deterministic order:
+  1. If `merge` / `merge: <base>` → `scripts/orch-merge.sh <task-id> <list-dir> <base-branch>` (merge + push only; no state change, no cleanup). A base in the token overrides the `base:` field.
+  2. If `confirmed` → `scripts/orch-confirm.sh <task-id> <list-dir>` (write `state: completed` only; no git, no cleanup).
+  3. If `cleanup-approved` and the task is now `completed` → `scripts/orch-cleanup-worker.sh <task-id> <list-dir> --force`.
+  4. If `rejected: <reason>` → set `state: blocked`, copy the reason into `## Notes`, leave the worker running (the user may iterate).
 
-For each task whose `## Pending Merge Approval` section contains `rejected: <reason>`: set `state: blocked`, copy the reason into `## Notes`, leave the worker running (the user may iterate).
+Helper exit handling:
+
+- `orch-merge-and-cleanup.sh` exit 0: master entry `state:` will already be `completed` (the helper wrote it after merge but before push/cleanup); update `updated-at` and append the merge result to `## Notes`. Record `pr-url=…` if non-empty.
+- `orch-merge.sh` / `orch-merge-and-cleanup.sh` exit 12 (merge conflict): leave `state` unchanged (no merge happened), append a note explaining the conflict, drop cadence to 180 s. Do **not** retry automatically.
+- `orch-merge.sh` exit 13 (push failed but merge succeeded): `state` is unchanged (this path never writes it); append a "push pending" note. The user can rerun the script once their network/auth is fixed.
+- `orch-merge-and-cleanup.sh` exit 13 (push failed but merge succeeded): the helper already wrote `state: completed` before push, so leave it `completed`; append a "push pending" note. The user can rerun the script once their network/auth is fixed.
+- exit 10 (no matching token): defensive guard; never expected because the gate already checked. If hit, append a note and continue.
+- `orch-confirm.sh` exit 0: master entry `state:` is now `completed`; append a confirmation note. If the branch was never merged, note that the worktree / task branch still exist (cleanup needs a separate `cleanup-approved`).
 
 For stale-worker cleanup: only invoke `scripts/orch-cleanup-worker.sh <task-id> <list-dir> --force` if the user wrote `cleanup-approved` into the master entry `## Notes`. Default behavior is dry-run / no action.
 
@@ -181,7 +189,7 @@ Branches are evaluated in order; the first match wins. The 300 s mark is intenti
 
 ```
 # branch="imminent-completion"
-if any worker phase=delivery for more than 1 tick:
+if any worker phase=delivery OR phase=awaiting-confirmation for more than 1 tick:
     delaySeconds = 120
 
 # branch="stale"

@@ -21,7 +21,7 @@ This file is not a subagent prompt. It defines how the current conversation agen
 - Remind subagents that available optional skills and plugins may be used, but missing ones must not block the workflow.
 - When you write or update the design document or the final report, produce it in the same language the user is using in this conversation. Keep other artifacts (status, review reports, prompt files) in their existing language.
 - Persist long-running task progress, decisions, blockers, and the next step into the task status file before any suspend, handoff, or context switch; the conversation context is for execution only. See [docs/conventions/long-running-state.md](../../../docs/conventions/long-running-state.md).
-- When `ZYZ_WORKER_STATUS_FILE` is set in the environment (orchestrated mode — this conversation was dispatched by the `orchestration-scheduling-task` skill), flush the orchestrator-facing status snapshot fields (`phase`, `phase-since`, `wait-state`, `waiting-reason`, `expected-resume-by`, `last-flush`) to that file at every phase transition and before every suspend (including before dispatching a subagent and after receiving its result). The `phase` field is monotonically furthest-reached — never roll back. The orchestrator only sees what this file says; in-context memory does not count. See `skills/execute-task/SKILL.md` `## Orchestrated Mode` for the full contract including the phase mapping table.
+- When `ZYZ_WORKER_STATUS_FILE` is set in the environment (orchestrated mode — this conversation was dispatched by the `orchestration-scheduling-task` skill), flush the orchestrator-facing status snapshot fields (`phase`, `phase-since`, `wait-state`, `waiting-reason`, `expected-resume-by`, `last-flush`) to that file at every phase transition and before every suspend (including before dispatching a subagent and after receiving its result). Write `worker-status.md` as valid YAML frontmatter wrapped in a pair of `---` fences (first line `---`, fields, closing `---`); a fence-less bare field dump is malformed and the orchestrator's parser reads nothing. The `phase` field may roll back, except `awaiting-confirmation`, which is the absorbing final state a worker can self-reach (never rolls back to an earlier phase). The orchestrator only sees what this file says; in-context memory does not count. See `skills/execute-task/SKILL.md` `## Orchestrated Mode` for the full contract including the phase mapping table.
 
 ## Automatic Execution Policy
 
@@ -81,7 +81,7 @@ zyz-worker completes the task autonomously from the design document, so you hand
 - Commit autonomously after each completed SubTask and once more for the overall task. Do not ask the user whether to commit.
 - Push autonomously when a remote/upstream is configured. Do not ask the user whether to push.
 - Treat commit and push as non-blocking. If either fails for any reason, record it in the status file and keep going — a failed commit or push is never a blocker.
-- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only.
+- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only. On explicit user instruction the worker may also `git merge` the task branch into its base and push (still no force-push / no history rewrite); autonomy never covers merge to base. In orchestrated mode the orchestrator does the merge, not the worker.
 
 ## Design Workflow
 
@@ -120,11 +120,13 @@ When a SubTask completes, write its progress into the overall status file (and i
 
 Schedule SubTasks by their dependency graph, not their list order (see Parallel Dispatch above). Dispatch SubTasks with no unmet dependency on each other together in one batch. Do not start a SubTask until the SubTasks it actually depends on have all three flags true — but do not serialize independent SubTasks just because the list numbers them in sequence. When a SubTask is genuinely blocked but later work does not depend on it, record an explicit "blocked, deferred" rationale.
 
-After all SubTasks complete, run aggregate testing (unit + e2e + regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
+After all SubTasks complete, run aggregate testing that accounts for every category (unit / e2e / regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Each category is registered in `## Final Aggregate Testing` as either `ran` (with result) or `skipped` (with a non-empty reason) — this is a registration requirement, not a must-run-all requirement. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
 
 ## Delivery
 
 Before delivering, verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`) and confirm nothing was silently narrowed, deferred, or replaced with a placeholder. Close any gap or escalate to the user.
+
+Before producing the final report, verify `## Final Aggregate Testing` registers every required category (unit / e2e / regression; plus pressure when `## Risks` demands it) as either `ran` (with result) or `skipped` (with a non-empty reason). Never silently omit a category; a cost-bearing test (e.g. e2e) may be skipped only with a recorded reason, asking the user first when feasible.
 
 Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
 

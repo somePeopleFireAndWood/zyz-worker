@@ -192,7 +192,7 @@ Use these templates when creating master-list artifacts:
 - **Master entries are co-written with the user.** The orchestrator writes via `tmpfile + rename`. **Before the user edits a master entry in an external editor, the user must `Ctrl-C` the orchestrator** so the flock releases. Restart the orchestrator once the edit is saved.
 - **Each worker writes only its own runtime files.** A worker writes `worker-status.md`, `question.md`, and uses `heartbeat` via the daemon. The orchestrator reads but never writes a worker's runtime files (except for archival during cleanup). The orchestrator writes the master entry; the worker never writes the master entry.
 - **Heuristic analysis is always tentative.** Dependency, project, merge-with suggestions written by the orchestrator carry `deps-tentative: true` in the master entry frontmatter until the user flips it to `false`.
-- **No automatic merge or cleanup.** `## Pending Merge Approval` must contain the literal token `approved` before the orchestrator invokes `orch-merge-and-cleanup.sh`. Stale-worker cleanup requires `cleanup-approved`.
+- **No automatic state change, merge, or cleanup.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates them autonomously. Tokens: `confirmed` (mark `state: completed`, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`.
 - **`task-id` is whitelisted.** Helper scripts reject any `task-id` that does not match `^[a-zA-Z0-9_-]+$`. The `tmux` session, git branch, worktree path, and runtime dir all embed the literal `task-id`.
 - **Worker tmux session name is fixed-prefix `zyz-task-<task-id>`.** Default git branch is `task/<task-id>`. Default merge base is `main`; override via master entry frontmatter `base:` field.
 - **Heartbeat thresholds default to 300 s** (fresh / suspect / stale tiers per §A.6 of the design spec). When the worker reports `wait-state=waiting-user`, the threshold widens to 900 s. Do not drop below 120 s except on a strictly local (non-network) filesystem.
@@ -258,7 +258,7 @@ Legal user-written values for `state:` are `not-analyzed | blocked | ready | com
 
 ```yaml
 task-id: <task-id>
-phase: design | implementation | testing | review | delivery | done | error
+phase: design | implementation | testing | review | delivery | awaiting-confirmation | error
 phase-since: <iso>
 wait-state: none | waiting-user | waiting-subagent | waiting-resource
 waiting-reason: <free text; non-empty when wait-state != none>
@@ -277,9 +277,9 @@ Six explicit states + one orchestrator-derived state (`stale`):
 | `not-analyzed` | Task is new; orchestrator has not analyzed it yet. | template default / scan |
 | `blocked` | Dependencies unmet, or worker reported `phase=error`. | orchestrator |
 | `ready` | No blockers; dispatchable. | orchestrator |
-| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; phase not done/error. | orchestrator |
+| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; phase not awaiting-confirmation/error. | orchestrator |
 | `paused` | Worker dispatched; `wait-state != none`. | orchestrator (projects worker's wait-state) |
-| `completed` | Implementation done; merge passed; cleanup done. | orchestrator |
+| `completed` | User-confirmed delivery (user wrote `confirmed` or legacy `approved` in `## Pending Merge Approval`). Merge to base may or may not have happened — done is decoupled from merge. Set only by the orchestrator on explicit user instruction (never autonomously). `completed` remains terminal and immutable; post-delivery changes go through a NEW superseding task. | orchestrator |
 | `stale` (derived) | Heartbeat past stale threshold OR `phase-since` unchanged for 5 ticks. Master entry `state:` is **not** rewritten; stale is reported via the `## Notes` section and the `last-seen` field. | orchestrator |
 
 Transitions (informal):
@@ -287,10 +287,16 @@ Transitions (informal):
 - `not-analyzed` → `ready` (analysis ok, no blockers) | `blocked` (analysis ok but deps unmet)
 - `blocked` → `ready` (deps met or error resolved)
 - `ready` → `in-progress` (orchestrator dispatches)
-- `in-progress` → `paused` (worker writes `wait-state != none`) | `completed` (worker writes `phase=done` and user approves merge) | `blocked` (worker writes `phase=error`)
+- `in-progress` → `paused` (worker writes `wait-state != none`) | `completed` (worker reaches `phase=awaiting-confirmation`; user writes `confirmed` or `approved`; orchestrator writes `completed` — merge is an independent action that may have happened, may happen later, or may never happen) | `blocked` (worker writes `phase=error`)
 - `paused` → `in-progress` (worker writes `wait-state=none`)
 
+`completed` is terminal and immutable: there is no transition out of it. A worker reaching `phase=awaiting-confirmation` does not by itself change `state`; only the orchestrator-written `completed` (set on explicit user confirmation, whether or not the branch was merged) is what the orchestrator reasons about when judging whether downstream tasks may start (see the Dependency Unlock guidance in `prompts/main-agent.md`). Post-delivery changes are made by creating a NEW task that supersedes the completed one; never re-open or roll back `completed`.
+
 Full state machine and the phase mapping table for `execute-task` workflow positions live in the design spec (§A and §D.5 of `.zyz-worker/tasks/orchestration-scheduling-task/design-spec.md`).
+
+### PR flow (merge handled outside the orchestrator)
+
+Not every branch merges to `main`, and some require PR + human review. Native PR creation is out of scope. To finish a task via PR: let the worker reach `phase=awaiting-confirmation`, open and review/merge the PR yourself (outside zyz-worker), then write `confirmed` (NOT `merge`) in `## Pending Merge Approval` so the orchestrator records `state: completed` without running any git merge. The orchestrator never opens or merges PRs.
 
 ## Long-Running State
 

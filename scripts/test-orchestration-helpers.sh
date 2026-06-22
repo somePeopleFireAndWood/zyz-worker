@@ -154,6 +154,8 @@ HELPER_SCRIPTS=(
     "scripts/orch-heartbeat-daemon.sh"
     "scripts/orch-cleanup-worker.sh"
     "scripts/orch-merge-and-cleanup.sh"
+    "scripts/orch-confirm.sh"
+    "scripts/orch-merge.sh"
 )
 
 AGENT_FILES=(
@@ -183,7 +185,8 @@ run_T1() {
     # slash command
     check_file_exists "commands/orchestrate-tasks.md"
 
-    # 6 helper scripts: exist + executable
+    # Helper scripts (incl. orch-confirm.sh / orch-merge.sh, done/merge
+    # decouple): exist + executable
     local s
     for s in "${HELPER_SCRIPTS[@]}"; do
         check_file_exists "$s"
@@ -470,8 +473,33 @@ run_T3() {
     # execute-task SKILL.md
     local etsk="skills/execute-task/SKILL.md"
     check_grep "$etsk" "'## Orchestrated Mode' heading" '^## Orchestrated Mode([[:space:]]|$)'
-    check_grep_fixed "$etsk" "phase monotonicity contract 'monotonically furthest'" \
-        "monotonically furthest"
+    check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'awaiting-confirmation'" \
+        "awaiting-confirmation"
+    check_grep_fixed "$etsk" "phase absorbing-state contract mentions 'absorbing'" \
+        "absorbing"
+
+    # ---- delivery test-gate (registration-style hard gate) --------------
+    # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/design-test-gate.md
+    # §4: the Deliver step gains a pre-delivery gate that requires EVERY
+    # required test category (unit / e2e / regression; plus pressure when
+    # `## Risks` demands it) to be registered ran/skipped before delivery.
+    # The literal string `every required category` is the contract anchor
+    # (RC3) — it is unique to the §4 gate sentence, so deleting the gate
+    # turns this check red.
+    check_grep_fixed "$etsk" "§4 delivery test-gate anchor 'every required category'" \
+        "every required category"
+
+    # ---- task-status template per-category Final Aggregate Testing -------
+    # Per design-test-gate.md §模板结构化: `## Final Aggregate Testing` in the
+    # task-status template becomes a per-category checklist with one line per
+    # category using the `(ran: <result> | skipped: <reason>)` grammar.  E2E
+    # and Regression are the two categories the user specifically worried get
+    # silently skipped, so we anchor on those two labels at minimum.
+    local etsk_tpl="skills/execute-task/templates/task-status.md"
+    check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category E2E line" \
+        "- E2E:"
+    check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category Regression line" \
+        "- Regression:"
 
     # Each of the 6 agent files: heading + 'wait-state'
     local af
@@ -510,6 +538,49 @@ run_T3() {
     # semantics (main-agent.md already carries it via the T3'' check above).
     check_grep_fixed "$cmd_orch" "T3'' $cmd_orch mentions 'ZYZ_ORCH_ONCE'" "ZYZ_ORCH_ONCE"
     check_grep_fixed "CLAUDE.md" "T3'' CLAUDE.md mentions 'ZYZ_ORCH_ONCE'" "ZYZ_ORCH_ONCE"
+
+    # ---- T3''' (done/merge decouple) static anchors ---------------------
+    # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/
+    # design-done-merge-decouple.md: `state: completed` is decoupled from
+    # merge, and three master-entry tokens (`confirmed`, `merge`/`merge: <base>`,
+    # legacy `approved`) route deterministically.  These doc-greps pin the new
+    # wording the implementation must land; they are the PRIMARY multi-token
+    # routing-precedence assertion (the design chose the doc-grep form so it
+    # does not depend on a full git fixture — §测试 "主用文档 grep 形").
+    #
+    # (4) main-agent.md gate-step documents the `approved` short-circuit: when
+    #     `approved` is present, any coexisting `confirmed`/`merge`/
+    #     `cleanup-approved` tokens are IGNORED that tick (RC3: "ignored", not
+    #     "absorbed as a subset").  `short-circuit` is the stable anchor phrase.
+    #     ($main = orch prompts/main-agent.md, defined above in this function.)
+    check_grep_fixed "$main" "T3''' gate approved short-circuit documented" \
+        "short-circuit"
+
+    # (5a) RC7 backtick-quoted token anchors in the master-entry template.  The
+    #      backticks are part of the matched needle/pattern, so the match can
+    #      NEVER land on the bare substring `confirmed` inside
+    #      `awaiting-confirmation` (which has no surrounding backticks).  The
+    #      template comment documents the `confirmed` and `merge` tokens with
+    #      these literal backtick spans.
+    local mlte_decouple="skills/orchestration-scheduling-task/templates/master-list-task-entry.md"
+    check_grep_fixed "$mlte_decouple" "T3''' template documents \`confirmed\` token (backtick-quoted)" \
+        '`confirmed`'
+    # The design's §令牌词表 allows the merge token to be documented as the bare
+    # shorthand `merge` OR the parameterized `merge:` (i.e. `merge: <base>`) —
+    # RC7 explicitly accepts either backtick-quoted spelling.  Match either so
+    # the anchor is robust to whichever form the template comment lands on,
+    # while the backtick prefix still rules out the awaiting-confirmation
+    # substring trap.  (ERE: backtick is a literal; alternation via `|`.)
+    check_grep "$mlte_decouple" "T3''' template documents \`merge\` or \`merge:\` token (backtick-quoted)" \
+        '`merge`|`merge:`'
+
+    # (5b) orch SKILL.md `completed` row/sentence carries the unique anchor word
+    #      `decoupled` (done is now decoupled from merge).  This word does not
+    #      exist anywhere in the tree before this change, so this check
+    #      specifically asserts the new completed-state wording landed.
+    #      ($skill = orch SKILL.md, defined above in this function.)
+    check_grep_fixed "$skill" "T3''' SKILL.md completed-state 'decoupled' anchor" \
+        "decoupled"
 }
 
 # ---------------------------------------------------------------------------
@@ -1141,7 +1212,7 @@ run_T5() {
     write_heartbeat "$hb" fresh
 
     # Phase walkthrough: design -> implementation -> implementation+waiting-subagent ->
-    # implementation+none -> testing -> review -> delivery -> done.
+    # implementation+none -> testing -> review -> delivery -> awaiting-confirmation.
     write_worker_status "$runtime" design none
     t5_assert_check "$list_dir" "foo" "phase" "design"
     t5_assert_check "$list_dir" "foo" "wait-state" "none"
@@ -1166,8 +1237,22 @@ run_T5() {
     write_worker_status "$runtime" delivery none
     t5_assert_check "$list_dir" "foo" "phase" "delivery"
 
-    write_worker_status "$runtime" done none
-    t5_assert_check "$list_dir" "foo" "phase" "done"
+    # Rollback is now allowed among working phases (the helper is a pure
+    # pass-through reader; the absorbing-state rule is a worker-side contract
+    # verified at the doc level in T2, not enforced by orch-check-worker.sh).
+    write_worker_status "$runtime" review none
+    t5_assert_check "$list_dir" "foo" "phase" "review"
+    write_worker_status "$runtime" implementation none
+    t5_assert_check "$list_dir" "foo" "phase" "implementation"
+    write_worker_status "$runtime" review none
+    t5_assert_check "$list_dir" "foo" "phase" "review"
+
+    # awaiting-confirmation is the terminal worker-side state (replaces the old
+    # `done`).  The helper just echoes whatever phase the file holds.
+    write_worker_status "$runtime" delivery none
+    t5_assert_check "$list_dir" "foo" "phase" "delivery"
+    write_worker_status "$runtime" awaiting-confirmation none
+    t5_assert_check "$list_dir" "foo" "phase" "awaiting-confirmation"
 
     # Heartbeat staleness: backdate heartbeat and expect heartbeat-status=stale.
     write_heartbeat "$hb" stale
@@ -1181,6 +1266,67 @@ run_T5() {
     # 5-tick stagnation; that is orchestrator-level logic and is therefore
     # outside the scope of this unit test.  Documenting via SKIP.
     skip "T5 phase-since 5-tick stagnation (orchestrator-level; not testable in helper unit test per §A.6/§F.2)"
+
+    # ---- BUG-2: malformed-frontmatter guard ---------------------------------
+    # Per design §BUG-2: a worker-status.md written as a bare field dump (NO
+    # `---` fence, file starts directly with `phase: ...`) is a contract defect
+    # — fm_field never enters frontmatter, so every field reads empty and L1
+    # sees no progress.  As a backstop, orch-check-worker.sh now emits the
+    # literal line `worker-status-malformed=true` for such fence-less files so
+    # L1 can diagnose it.  This case is gated by the same tmux requirement as
+    # the rest of T5 (orch-check-worker.sh hard-requires tmux at entry).
+    #
+    # We overwrite worker-status.md with a fence-less dump AFTER the well-formed
+    # walkthrough above so earlier asserts are unaffected.
+    {
+        echo "phase: review"
+        echo "phase-since: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "wait-state: none"
+        echo "waiting-reason:"
+        echo "expected-resume-by:"
+        echo "last-flush: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >"$runtime/worker-status.md"
+    local malformed_out malformed_rc
+    malformed_out="$(bash "$script" "foo" "$list_dir" </dev/null 2>&1)"
+    malformed_rc=$?
+    if [ "$malformed_rc" -ne 0 ]; then
+        fail "T5 BUG-2 orch-check-worker.sh exited $malformed_rc on fence-less worker-status (expected 0).  Output:
+$(printf '%s\n' "$malformed_out" | sed 's/^/      | /')"
+    elif printf '%s\n' "$malformed_out" | grep -qE '^worker-status-malformed=true([[:space:]]|$)'; then
+        pass "T5 BUG-2 fence-less worker-status.md yields 'worker-status-malformed=true'"
+    else
+        fail "T5 BUG-2 fence-less worker-status.md did NOT yield 'worker-status-malformed=true'.  Output:
+$(printf '%s\n' "$malformed_out" | sed 's/^/      | /')"
+    fi
+
+    # ---- BUG-1: tilde-expansion regression ----------------------------------
+    # Per design §BUG-1: cleanup/merge expanded a `~/`-form worktree with an
+    # UNQUOTED ${WORKTREE#~/}, where bash treats the leading `~` of the pattern
+    # as a tilde metacharacter (expanding it to $HOME/ before matching), so the
+    # literal `~/` prefix is never stripped → a no-op → path becomes
+    # $HOME/~/... (nonexistent) → removal silently skipped.  The fix uses the
+    # QUOTED ${WORKTREE#"~/"} form (matching orch-spawn-worker.sh).
+    #
+    # (1) Pure unit assertion: prove the quoted form strips `~/` while the
+    #     unquoted form is a no-op on this shell.
+    local wt='~/x/y'
+    local bad="$HOME/${wt#~/}"      # buggy (unquoted) form
+    local good="$HOME/${wt#"~/"}"   # fixed (quoted) form
+    if [ "$good" = "$HOME/x/y" ]; then
+        pass "T5 BUG-1 quoted \${WORKTREE#\"~/\"} strip yields \$HOME/x/y"
+    else
+        fail "T5 BUG-1 quoted strip wrong: got '$good', expected '$HOME/x/y'"
+    fi
+    if [ "$bad" != "$good" ]; then
+        pass "T5 BUG-1 unquoted \${WORKTREE#~/} strip is a no-op (demonstrates the bug)"
+    else
+        skip "T5 BUG-1 unquoted form coincidentally equal on this shell"
+    fi
+    # (2) Behavioral grep guard: the two fixed scripts must use the QUOTED form.
+    check_grep_fixed "scripts/orch-cleanup-worker.sh" \
+        "BUG-1 cleanup uses quoted \${WORKTREE#\"~/\"}" '${WORKTREE#"~/"}'
+    check_grep_fixed "scripts/orch-merge-and-cleanup.sh" \
+        "BUG-1 merge uses quoted \${WORKTREE#\"~/\"}" '${WORKTREE#"~/"}'
 
     # Clean trap; T6 sets its own.
     trap - EXIT
@@ -1218,8 +1364,8 @@ T6_SKIP_ALL() {
         "worktree foo resolves to source-repo work (F.2)" \
         "worktree bar resolves to source-repo work2 (F.2)" \
         "worktree foo and bar resolve to DIFFERENT .git dirs (F.2)" \
-        "orch-check-worker.sh reports phase=done after mock worker (foo)" \
-        "orch-check-worker.sh reports phase=done after mock worker (bar) (F.2)" \
+        "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (foo)" \
+        "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2)" \
         "orch-merge-and-cleanup.sh exits 0 (foo)" \
         "orch-merge-and-cleanup.sh exits 0 (bar) (F.2)" \
         "master entry foo state: completed after merge" \
@@ -1501,8 +1647,8 @@ $(printf '%s\n' "$spawn_out" | sed 's/^/      | /')"
             "worktree foo resolves to source-repo work (F.2)" \
             "worktree bar resolves to source-repo work2 (F.2)" \
             "worktree foo and bar resolve to DIFFERENT .git dirs (F.2)" \
-            "orch-check-worker.sh reports phase=done after mock worker (foo)" \
-            "orch-check-worker.sh reports phase=done after mock worker (bar) (F.2)" \
+            "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (foo)" \
+            "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2)" \
             "orch-merge-and-cleanup.sh exits 0 (foo)" \
             "orch-merge-and-cleanup.sh exits 0 (bar) (F.2)" \
             "master entry foo state: completed after merge" \
@@ -1681,9 +1827,9 @@ $(printf '%s\n' "$spawn2_out" | sed 's/^/      | /')"
         skip "T6 worktree foo and bar resolve to DIFFERENT .git dirs (F.2) (skipped: spawn bar failed or git-common-dir unresolved)"
     fi
 
-    # --- Send keys: a tiny bash mock worker writes phase=done in each pane ---
+    # --- Send keys: a tiny bash mock worker writes phase=awaiting-confirmation in each pane ---
     # We send a small inline bash command that overwrites worker-status.md
-    # with phase=done.  We do NOT start `claude` (per design).
+    # with phase=awaiting-confirmation.  We do NOT start `claude` (per design).
     local now
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -1694,7 +1840,7 @@ $(printf '%s\n' "$spawn2_out" | sed 's/^/      | /')"
         echo "cat > '$LIST_DIR/runtime/$tid/worker-status.md' <<MOCKEOF
 ---
 task-id: $tid
-phase: done
+phase: awaiting-confirmation
 phase-since: $now
 wait-state: none
 waiting-reason:
@@ -1718,28 +1864,28 @@ MOCKEOF"
     fi
     sleep 2
 
-    # Verify phase=done via the helper, for each task.
+    # Verify phase=awaiting-confirmation via the helper, for each task.
     local check_out check_rc
     check_out="$(bash "$check" foo "$LIST_DIR" </dev/null 2>&1)"
     check_rc=$?
-    if [ "$check_rc" -eq 0 ] && printf '%s\n' "$check_out" | grep -qE '^phase=done([[:space:]]|$)'; then
-        T6_PASS "orch-check-worker.sh reports phase=done after mock worker (foo)"
+    if [ "$check_rc" -eq 0 ] && printf '%s\n' "$check_out" | grep -qE '^phase=awaiting-confirmation([[:space:]]|$)'; then
+        T6_PASS "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (foo)"
     else
-        T6_FAIL "orch-check-worker.sh did NOT report phase=done for foo (rc=$check_rc).  Output:
+        T6_FAIL "orch-check-worker.sh did NOT report phase=awaiting-confirmation for foo (rc=$check_rc).  Output:
 $(printf '%s\n' "$check_out" | sed 's/^/      | /')"
     fi
     if [ "$spawn2_rc" -eq 0 ]; then
         local check_out_bar check_rc_bar
         check_out_bar="$(bash "$check" bar "$LIST_DIR" </dev/null 2>&1)"
         check_rc_bar=$?
-        if [ "$check_rc_bar" -eq 0 ] && printf '%s\n' "$check_out_bar" | grep -qE '^phase=done([[:space:]]|$)'; then
-            T6_PASS "orch-check-worker.sh reports phase=done after mock worker (bar) (F.2)"
+        if [ "$check_rc_bar" -eq 0 ] && printf '%s\n' "$check_out_bar" | grep -qE '^phase=awaiting-confirmation([[:space:]]|$)'; then
+            T6_PASS "orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2)"
         else
-            T6_FAIL "orch-check-worker.sh did NOT report phase=done for bar (rc=$check_rc_bar).  Output:
+            T6_FAIL "orch-check-worker.sh did NOT report phase=awaiting-confirmation for bar (rc=$check_rc_bar).  Output:
 $(printf '%s\n' "$check_out_bar" | sed 's/^/      | /')"
         fi
     else
-        skip "T6 orch-check-worker.sh reports phase=done after mock worker (bar) (F.2) (skipped: spawn bar failed)"
+        skip "T6 orch-check-worker.sh reports phase=awaiting-confirmation after mock worker (bar) (F.2) (skipped: spawn bar failed)"
     fi
 
     # --- Write 'approved' to each master entry's ## Pending Merge Approval ---
@@ -3131,6 +3277,416 @@ run_T9() {
 }
 
 # ---------------------------------------------------------------------------
+# T10. agents/ <-> subagents/ mirror body-equality guard (test-gate ST, S1).
+#
+# The execute-task subagent role prompts live in TWO places that must stay in
+# sync: the canonical Claude Code subagent copies under agents/ (which carry a
+# leading `---\nname: ...\n---` YAML frontmatter block) and the legacy mirrors
+# under subagents/ (which are frontmatter-free, starting directly with a `# `
+# heading).  Per design-test-gate.md §guard 测试 (S1): there was NO test
+# asserting these two pairs stay body-identical, so a mirror bullet added on
+# one side (e.g. the new aggregate-testing registration responsibility on
+# implementation-agent, or the new four-category review standard on
+# review-agent) could silently drift on the other.  This guard closes that gap.
+#
+# Method (mirrors the test-rename-and-conventions.sh T5 `diff <(grep -v ...)`
+# precedent, which we may not edit there — so it is implemented here):
+#   1. strip_frontmatter() removes the agents/ file's leading `---`...`---`
+#      YAML block, leaving the body.
+#   2. The subagents/ mirror is frontmatter-free (verified by reading both
+#      files), so its body starts immediately — no stripping needed there.
+#   3. TWO intentional, known body divergences exist between the stripped
+#      agents/ body and the subagents/ body, BOTH predating the test-gate
+#      change and NEITHER part of the mirrored responsibility/standard bullets:
+#        (i)  a LEADING BLANK LINE: after the agents/ frontmatter fence there is
+#             a blank line before the `# ...Agent Prompt` heading, whereas the
+#             subagents/ files start directly with that heading.  strip_frontmatter
+#             removes only the `---`...`---` block, so that blank survives.
+#        (ii) the intro sentence:
+#               agents/    : "You are <role> for the zyz-worker execute-task workflow."
+#               subagents/ : "You are <role> for the execute-task skill."
+#      Like T5's `grep -v '^description:'` filter, t10_normalize_body() collapses
+#      BOTH of these away IDENTICALLY on each side (drop leading blank lines, then
+#      canonicalize the role-intro line) before diffing — so the guard is green on
+#      a correct baseline while still failing loudly if ANY OTHER line — including
+#      the newly added mirror bullets — drifts.
+# ---------------------------------------------------------------------------
+
+# strip_frontmatter <file>
+# Prints <file> with a leading YAML frontmatter block removed (if present).
+# A frontmatter block is the first `---`...`---` fence starting at line 1; the
+# fence lines themselves and everything between them are dropped, the body that
+# follows is printed verbatim.  A file with no leading `---` is printed as-is.
+strip_frontmatter() {
+    awk '
+        NR==1 && $0=="---" { infm=1; next }
+        infm && $0=="---"  { infm=0; next }
+        !infm              { print }
+    ' "$1"
+}
+
+# t10_normalize_body  (stdin -> stdout)
+# Canonicalizes the TWO known-divergent aspects so the agents/ (frontmatter-
+# stripped) and subagents/ bodies compare equal where they are intentionally
+# allowed to differ, while every OTHER line must still match byte for byte:
+#   (i)  drop LEADING blank lines.  `sed '/./,$!d'` deletes lines from the start
+#        of input up to (but not including) the first line containing any
+#        non-blank character — i.e. it trims a leading run of blank lines and
+#        leaves the rest untouched.  This erases the blank line that survives
+#        after the agents/ frontmatter fence (subagents/ has none).
+#   (ii) canonicalize the role-intro line.  Both phrasings start with
+#        "You are <Role> for the " and end differently ("zyz-worker execute-task
+#        workflow." vs "execute-task skill."); collapse the whole line to a fixed
+#        sentinel.
+# Applied IDENTICALLY to both sides; this is the only normalization.
+t10_normalize_body() {
+    sed '/./,$!d' \
+        | sed -E 's/^You are .* for the (zyz-worker execute-task workflow|execute-task skill)\.$/You are <ROLE> for the execute-task workflow./'
+}
+
+# t10_mirror_diff <agents-relpath> <subagents-relpath> <label>
+# Strips the agents/ frontmatter, normalizes both known baseline divergences on
+# both sides, and diffs the result.  PASS if identical, FAIL (printing the diff)
+# otherwise.
+t10_mirror_diff() {
+    local agent_rel="$1"
+    local sub_rel="$2"
+    local label="$3"
+    local agent_abs="$REPO_ROOT/$agent_rel"
+    local sub_abs="$REPO_ROOT/$sub_rel"
+
+    if [ ! -f "$agent_abs" ] || [ ! -f "$sub_abs" ]; then
+        fail "T10 $label mirror body-equality (one or both files missing: $agent_rel / $sub_rel)"
+        return
+    fi
+
+    local diff_out
+    diff_out="$(
+        diff \
+            <(strip_frontmatter "$agent_abs" | t10_normalize_body) \
+            <(t10_normalize_body <"$sub_abs")
+    )"
+    if [ -z "$diff_out" ]; then
+        pass "T10 $agent_rel and $sub_rel bodies are byte-identical (mirror drift guard)"
+    else
+        fail "T10 $agent_rel and $sub_rel mirror bodies DIVERGED (outside the role-intro / leading-blank normalization):
+$(printf '%s\n' "$diff_out" | sed 's/^/      | /')"
+    fi
+}
+
+run_T10() {
+    say_header "T10  agents/ <-> subagents/ mirror body-equality (test-gate S1)"
+
+    t10_mirror_diff "agents/implementation-agent.md" \
+                    "subagents/implementation-agent.md" \
+                    "implementation-agent"
+    t10_mirror_diff "agents/review-agent.md" \
+                    "subagents/review-agent.md" \
+                    "review-agent"
+}
+
+# ---------------------------------------------------------------------------
+# T11. Done/merge decouple — orch-confirm.sh + orch-merge.sh path unit tests.
+#
+# Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/
+# design-done-merge-decouple.md: `state: completed` is decoupled from merge.
+# Two NEW helper scripts implement the split:
+#   - orch-confirm.sh <task-id> <list-dir>          — checks the `confirmed`
+#     token, writes `state: completed`, touches NO git and NO worktree.
+#     Exit codes: 0 success / 2 arg / 4 master-entry-missing / 10 no token.
+#     It has NO git/tmux dependency, so T11(a) runs UNCONDITIONALLY (static).
+#   - orch-merge.sh <task-id> <list-dir> <base>     — checks the `merge` token,
+#     merges the task branch into base + pushes, leaves `state:` UNCHANGED and
+#     does NOT clean up the worktree.  It mirrors orch-merge-and-cleanup.sh's
+#     conventions (hard-requires tmux + git at entry), so T11(b) is gated on
+#     tmux+git exactly like T6.
+#
+# These two tests will FAIL until the parallel implementation lands the new
+# scripts — that is expected and intentional; they are written to the
+# documented contract (exit codes, stdout tokens, behavior).
+#
+# t11_confirm_master_entry <list-dir> <task-id> <token-line-or-empty>
+# Writes a minimal master entry under <list-dir>/tasks/<task-id>.md with
+# state: in-progress.  When <token-line> is non-empty it is appended as the body
+# of a `## Pending Merge Approval` section (e.g. "confirmed by T11-test");
+# when empty, NO Pending Merge Approval section is written (the negative case).
+# Mirrors the write_master_entry / t4p_write_master_entry helpers' shape.
+# ---------------------------------------------------------------------------
+t11_confirm_master_entry() {
+    local list_dir="$1"
+    local task_id="$2"
+    local token_line="$3"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $task_id"
+        echo "project: t11-mock"
+        echo "state: in-progress"
+        echo "priority: normal"
+        echo "branch: task/$task_id"
+        echo "base: main"
+        # Worktree path lives UNDER the (tmproot-rooted) list-dir so the
+        # negative-merge assertion can prove orch-confirm.sh leaves it absent
+        # without racing a fixed /tmp path another process might create.
+        echo "worktree: $list_dir/worktree/$task_id"
+        echo "tmux-session: zyz-task-$task_id"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-22"
+        echo "updated-at: 2026-06-22"
+        echo "---"
+        echo ""
+        echo "# $task_id"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "T11 done/merge-decouple fixture."
+        if [ -n "$token_line" ]; then
+            echo ""
+            echo "## Pending Merge Approval"
+            echo ""
+            echo "$token_line"
+        fi
+    } >"$list_dir/tasks/$task_id.md"
+}
+
+# T11(a) — orch-confirm.sh `confirmed`-only path (static, no git/tmux needed).
+run_T11_confirm() {
+    say_header "T11a orch-confirm.sh confirmed-only path (no git)"
+
+    local confirm="$REPO_ROOT/scripts/orch-confirm.sh"
+    if [ ! -x "$confirm" ]; then
+        skip "T11a orch-confirm.sh confirmed -> exit 0 + confirm-status=success (script missing or not executable)"
+        skip "T11a orch-confirm.sh writes state: completed (script missing or not executable)"
+        skip "T11a orch-confirm.sh did NOT require a git repo / worktree untouched (script missing or not executable)"
+        skip "T11a orch-confirm.sh without 'confirmed' token -> exit 10 (script missing or not executable)"
+        return
+    fi
+
+    local T11_ROOT
+    T11_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t11a.XXXXXX")"
+    # NOTE: deliberately NO `trap ... EXIT` here.  T11 runs AFTER T8, and T8
+    # installs (and never clears) `trap "t8_teardown" EXIT` — the chained
+    # teardown that the whole suite relies on to fire its final F8 residue check
+    # + tmproot removal at process exit.  Installing an EXIT trap here would
+    # clobber that chain (and clearing it with `trap - EXIT` would drop it
+    # entirely).  This group has no mid-function early `return` after the mktemp
+    # below, so a plain inline `rm -rf` at the end is sufficient and leak-free.
+
+    # ---- Positive case: a master entry WITH the `confirmed` token. -------
+    # The list-dir is a plain tmpdir with NO git repo anywhere — proving
+    # orch-confirm.sh does its job without merging anything.
+    local list_pos="$T11_ROOT/list-pos"
+    t11_confirm_master_entry "$list_pos" "foo" "confirmed by T11-test"
+    local entry_pos="$list_pos/tasks/foo.md"
+
+    # The worktree path the fixture entry names (never created — assert it
+    # stays untouched, i.e. orch-confirm must not create or delete it).  It is
+    # rooted under the tmproot list-dir (see t11_confirm_master_entry), so no
+    # unrelated process can race it into existence.
+    local declared_wt="$list_pos/worktree/foo"
+
+    local out rc
+    out="$(bash "$confirm" foo "$list_pos" </dev/null 2>&1)"
+    rc=$?
+
+    # (1) exit 0 + stdout confirm-status=success.
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF 'confirm-status=success'; then
+        pass "T11a orch-confirm.sh confirmed -> exit 0 + confirm-status=success"
+    else
+        fail "T11a orch-confirm.sh confirmed: got exit=$rc, stdout did not contain 'confirm-status=success'.  Output:
+$(printf '%s\n' "$out" | sed 's/^/      | /')"
+    fi
+
+    # (2) master entry frontmatter now has state: completed.
+    if grep -qE '^state:[[:space:]]*completed' "$entry_pos"; then
+        pass "T11a orch-confirm.sh writes state: completed into master entry"
+    else
+        fail "T11a orch-confirm.sh did NOT set state: completed.  Frontmatter:
+$(sed -n '1,20p' "$entry_pos" 2>/dev/null | sed 's/^/      | /')"
+    fi
+
+    # (3) NEGATIVE: no merge happened.  There is no git repo in this fixture,
+    #     so the only thing to verify is that orch-confirm.sh did NOT require
+    #     one (it exited 0 above, not 3 missing-dep / not a git error) AND that
+    #     the declared worktree dir was neither created nor otherwise touched
+    #     (it never existed; confirm must leave it absent — no cleanup, no add).
+    if [ "$rc" -eq 0 ] && [ ! -e "$declared_wt" ]; then
+        pass "T11a orch-confirm.sh did NOT require a git repo and left the declared worktree untouched (no merge, no cleanup)"
+    else
+        fail "T11a orch-confirm.sh negative-merge assertion failed: exit=$rc (expected 0, i.e. no git dep) and declared worktree '$declared_wt' exists=$([ -e "$declared_wt" ] && echo yes || echo no) (expected absent)"
+    fi
+
+    # ---- Negative case: a FRESH master entry LACKING the token. ----------
+    # A second entry with NO `## Pending Merge Approval` section must exit 10
+    # ("no matching token", per the cross-script convention).
+    local list_neg="$T11_ROOT/list-neg"
+    t11_confirm_master_entry "$list_neg" "bar" ""
+    run_and_check_exit 10 \
+        "T11a orch-confirm.sh without 'confirmed' token -> exit 10" \
+        bash "$confirm" bar "$list_neg"
+
+    rm -rf "$T11_ROOT"
+}
+
+# T11(b) — orch-merge.sh `merge`-only path (real git fixture, gated tmux+git).
+#
+# Mirrors T6's git-fixture construction (real `git init`, a base branch + a task
+# branch + a linked worktree) but drives orch-merge.sh instead of
+# orch-merge-and-cleanup.sh.  Asserts the merge happened (task commit reachable
+# from base) while state stays in-progress and the worktree survives.
+run_T11_merge() {
+    say_header "T11b orch-merge.sh merge-only path (real tmux+git)"
+
+    local merge="$REPO_ROOT/scripts/orch-merge.sh"
+
+    # Gate exactly like T6: orch-merge.sh hard-requires tmux + git at entry
+    # (it mirrors orch-merge-and-cleanup.sh's dependency check).
+    if ! command -v tmux >/dev/null 2>&1; then
+        skip "T11b orch-merge.sh exits 0 + merge-status=success (tmux not available)"
+        skip "T11b orch-merge.sh: task commit reachable from base after merge (tmux not available)"
+        skip "T11b orch-merge.sh: master entry state still in-progress (NOT completed) (tmux not available)"
+        skip "T11b orch-merge.sh: worktree still present (no cleanup) (tmux not available)"
+        return
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        skip "T11b orch-merge.sh exits 0 + merge-status=success (git not available)"
+        skip "T11b orch-merge.sh: task commit reachable from base after merge (git not available)"
+        skip "T11b orch-merge.sh: master entry state still in-progress (NOT completed) (git not available)"
+        skip "T11b orch-merge.sh: worktree still present (no cleanup) (git not available)"
+        return
+    fi
+    if [ ! -x "$merge" ]; then
+        skip "T11b orch-merge.sh exits 0 + merge-status=success (script missing or not executable)"
+        skip "T11b orch-merge.sh: task commit reachable from base after merge (script missing or not executable)"
+        skip "T11b orch-merge.sh: master entry state still in-progress (NOT completed) (script missing or not executable)"
+        skip "T11b orch-merge.sh: worktree still present (no cleanup) (script missing or not executable)"
+        return
+    fi
+
+    # ---- Fixture: one work repo with main + a task branch in a worktree. -
+    local T11B_ROOT
+    T11B_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t11b.XXXXXX")"
+    # NOTE: deliberately NO `trap ... EXIT` (same rationale as T11a) — installing
+    # one here would clobber T8's chained `trap "t8_teardown" EXIT`.  Every
+    # early-return path below does its own explicit `rm -rf "$T11B_ROOT"`, and
+    # the happy path removes it at the end, so the fixture never leaks.
+
+    local LIST_DIR="$T11B_ROOT/list"
+    local WORK_DIR="$T11B_ROOT/work"
+    local WORKTREE_DIR="$T11B_ROOT/worktrees/foo"
+    local UNIQUE_FILE="task-only-file.txt"
+
+    mkdir -p "$WORK_DIR"
+    (
+        cd "$WORK_DIR" || exit 1
+        git init -q . >/dev/null 2>&1
+        git config user.email "t11@example.com"
+        git config user.name "T11 Test"
+        git checkout -q -b main 2>/dev/null || git checkout -q main
+        echo "T11 initial (work)" >README.md
+        git add README.md
+        git commit -q -m "initial"
+        # Create the task branch + a linked worktree carrying a UNIQUE commit
+        # that does NOT exist on main yet.  After orch-merge.sh runs, that
+        # commit must become reachable from main.
+        git worktree add -q -b task/foo "$WORKTREE_DIR" main >/dev/null 2>&1
+    ) || { fail "T11b git fixture init failed"; rm -rf "$T11B_ROOT"; return; }
+    (
+        cd "$WORKTREE_DIR" || exit 1
+        echo "added on the task branch only" >"$UNIQUE_FILE"
+        git add "$UNIQUE_FILE"
+        git commit -q -m "T11 task-branch-only commit"
+    ) || { fail "T11b task-branch commit failed"; rm -rf "$T11B_ROOT"; return; }
+
+    # The SHA of the task-branch-only commit (must become reachable from main).
+    local task_sha
+    task_sha="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || true)"
+
+    # ---- Master entry: source-repo=work, worktree=worktree, `merge` token. -
+    # No origin remote is configured, so orch-merge.sh's push step is a no-op
+    # for `merge`-only (mirrors orch-merge-and-cleanup.sh's HAS_ORIGIN guard);
+    # the local `git merge --no-ff` still runs and must succeed.
+    mkdir -p "$LIST_DIR/tasks"
+    {
+        echo "---"
+        echo "task-id: foo"
+        echo "project: t11b-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: in-progress"
+        echo "priority: normal"
+        echo "branch: task/foo"
+        echo "base: main"
+        echo "worktree: $WORKTREE_DIR"
+        echo "tmux-session: zyz-task-foo"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-22"
+        echo "updated-at: 2026-06-22"
+        echo "---"
+        echo ""
+        echo "# foo (T11b mock)"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "T11b merge-only path test."
+        echo ""
+        echo "## Pending Merge Approval"
+        echo ""
+        echo "merge by T11-test"
+    } >"$LIST_DIR/tasks/foo.md"
+    local entry="$LIST_DIR/tasks/foo.md"
+
+    # ---- Invoke orch-merge.sh foo <list-dir> main ----------------------
+    local merge_rc merge_out
+    merge_out="$(bash "$merge" foo "$LIST_DIR" main </dev/null 2>&1)"
+    merge_rc=$?
+
+    # (1) exit 0 + stdout merge-status=success.
+    if [ "$merge_rc" -eq 0 ] && printf '%s\n' "$merge_out" | grep -qF 'merge-status=success'; then
+        pass "T11b orch-merge.sh exits 0 + merge-status=success"
+    else
+        fail "T11b orch-merge.sh: got exit=$merge_rc, stdout did not contain 'merge-status=success'.  Output:
+$(printf '%s\n' "$merge_out" | sed 's/^/      | /')"
+    fi
+
+    # (2) The task-branch-only commit is now reachable from main (merge fired).
+    #     `git merge-base --is-ancestor <task-sha> main` exits 0 iff reachable.
+    if [ -n "$task_sha" ] \
+        && git -C "$WORK_DIR" merge-base --is-ancestor "$task_sha" main >/dev/null 2>&1; then
+        pass "T11b orch-merge.sh: task commit $task_sha reachable from base 'main' after merge"
+    else
+        fail "T11b orch-merge.sh: task commit '$task_sha' is NOT reachable from base 'main' (merge did not happen).  merge stdout:
+$(printf '%s\n' "$merge_out" | sed 's/^/      | /')"
+    fi
+
+    # (3) NEGATIVE: master entry state must STILL be in-progress, NOT completed
+    #     — that is the whole point of decoupling merge from done.
+    if grep -qE '^state:[[:space:]]*in-progress' "$entry" \
+        && ! grep -qE '^state:[[:space:]]*completed' "$entry"; then
+        pass "T11b orch-merge.sh: master entry state still in-progress (NOT completed)"
+    else
+        fail "T11b orch-merge.sh: master entry state changed (merge must NOT touch state).  Frontmatter:
+$(sed -n '1,20p' "$entry" 2>/dev/null | sed 's/^/      | /')"
+    fi
+
+    # (4) NEGATIVE: the worktree still exists (merge does NOT clean up).
+    if [ -d "$WORKTREE_DIR" ]; then
+        pass "T11b orch-merge.sh: worktree still present (no cleanup)"
+    else
+        fail "T11b orch-merge.sh: worktree $WORKTREE_DIR was removed (merge must NOT clean up)"
+    fi
+
+    rm -rf "$T11B_ROOT"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 echo "Running orchestration-scheduling-task test suite"
@@ -3146,6 +3702,9 @@ run_T6
 run_T7
 run_T8
 run_T9
+run_T10
+run_T11_confirm
+run_T11_merge
 
 echo
 echo "============================================================"

@@ -109,7 +109,7 @@ TMUX_SESSION="$(fm_field "$MASTER_ENTRY" tmux-session)"
 
 WORKTREE="$(fm_field "$MASTER_ENTRY" worktree)"
 case "$WORKTREE" in
-    "~/"*) WORKTREE="$HOME/${WORKTREE#~/}" ;;
+    "~/"*) WORKTREE="$HOME/${WORKTREE#"~/"}" ;;
 esac
 
 RUNTIME_DIR="$LIST_DIR/runtime/$TASK_ID"
