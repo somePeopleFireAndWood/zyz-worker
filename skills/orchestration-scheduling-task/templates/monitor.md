@@ -1,12 +1,16 @@
 ---
 task-id: <task-id>                 # immutable; the worker this driver state belongs to
 last-driver-iso: <iso>             # ISO timestamp of the L2 driver's last run
-driver-intent: first-dispatch      # first-dispatch | intervene
+driver-intent: first-dispatch      # first-dispatch | intervene | relay-confirmation
                                    # NOTE: the persisted frontmatter key here is `driver-intent`;
-                                   # the L1->L2 dispatch INPUT field carrying the same two values
+                                   # the L1->L2 dispatch INPUT field carrying the same values
                                    # is named `intent` (e.g. intent=first-dispatch). The two-name
                                    # split (input `intent` vs persisted `driver-intent`) is
                                    # intentional — do NOT rename either to match the other.
+                                   # `relay-confirmation` is dispatched from the L1 gate step to
+                                   # relay a user confirmation into the worker pane (so the worker
+                                   # advances to phase=done); L1 reads this value to keep the relay
+                                   # idempotent (at most one relay per confirmation).
 claude-started: false              # true | false; set true IMMEDIATELY after the
                                    # readiness probe passes (do not wait for end-of-tick)
 needs-user: false                  # true | false; set true ONLY when this worker's
@@ -27,8 +31,8 @@ last-summary:                      # the one-line summary L2 returned to L1 (per
   ===================
 
   Writer: the L2 orch-driver-agent (a short-lived, on-demand subagent the L1
-  orchestrator dispatches to drive ONE worker's tmux pane — first-dispatch or
-  intervene). It writes this file with a Bash atomic write (`cat > tmp && mv -f`,
+  orchestrator dispatches to drive ONE worker's tmux pane — first-dispatch,
+  intervene, or relay-confirmation). It writes this file with a Bash atomic write (`cat > tmp && mv -f`,
   same as the other helpers — no Edit/Write needed) and flushes incrementally:
   after a successful launch, after any send-keys intervention, and at the end of
   observation. Not just once at end-of-tick.
