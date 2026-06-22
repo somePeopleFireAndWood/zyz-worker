@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.6.4] — 2026-06-22
+
+### Changed
+- (semantic-breaking) **`state: completed` is now decoupled from merge.** `completed` means user-confirmed delivery — the user wrote `confirmed` (or legacy `approved`) in the master entry `## Pending Merge Approval` section — and the task branch may or may not have been merged to base. This **supersedes** the 0.6.3 contract that "delivery is recorded as `state: completed` only after a successful merge" and that dependency unlock gates on `completed` (post-merge); merge is now a separate, independently-tokened action that may have happened, may happen later, or may never happen (e.g. PR-only or experimental branches). `completed` remains terminal and immutable; post-delivery changes go through a superseding new task.
+- (semantic-breaking) **Dependency unlock is now AI-judgment-based, not "completed == merged".** When a `blocked-by` dependency reaches `completed`, the orchestrator judges each downstream task individually — whether the dependency's output is actually available (merged into the downstream task's `base`, or only living on the dependency's own branch) and which branch the downstream worktree should be based on. Downstream may chain off an unmerged dependency's branch by setting its `base:` to that branch, rather than basing on a stale `main`. The judgment and chosen base are recorded in the downstream task's `## Orchestrator Analysis`.
+- **Worker may merge to base on explicit user instruction.** The `execute-task` Version Control rule gains an exception: on explicit user instruction (conversation in standalone mode, or a matching `## Pending Merge Approval` token in orchestrated mode), the worker MAY `git merge` the task branch into its base and push (still no force-push / no history rewrite). Autonomy never covers merge to base. In orchestrated mode the orchestrator performs the merge, not the worker, to avoid both layers writing the base concurrently.
+
+### Added
+- **`scripts/orch-confirm.sh <task-id> <list-dir>`** — marks `state: completed` on the `confirmed` token, without merging or cleaning up the worktree.
+- **`scripts/orch-merge.sh <task-id> <list-dir> <base-branch>`** — merges the task branch into base and pushes on the `merge` / `merge: <base>` token, without changing `state` or cleaning up. Exit codes mirror `orch-merge-and-cleanup.sh` (12 conflict, 13 push-failed, etc.).
+- **New `## Pending Merge Approval` tokens** `confirmed` (mark done, no merge/cleanup) and `merge` / `merge: <base>` (merge to base + push, no state change). Legacy `approved` is retained as the combined merge + completed + cleanup path and short-circuits any coexisting tokens this tick.
+
 ## [0.6.3] — 2026-06-22
 
 ### Changed

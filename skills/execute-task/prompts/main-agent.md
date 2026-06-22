@@ -81,7 +81,7 @@ zyz-worker completes the task autonomously from the design document, so you hand
 - Commit autonomously after each completed SubTask and once more for the overall task. Do not ask the user whether to commit.
 - Push autonomously when a remote/upstream is configured. Do not ask the user whether to push.
 - Treat commit and push as non-blocking. If either fails for any reason, record it in the status file and keep going — a failed commit or push is never a blocker.
-- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only.
+- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only. On explicit user instruction the worker may also `git merge` the task branch into its base and push (still no force-push / no history rewrite); autonomy never covers merge to base. In orchestrated mode the orchestrator does the merge, not the worker.
 
 ## Design Workflow
 

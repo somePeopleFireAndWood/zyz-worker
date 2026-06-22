@@ -154,6 +154,8 @@ HELPER_SCRIPTS=(
     "scripts/orch-heartbeat-daemon.sh"
     "scripts/orch-cleanup-worker.sh"
     "scripts/orch-merge-and-cleanup.sh"
+    "scripts/orch-confirm.sh"
+    "scripts/orch-merge.sh"
 )
 
 AGENT_FILES=(
@@ -183,7 +185,8 @@ run_T1() {
     # slash command
     check_file_exists "commands/orchestrate-tasks.md"
 
-    # 6 helper scripts: exist + executable
+    # Helper scripts (incl. orch-confirm.sh / orch-merge.sh, done/merge
+    # decouple): exist + executable
     local s
     for s in "${HELPER_SCRIPTS[@]}"; do
         check_file_exists "$s"
@@ -535,6 +538,49 @@ run_T3() {
     # semantics (main-agent.md already carries it via the T3'' check above).
     check_grep_fixed "$cmd_orch" "T3'' $cmd_orch mentions 'ZYZ_ORCH_ONCE'" "ZYZ_ORCH_ONCE"
     check_grep_fixed "CLAUDE.md" "T3'' CLAUDE.md mentions 'ZYZ_ORCH_ONCE'" "ZYZ_ORCH_ONCE"
+
+    # ---- T3''' (done/merge decouple) static anchors ---------------------
+    # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/
+    # design-done-merge-decouple.md: `state: completed` is decoupled from
+    # merge, and three master-entry tokens (`confirmed`, `merge`/`merge: <base>`,
+    # legacy `approved`) route deterministically.  These doc-greps pin the new
+    # wording the implementation must land; they are the PRIMARY multi-token
+    # routing-precedence assertion (the design chose the doc-grep form so it
+    # does not depend on a full git fixture — §测试 "主用文档 grep 形").
+    #
+    # (4) main-agent.md gate-step documents the `approved` short-circuit: when
+    #     `approved` is present, any coexisting `confirmed`/`merge`/
+    #     `cleanup-approved` tokens are IGNORED that tick (RC3: "ignored", not
+    #     "absorbed as a subset").  `short-circuit` is the stable anchor phrase.
+    #     ($main = orch prompts/main-agent.md, defined above in this function.)
+    check_grep_fixed "$main" "T3''' gate approved short-circuit documented" \
+        "short-circuit"
+
+    # (5a) RC7 backtick-quoted token anchors in the master-entry template.  The
+    #      backticks are part of the matched needle/pattern, so the match can
+    #      NEVER land on the bare substring `confirmed` inside
+    #      `awaiting-confirmation` (which has no surrounding backticks).  The
+    #      template comment documents the `confirmed` and `merge` tokens with
+    #      these literal backtick spans.
+    local mlte_decouple="skills/orchestration-scheduling-task/templates/master-list-task-entry.md"
+    check_grep_fixed "$mlte_decouple" "T3''' template documents \`confirmed\` token (backtick-quoted)" \
+        '`confirmed`'
+    # The design's §令牌词表 allows the merge token to be documented as the bare
+    # shorthand `merge` OR the parameterized `merge:` (i.e. `merge: <base>`) —
+    # RC7 explicitly accepts either backtick-quoted spelling.  Match either so
+    # the anchor is robust to whichever form the template comment lands on,
+    # while the backtick prefix still rules out the awaiting-confirmation
+    # substring trap.  (ERE: backtick is a literal; alternation via `|`.)
+    check_grep "$mlte_decouple" "T3''' template documents \`merge\` or \`merge:\` token (backtick-quoted)" \
+        '`merge`|`merge:`'
+
+    # (5b) orch SKILL.md `completed` row/sentence carries the unique anchor word
+    #      `decoupled` (done is now decoupled from merge).  This word does not
+    #      exist anywhere in the tree before this change, so this check
+    #      specifically asserts the new completed-state wording landed.
+    #      ($skill = orch SKILL.md, defined above in this function.)
+    check_grep_fixed "$skill" "T3''' SKILL.md completed-state 'decoupled' anchor" \
+        "decoupled"
 }
 
 # ---------------------------------------------------------------------------
@@ -3340,6 +3386,307 @@ run_T10() {
 }
 
 # ---------------------------------------------------------------------------
+# T11. Done/merge decouple — orch-confirm.sh + orch-merge.sh path unit tests.
+#
+# Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/
+# design-done-merge-decouple.md: `state: completed` is decoupled from merge.
+# Two NEW helper scripts implement the split:
+#   - orch-confirm.sh <task-id> <list-dir>          — checks the `confirmed`
+#     token, writes `state: completed`, touches NO git and NO worktree.
+#     Exit codes: 0 success / 2 arg / 4 master-entry-missing / 10 no token.
+#     It has NO git/tmux dependency, so T11(a) runs UNCONDITIONALLY (static).
+#   - orch-merge.sh <task-id> <list-dir> <base>     — checks the `merge` token,
+#     merges the task branch into base + pushes, leaves `state:` UNCHANGED and
+#     does NOT clean up the worktree.  It mirrors orch-merge-and-cleanup.sh's
+#     conventions (hard-requires tmux + git at entry), so T11(b) is gated on
+#     tmux+git exactly like T6.
+#
+# These two tests will FAIL until the parallel implementation lands the new
+# scripts — that is expected and intentional; they are written to the
+# documented contract (exit codes, stdout tokens, behavior).
+#
+# t11_confirm_master_entry <list-dir> <task-id> <token-line-or-empty>
+# Writes a minimal master entry under <list-dir>/tasks/<task-id>.md with
+# state: in-progress.  When <token-line> is non-empty it is appended as the body
+# of a `## Pending Merge Approval` section (e.g. "confirmed by T11-test");
+# when empty, NO Pending Merge Approval section is written (the negative case).
+# Mirrors the write_master_entry / t4p_write_master_entry helpers' shape.
+# ---------------------------------------------------------------------------
+t11_confirm_master_entry() {
+    local list_dir="$1"
+    local task_id="$2"
+    local token_line="$3"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $task_id"
+        echo "project: t11-mock"
+        echo "state: in-progress"
+        echo "priority: normal"
+        echo "branch: task/$task_id"
+        echo "base: main"
+        # Worktree path lives UNDER the (tmproot-rooted) list-dir so the
+        # negative-merge assertion can prove orch-confirm.sh leaves it absent
+        # without racing a fixed /tmp path another process might create.
+        echo "worktree: $list_dir/worktree/$task_id"
+        echo "tmux-session: zyz-task-$task_id"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-22"
+        echo "updated-at: 2026-06-22"
+        echo "---"
+        echo ""
+        echo "# $task_id"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "T11 done/merge-decouple fixture."
+        if [ -n "$token_line" ]; then
+            echo ""
+            echo "## Pending Merge Approval"
+            echo ""
+            echo "$token_line"
+        fi
+    } >"$list_dir/tasks/$task_id.md"
+}
+
+# T11(a) — orch-confirm.sh `confirmed`-only path (static, no git/tmux needed).
+run_T11_confirm() {
+    say_header "T11a orch-confirm.sh confirmed-only path (no git)"
+
+    local confirm="$REPO_ROOT/scripts/orch-confirm.sh"
+    if [ ! -x "$confirm" ]; then
+        skip "T11a orch-confirm.sh confirmed -> exit 0 + confirm-status=success (script missing or not executable)"
+        skip "T11a orch-confirm.sh writes state: completed (script missing or not executable)"
+        skip "T11a orch-confirm.sh did NOT require a git repo / worktree untouched (script missing or not executable)"
+        skip "T11a orch-confirm.sh without 'confirmed' token -> exit 10 (script missing or not executable)"
+        return
+    fi
+
+    local T11_ROOT
+    T11_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t11a.XXXXXX")"
+    # NOTE: deliberately NO `trap ... EXIT` here.  T11 runs AFTER T8, and T8
+    # installs (and never clears) `trap "t8_teardown" EXIT` — the chained
+    # teardown that the whole suite relies on to fire its final F8 residue check
+    # + tmproot removal at process exit.  Installing an EXIT trap here would
+    # clobber that chain (and clearing it with `trap - EXIT` would drop it
+    # entirely).  This group has no mid-function early `return` after the mktemp
+    # below, so a plain inline `rm -rf` at the end is sufficient and leak-free.
+
+    # ---- Positive case: a master entry WITH the `confirmed` token. -------
+    # The list-dir is a plain tmpdir with NO git repo anywhere — proving
+    # orch-confirm.sh does its job without merging anything.
+    local list_pos="$T11_ROOT/list-pos"
+    t11_confirm_master_entry "$list_pos" "foo" "confirmed by T11-test"
+    local entry_pos="$list_pos/tasks/foo.md"
+
+    # The worktree path the fixture entry names (never created — assert it
+    # stays untouched, i.e. orch-confirm must not create or delete it).  It is
+    # rooted under the tmproot list-dir (see t11_confirm_master_entry), so no
+    # unrelated process can race it into existence.
+    local declared_wt="$list_pos/worktree/foo"
+
+    local out rc
+    out="$(bash "$confirm" foo "$list_pos" </dev/null 2>&1)"
+    rc=$?
+
+    # (1) exit 0 + stdout confirm-status=success.
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF 'confirm-status=success'; then
+        pass "T11a orch-confirm.sh confirmed -> exit 0 + confirm-status=success"
+    else
+        fail "T11a orch-confirm.sh confirmed: got exit=$rc, stdout did not contain 'confirm-status=success'.  Output:
+$(printf '%s\n' "$out" | sed 's/^/      | /')"
+    fi
+
+    # (2) master entry frontmatter now has state: completed.
+    if grep -qE '^state:[[:space:]]*completed' "$entry_pos"; then
+        pass "T11a orch-confirm.sh writes state: completed into master entry"
+    else
+        fail "T11a orch-confirm.sh did NOT set state: completed.  Frontmatter:
+$(sed -n '1,20p' "$entry_pos" 2>/dev/null | sed 's/^/      | /')"
+    fi
+
+    # (3) NEGATIVE: no merge happened.  There is no git repo in this fixture,
+    #     so the only thing to verify is that orch-confirm.sh did NOT require
+    #     one (it exited 0 above, not 3 missing-dep / not a git error) AND that
+    #     the declared worktree dir was neither created nor otherwise touched
+    #     (it never existed; confirm must leave it absent — no cleanup, no add).
+    if [ "$rc" -eq 0 ] && [ ! -e "$declared_wt" ]; then
+        pass "T11a orch-confirm.sh did NOT require a git repo and left the declared worktree untouched (no merge, no cleanup)"
+    else
+        fail "T11a orch-confirm.sh negative-merge assertion failed: exit=$rc (expected 0, i.e. no git dep) and declared worktree '$declared_wt' exists=$([ -e "$declared_wt" ] && echo yes || echo no) (expected absent)"
+    fi
+
+    # ---- Negative case: a FRESH master entry LACKING the token. ----------
+    # A second entry with NO `## Pending Merge Approval` section must exit 10
+    # ("no matching token", per the cross-script convention).
+    local list_neg="$T11_ROOT/list-neg"
+    t11_confirm_master_entry "$list_neg" "bar" ""
+    run_and_check_exit 10 \
+        "T11a orch-confirm.sh without 'confirmed' token -> exit 10" \
+        bash "$confirm" bar "$list_neg"
+
+    rm -rf "$T11_ROOT"
+}
+
+# T11(b) — orch-merge.sh `merge`-only path (real git fixture, gated tmux+git).
+#
+# Mirrors T6's git-fixture construction (real `git init`, a base branch + a task
+# branch + a linked worktree) but drives orch-merge.sh instead of
+# orch-merge-and-cleanup.sh.  Asserts the merge happened (task commit reachable
+# from base) while state stays in-progress and the worktree survives.
+run_T11_merge() {
+    say_header "T11b orch-merge.sh merge-only path (real tmux+git)"
+
+    local merge="$REPO_ROOT/scripts/orch-merge.sh"
+
+    # Gate exactly like T6: orch-merge.sh hard-requires tmux + git at entry
+    # (it mirrors orch-merge-and-cleanup.sh's dependency check).
+    if ! command -v tmux >/dev/null 2>&1; then
+        skip "T11b orch-merge.sh exits 0 + merge-status=success (tmux not available)"
+        skip "T11b orch-merge.sh: task commit reachable from base after merge (tmux not available)"
+        skip "T11b orch-merge.sh: master entry state still in-progress (NOT completed) (tmux not available)"
+        skip "T11b orch-merge.sh: worktree still present (no cleanup) (tmux not available)"
+        return
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        skip "T11b orch-merge.sh exits 0 + merge-status=success (git not available)"
+        skip "T11b orch-merge.sh: task commit reachable from base after merge (git not available)"
+        skip "T11b orch-merge.sh: master entry state still in-progress (NOT completed) (git not available)"
+        skip "T11b orch-merge.sh: worktree still present (no cleanup) (git not available)"
+        return
+    fi
+    if [ ! -x "$merge" ]; then
+        skip "T11b orch-merge.sh exits 0 + merge-status=success (script missing or not executable)"
+        skip "T11b orch-merge.sh: task commit reachable from base after merge (script missing or not executable)"
+        skip "T11b orch-merge.sh: master entry state still in-progress (NOT completed) (script missing or not executable)"
+        skip "T11b orch-merge.sh: worktree still present (no cleanup) (script missing or not executable)"
+        return
+    fi
+
+    # ---- Fixture: one work repo with main + a task branch in a worktree. -
+    local T11B_ROOT
+    T11B_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t11b.XXXXXX")"
+    # NOTE: deliberately NO `trap ... EXIT` (same rationale as T11a) — installing
+    # one here would clobber T8's chained `trap "t8_teardown" EXIT`.  Every
+    # early-return path below does its own explicit `rm -rf "$T11B_ROOT"`, and
+    # the happy path removes it at the end, so the fixture never leaks.
+
+    local LIST_DIR="$T11B_ROOT/list"
+    local WORK_DIR="$T11B_ROOT/work"
+    local WORKTREE_DIR="$T11B_ROOT/worktrees/foo"
+    local UNIQUE_FILE="task-only-file.txt"
+
+    mkdir -p "$WORK_DIR"
+    (
+        cd "$WORK_DIR" || exit 1
+        git init -q . >/dev/null 2>&1
+        git config user.email "t11@example.com"
+        git config user.name "T11 Test"
+        git checkout -q -b main 2>/dev/null || git checkout -q main
+        echo "T11 initial (work)" >README.md
+        git add README.md
+        git commit -q -m "initial"
+        # Create the task branch + a linked worktree carrying a UNIQUE commit
+        # that does NOT exist on main yet.  After orch-merge.sh runs, that
+        # commit must become reachable from main.
+        git worktree add -q -b task/foo "$WORKTREE_DIR" main >/dev/null 2>&1
+    ) || { fail "T11b git fixture init failed"; rm -rf "$T11B_ROOT"; return; }
+    (
+        cd "$WORKTREE_DIR" || exit 1
+        echo "added on the task branch only" >"$UNIQUE_FILE"
+        git add "$UNIQUE_FILE"
+        git commit -q -m "T11 task-branch-only commit"
+    ) || { fail "T11b task-branch commit failed"; rm -rf "$T11B_ROOT"; return; }
+
+    # The SHA of the task-branch-only commit (must become reachable from main).
+    local task_sha
+    task_sha="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || true)"
+
+    # ---- Master entry: source-repo=work, worktree=worktree, `merge` token. -
+    # No origin remote is configured, so orch-merge.sh's push step is a no-op
+    # for `merge`-only (mirrors orch-merge-and-cleanup.sh's HAS_ORIGIN guard);
+    # the local `git merge --no-ff` still runs and must succeed.
+    mkdir -p "$LIST_DIR/tasks"
+    {
+        echo "---"
+        echo "task-id: foo"
+        echo "project: t11b-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: in-progress"
+        echo "priority: normal"
+        echo "branch: task/foo"
+        echo "base: main"
+        echo "worktree: $WORKTREE_DIR"
+        echo "tmux-session: zyz-task-foo"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-22"
+        echo "updated-at: 2026-06-22"
+        echo "---"
+        echo ""
+        echo "# foo (T11b mock)"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "T11b merge-only path test."
+        echo ""
+        echo "## Pending Merge Approval"
+        echo ""
+        echo "merge by T11-test"
+    } >"$LIST_DIR/tasks/foo.md"
+    local entry="$LIST_DIR/tasks/foo.md"
+
+    # ---- Invoke orch-merge.sh foo <list-dir> main ----------------------
+    local merge_rc merge_out
+    merge_out="$(bash "$merge" foo "$LIST_DIR" main </dev/null 2>&1)"
+    merge_rc=$?
+
+    # (1) exit 0 + stdout merge-status=success.
+    if [ "$merge_rc" -eq 0 ] && printf '%s\n' "$merge_out" | grep -qF 'merge-status=success'; then
+        pass "T11b orch-merge.sh exits 0 + merge-status=success"
+    else
+        fail "T11b orch-merge.sh: got exit=$merge_rc, stdout did not contain 'merge-status=success'.  Output:
+$(printf '%s\n' "$merge_out" | sed 's/^/      | /')"
+    fi
+
+    # (2) The task-branch-only commit is now reachable from main (merge fired).
+    #     `git merge-base --is-ancestor <task-sha> main` exits 0 iff reachable.
+    if [ -n "$task_sha" ] \
+        && git -C "$WORK_DIR" merge-base --is-ancestor "$task_sha" main >/dev/null 2>&1; then
+        pass "T11b orch-merge.sh: task commit $task_sha reachable from base 'main' after merge"
+    else
+        fail "T11b orch-merge.sh: task commit '$task_sha' is NOT reachable from base 'main' (merge did not happen).  merge stdout:
+$(printf '%s\n' "$merge_out" | sed 's/^/      | /')"
+    fi
+
+    # (3) NEGATIVE: master entry state must STILL be in-progress, NOT completed
+    #     — that is the whole point of decoupling merge from done.
+    if grep -qE '^state:[[:space:]]*in-progress' "$entry" \
+        && ! grep -qE '^state:[[:space:]]*completed' "$entry"; then
+        pass "T11b orch-merge.sh: master entry state still in-progress (NOT completed)"
+    else
+        fail "T11b orch-merge.sh: master entry state changed (merge must NOT touch state).  Frontmatter:
+$(sed -n '1,20p' "$entry" 2>/dev/null | sed 's/^/      | /')"
+    fi
+
+    # (4) NEGATIVE: the worktree still exists (merge does NOT clean up).
+    if [ -d "$WORKTREE_DIR" ]; then
+        pass "T11b orch-merge.sh: worktree still present (no cleanup)"
+    else
+        fail "T11b orch-merge.sh: worktree $WORKTREE_DIR was removed (merge must NOT clean up)"
+    fi
+
+    rm -rf "$T11B_ROOT"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 echo "Running orchestration-scheduling-task test suite"
@@ -3356,6 +3703,8 @@ run_T7
 run_T8
 run_T9
 run_T10
+run_T11_confirm
+run_T11_merge
 
 echo
 echo "============================================================"

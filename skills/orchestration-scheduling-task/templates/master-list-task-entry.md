@@ -68,12 +68,37 @@ updated-at: <yyyy-mm-dd>
   Orchestrator-written after the worker reports `phase=awaiting-confirmation`. The orchestrator
   records the PR URL or local merge command here.
 
-  The user writes the literal token `approved` in this section to authorize
-  `scripts/orch-merge-and-cleanup.sh`. The user can also write
-  `rejected: <reason>` to send the task back to `blocked`.
+  Delivery is decoupled from merge: marking a task done (`state: completed`) and
+  merging its branch to base are SEPARATE, independently-tokened actions. The
+  orchestrator never initiates any of them autonomously — each requires the user
+  to write the matching token in this section. Tokens (routing order merge → confirm → cleanup):
 
-  This gate is mandatory. The orchestrator never merges or cleans up the
-  worktree without an explicit `approved` token in this section.
+  - `confirmed` — mark `state: completed` (user-confirmed delivery). Does NOT
+    merge to base. Does NOT clean up the worktree. The most common "done without
+    merge" case. Use this when finishing via PR (see PR-flow note below).
+  - `merge` (or `merge: <base>`) — merge the task branch into base + push. Does
+    NOT change `state`. Does NOT clean up the worktree. A `<base>` in the token
+    overrides the frontmatter `base:` field (default `main`).
+  - `approved` — LEGACY combined path: merge + write `state: completed` + clean up
+    the worktree, atomically (equivalent to `confirmed` + `merge` + `cleanup-approved`).
+    `approved` short-circuits: if it is present, any `confirmed` / `merge` /
+    `cleanup-approved` written the same tick are IGNORED (not merged in as a subset).
+  - `cleanup-approved` — authorize worktree cleanup (used after `confirmed`, or for
+    stale workers via `## Notes`). Independent of `confirmed`/`merge`.
+  - `rejected: <reason>` — send the task back to `blocked`; the reason is copied to
+    `## Notes`.
+
+  NOTE: `confirmed` and `merge` do NOT clean up the worktree. If you want the
+  worktree removed, also write `cleanup-approved` (or use legacy `approved`).
+
+  PR flow: to finish via PR, let the worker reach `phase=awaiting-confirmation`,
+  open/review/merge the PR yourself (outside zyz-worker), then write `confirmed`
+  (NOT `merge`) here so the orchestrator records `state: completed` without running
+  any git merge. See `## State Machine` → "PR flow" in
+  `skills/orchestration-scheduling-task/SKILL.md`.
+
+  This gate is mandatory. The orchestrator never changes state, merges, or cleans
+  up the worktree without an explicit matching token in this section.
 -->
 
 ## Notes

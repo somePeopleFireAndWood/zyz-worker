@@ -111,6 +111,7 @@ zyz-worker is designed to complete the whole task autonomously from the design d
 - Push autonomously when a remote/upstream is configured. Do not stop to ask the user whether to push.
 - Commit and push are non-blocking. If a commit or push fails (no remote, auth, hook, conflict, or any other reason), record the failure in the status file and continue the task. A failed commit or push is never a blocker and must not interrupt or pause the workflow.
 - Still respect destructive-action safety: do not force-push, reset --hard, or rewrite published history on your own. Autonomy here covers ordinary `git commit` and `git push`, not destructive operations.
+- On explicit user instruction (via conversation in standalone mode, or via a matching `## Pending Merge Approval` token in orchestrated mode), the worker MAY also `git merge` the task branch into its base and push the result — this still respects the no-force-push / no-history-rewrite limit. Autonomy never covers merge to base; only user-instructed merges are allowed. In orchestrated mode the orchestrator performs the merge (the worker does not), to avoid both layers writing the base concurrently.
 
 ## Role Boundaries
 
@@ -291,7 +292,7 @@ Phase mapping (when each phase value must be written to `worker-status.md`):
 | final report shipped (worker's furthest self-reachable state) | `awaiting-confirmation` | last write |
 | unrecoverable error | `error` (set `wait-state=none`) | immediately |
 
-The worker never writes a "done" phase. The real "done" = delivery is recorded by the orchestrator (L1) as master-entry `state: completed`, and only after a successful merge — see `skills/orchestration-scheduling-task/SKILL.md` `## State Machine`.
+The worker never writes a "done" phase. The real "done" = delivery is recorded by the orchestrator (L1) as master-entry `state: completed` on explicit user confirmation; merge to base is a separate, independently-tokened action that may or may not happen — see `skills/orchestration-scheduling-task/SKILL.md` `## State Machine`.
 
 If `ZYZ_WORKER_STATUS_FILE` is unset, ignore this entire section — the skill runs in standalone mode and behaves exactly as the rest of the document describes.
 
