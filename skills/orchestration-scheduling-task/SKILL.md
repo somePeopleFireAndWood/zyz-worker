@@ -202,6 +202,7 @@ Use these templates when creating master-list artifacts:
 - **Worker tmux session name is fixed-prefix `zyz-task-<task-id>`.** Default git branch is `task/<task-id>`. Default merge base is `main`; override via master entry frontmatter `base:` field.
 - **Heartbeat thresholds default to 300 s** (fresh / suspect / stale tiers per §A.6 of the design spec). When the worker reports `wait-state=waiting-user`, the threshold widens to 900 s. Do not drop below 120 s except on a strictly local (non-network) filesystem.
 - **Orchestrated Mode handshake with `execute-task`.** The orchestrator exports `ZYZ_WORKER_STATUS_FILE`, `ZYZ_TASK_ID`, `ZYZ_QUESTION_FILE`, `ZYZ_ANSWER_FILE`, `ZYZ_HEARTBEAT_FILE` into the worker's tmux session. The worker's `execute-task` skill detects `ZYZ_WORKER_STATUS_FILE` and writes phase/wait-state to it. The orchestrator only sees what the worker flushes; in-context memory does not count.
+- **Container reuse is user-declared and old-task-must-be-completed.** A new task may reuse a *completed* task's leftover tmux session and/or git worktree by declaring `reuse-from: <old-task-id>` + `reuse-scope: worktree|tmux|both` + `reuse-claude: true|false` in its OWN master-entry frontmatter. The dispatch path then calls `scripts/orch-reuse-worker.sh` (not `orch-spawn-worker.sh`). Reuse only *associates* the container — it never advances or rewrites the old task, which stays `completed`. The `reuse-from` target must be in the SAME `<list-dir>` and already `completed`; otherwise reuse is refused and the new task is not dispatched. See `## Container Reuse` below.
 
 ## Workflow
 
@@ -248,6 +249,9 @@ branch: task/<task-id>        # default; user can override
 base: main                    # merge base; user can override
 worktree: ~/.zyz-worker/worktrees/<project>/task/<task-id>
 tmux-session: zyz-task-<task-id>
+reuse-from:                   # optional; a completed task-id in THIS list to reuse the container of
+reuse-scope: both             # worktree | tmux | both; required when reuse-from is set (default both)
+reuse-claude: true            # true (default) | false; only meaningful when reusing tmux
 blocked-by: []                # user maintained
 merged-with: []               # user maintained
 deps-tentative: true          # orchestrator clears to false only when user approves analysis
@@ -299,11 +303,49 @@ Transitions (informal):
 
 A worker reaching `phase=awaiting-confirmation` projects to `state: awaiting-user-confirmation`. `completed` is reached only when the worker writes `phase=done` (after user confirmation) and the orchestrator mirrors it — or via the legacy `approved` atomic path; never directly from the `confirmed` token. `completed` is terminal and immutable; it is what the orchestrator reasons about when judging whether downstream tasks may start (see the Dependency Unlock guidance in `prompts/main-agent.md`). Post-delivery changes go through a NEW superseding task; never re-open or roll back `completed`.
 
+A **container-reuse** task (master entry `reuse-from` set) adds **no new state** — it walks the same seven states. The only difference is at dispatch: the orchestrator first does a reuse prerequisite check in **analyze** (old task in this list, `completed`, scope legal, old container still present), then in **dispatch** calls `orch-reuse-worker.sh` + dispatches an L2 `reuse-dispatch`. The old `reuse-from` task stays `completed` throughout (reuse never advances it). See `## Container Reuse`.
+
 Full state machine and the phase mapping table for `execute-task` workflow positions live in the design spec (§A and §D.5 of `.zyz-worker/tasks/orchestration-scheduling-task/design-spec.md`).
 
 ### PR flow (merge handled outside the orchestrator)
 
 Not every branch merges to `main`, and some require PR + human review. Native PR creation is out of scope. To finish a task via PR: let the worker reach `phase=awaiting-confirmation`, open and review/merge the PR yourself (outside zyz-worker), then write `confirmed` (NOT `merge`) in `## Pending Merge Approval` so the orchestrator records `state: completed` without running any git merge. The orchestrator never opens or merges PRs.
+
+## Container Reuse
+
+A new task can reuse a **completed** task's leftover tmux session and/or git worktree instead of building a fresh container. This is opt-in and entirely user-declared in the new task's master-entry frontmatter:
+
+```yaml
+reuse-from: <old-task-id>     # present => reuse; must be a completed task in THIS same list
+reuse-scope: both             # worktree | tmux | both (default both)
+reuse-claude: true            # true (default) | false; only meaningful when reusing tmux
+```
+
+When a selected-to-dispatch task has a non-empty `reuse-from`, the **dispatch** step calls `scripts/orch-reuse-worker.sh <new-id> <list-dir>` (instead of `orch-spawn-worker.sh`) and then dispatches an L2 driver with `intent=reuse-dispatch` (instead of `first-dispatch`). Everything else (poll / project / gate / report) is unchanged — the new task has its own `runtime/<new-id>/` and is observed exactly like any other worker.
+
+### Scope → container action
+
+| `reuse-scope` | worktree | tmux session | heartbeat | claude |
+|---|---|---|---|---|
+| `worktree` | reuse old worktree (same dir/branch) | **new** `zyz-task-<new-id>` | in-pane daemon (same as spawn) | **new** claude (clean env; `first-dispatch`-style) — `reuse-claude` is **ignored** (`reuse-claude-effective=n/a`) |
+| `tmux` (`reuse-claude:true`, default) | **old** worktree (the reused pane's cwd is immutable; the `worktree:` field is ignored) | reuse old session | **new window** in the reused session runs the daemon | **same** running claude (in-band runtime-config block) |
+| `tmux` (`reuse-claude:false`) | old worktree (restart stays in the same pane) | reuse old session | new-window daemon | **restart** claude in the reused session (clean handshake) |
+| `both` (`reuse-claude:true`, default) | reuse old worktree | reuse old session | new-window daemon | **same** running claude (in-band config block) |
+| `both` (`reuse-claude:false`) | reuse old worktree | reuse old session | new-window daemon | **restart** claude |
+
+### Same-claude reuse: in-band runtime-config block + new-window heartbeat
+
+A still-running claude cannot see re-exported env (a Bash subprocess inherits the env claude started with, not later pane `export`s). So when `reuse-claude-effective=true`, the new task's runtime paths are handed to the live claude by the L2 `reuse-dispatch` driver **as an in-band runtime-config block** (a structured text message fenced by `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` carrying `task-id` / `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file`), sent into the pane alongside `/zyz-worker:execute-task <new-id>`. The execute-task contract (`skills/execute-task/SKILL.md ## Orchestrated Mode`) makes that block **override** the launch-time `ZYZ_*` env for the whole task lifecycle, **including the `task-id` and all task-id-derived paths** (the detailed `.zyz-worker/tasks/<task-id>/` status dir, commit/branch references).
+
+Because claude occupies the reused session's original window/pane, the new task's heartbeat daemon runs in a **new tmux window** opened in the reused session (it cannot start a shell daemon in claude's pane). The daemon points at the new task's heartbeat file and dies with the reused session (the `orch-heartbeat-daemon.sh` `tmux has-session` watchdog tracks the session name, so the new window is covered). A reuse worker also `touch`es the in-band `heartbeat-file` on every flush as a backup liveness signal.
+
+### Reuse binding & recovery semantics
+
+A same-claude reuse task shares the old task's claude process: its `dispatch.md` `claude-pid` equals the old task's (same process), and `claude-session-id` / `transcript-path` point at the **shared** session — this is expected, not a binding mix-up. Consequently a same-claude reuse task supports recovery **case 1 only (attach)**: `orch-check-worker.sh` writes an **attach-only** `## Recovery` body for it and deliberately omits the independent `claude --resume` command, because resuming the shared session-id from two `dispatch.md` files is a known footgun. `reuse-claude-effective=false` (restart) and `reuse-scope=worktree` (new session) tasks have their own independent claude session and recover exactly like a plain spawn (attach **and** `--resume`).
+
+### Cleanup of shared containers (read this before `cleanup-approved`)
+
+A reuse task **shares** its tmux session and/or worktree with its `reuse-from` old task. Running cleanup on either will kill the shared session and remove the shared worktree, affecting the other. The orchestrator does **not** do shared-container reference counting (a deliberate Non-Goal). Two safeguards apply: (1) cleanup still requires an explicit `cleanup-approved` token (never automatic), and (2) the orchestrator gate step appends a shared-container warning to the task's `## Notes` (naming the `reuse-from` old id + the shared session/worktree) before honoring `cleanup-approved` for a `reuse-from` task. Ensure all sharers are completed before cleaning up.
 
 ## Long-Running State
 
@@ -361,6 +403,15 @@ Map the observable state of a runtime directory to an interpretation as follows:
 
 **Scope note**: Auto-detecting these states and auto-setting the master entry to `state: error` is OUT OF SCOPE for this feature. This section is documentation-only guidance for a human operator — the orchestrator poll loop does NOT automatically detect or act on these crash states.
 
+### Reused-container recovery
+
+A container-reuse worker (its `dispatch.md` has a non-empty `reuse-from`) needs a recovery caveat depending on `reuse-claude-effective`:
+
+- **Same-claude reuse** (`reuse-claude-effective=true`, i.e. `reuse-scope=tmux`/`both` with `reuse-claude:true`): this task shares the old task's claude process and session. Its `claude-pid` equals the old task's, and `claude-session-id` / `transcript-path` point at the **shared** (old+new merged) session — expected, not a binding error. Recovery is **case 1 only**: `tmux attach -t <tmux-session>` (the reused session). **Do NOT run an independent `claude --resume` for this task** — resuming the shared session-id from two dispatch.md files is a footgun, and if the old task's runtime was already archived, `--resume` still resolves to the shared session. `orch-check-worker.sh` writes an attach-only `## Recovery` body for such a task and deliberately omits the `--resume` command; if you ever see a generated `--resume` line on a same-claude reuse task, ignore it and attach instead.
+- **Restart-claude reuse** (`reuse-claude-effective=false`) and **new-session reuse** (`reuse-scope=worktree`, `reuse-claude-effective=n/a`): these tasks have their **own independent** claude session and recover exactly like a plain spawn — both case 1 (attach) and case 2 (`claude --resume`) apply.
+
+The `heartbeat-window-id` field in a reuse `dispatch.md` is diagnostics only (the same-session new-window heartbeat daemon's window id). Do not derive cleanup/kill logic from it — killing the session tears the daemon down via the watchdog.
+
 ### How dispatch.md binding works (and why Phase-2 is lazy)
 
 Phase-2 binding is lazy because of *when* Claude Code persists its session files. On the verified host (Claude Code v2.1.152, macOS), Claude writes BOTH of these only after the session's first successful LLM round-trip — never at startup:
@@ -392,8 +443,8 @@ This skill is coupled to `execute-task`. If `execute-task` ever introduces a new
 - The phase mapping table (design-spec §D.5) must be extended.
 - This SKILL.md and `prompts/main-agent.md` should mention the new phase explicitly.
 
-If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh`, the Phase-2 lazy fill in `scripts/orch-check-worker.sh`, the `## Crash Recovery` section above, and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
+If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh` **and** in `scripts/orch-reuse-worker.sh` (both writers emit the same field set — spawn writes the four reuse fields empty, reuse populates them), the Phase-2 lazy fill / field-preservation rewrite in `scripts/orch-check-worker.sh` (`rewrite_dispatch_atomic` reads back and re-emits the four reuse fields `reuse-from` / `reuse-scope` / `reuse-claude-effective` / `heartbeat-window-id`, else the first Phase-2 poll would drop them), the `## Crash Recovery` section above (incl. the reused-container recovery subsection), and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
 
-If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state. The L2 driver is dispatched from **three** L1 sites — **dispatch** (`intent=first-dispatch`), **poll** (`intent=intervene`, only for a stuck worker), and **gate** (`intent=relay-confirmation`, to relay a user confirmation into the worker pane). If the L2 driver's contract or its `intent` enum changes, keep all three dispatch sites and the `intent` enum (driver files + `templates/monitor.md` `driver-intent`) in lockstep.
+If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state. The L2 driver's `intent` enum has **four** values — `first-dispatch`, `intervene`, `relay-confirmation`, `reuse-dispatch` — dispatched from these L1 sites: **dispatch** (`intent=first-dispatch` for a plain spawn, OR `intent=reuse-dispatch` for a `reuse-from` task), **poll** (`intent=intervene`, only for a stuck worker), and **gate** (`intent=relay-confirmation`, to relay a user confirmation into the worker pane). If the L2 driver's contract or its `intent` enum changes, keep ALL of these in lockstep: every dispatch site, the `intent` enum (driver `## Inputs` line in BOTH `agents/` + `subagents/`, the driver `## intent=…` section headings in both, and `templates/monitor.md` `driver-intent`).
 
 The notify mechanism is deliberately a structured signature `(task-id, window, reason)` where `reason ∈ {needs-user, needs-attention, error}`. This version only prints to the conversation window and `SUMMARY.md`; that signature is the **future-webhook extension point** — a webhook / IM channel mounts there. There is intentionally no `orch-notify.sh` script (notify is L1's own conversation output); if a channel is added later, keep the signature fixed and wire the new channel behind it.

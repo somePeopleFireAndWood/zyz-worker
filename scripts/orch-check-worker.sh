@@ -123,9 +123,16 @@ fm_field() {
 #
 # The body is ALWAYS regenerated from the current in-memory state (no
 # preserve-verbatim branch): a placeholder while the trio is incomplete, the
-# concrete `## Recovery` commands once the trio is complete. All <…> tokens in
-# the recovery block are substituted with real values at generation time, so the
-# rendered body contains no angle brackets. Phase-1 keys are read back via
+# concrete `## Recovery` commands once the trio is complete. The complete-trio
+# body is reuse-aware (three-way): plain spawn (reuse-from empty) and independent
+# reuse sessions (reuse-claude-effective in {false, n/a}) get attach + --resume;
+# a same-claude reuse (reuse-from set AND reuse-claude-effective=true) gets an
+# ATTACH-ONLY body (the session-id is the shared old+new session — resuming it
+# independently is a footgun). All <…> tokens in the recovery block are
+# substituted with real values at generation time, so the rendered body contains
+# no angle brackets. Phase-1 keys (INCLUDING the four reuse fields reuse-from /
+# reuse-scope / reuse-claude-effective / heartbeat-window-id, which would
+# otherwise be dropped by this fixed-field-list rewrite) are read back via
 # fm_field BEFORE the unquoted heredoc (fm_field can't run inside it cleanly).
 rewrite_dispatch_atomic() {
     local file="$1"
@@ -138,6 +145,7 @@ rewrite_dispatch_atomic() {
     local p1_task_id p1_spawn_iso p1_tmux_session p1_tmux_window p1_tmux_pane
     local p1_shell_pid p1_worktree p1_source_repo p1_branch p1_base
     local p1_plugin_root p1_encoded_cwd
+    local p1_reuse_from p1_reuse_scope p1_reuse_claude_eff p1_heartbeat_window
     p1_task_id="$(fm_field "$file" task-id)"
     p1_spawn_iso="$(fm_field "$file" spawn-iso)"
     p1_tmux_session="$(fm_field "$file" tmux-session)"
@@ -150,17 +158,43 @@ rewrite_dispatch_atomic() {
     p1_base="$(fm_field "$file" base)"
     p1_plugin_root="$(fm_field "$file" plugin-root)"
     p1_encoded_cwd="$(fm_field "$file" encoded-cwd)"
+    # Reuse fields (Phase-1; written by orch-reuse-worker.sh, empty for plain
+    # spawn). These MUST be read back and re-emitted here, otherwise the first
+    # Phase-2 poll that triggers a rewrite would DROP them — this function is the
+    # one and only fixed-field-list rewriter of dispatch.md.
+    p1_reuse_from="$(fm_field "$file" reuse-from)"
+    p1_reuse_scope="$(fm_field "$file" reuse-scope)"
+    p1_reuse_claude_eff="$(fm_field "$file" reuse-claude-effective)"
+    p1_heartbeat_window="$(fm_field "$file" heartbeat-window-id)"
 
-    # Body — pure function of trio-completeness.
+    # Body — pure function of trio-completeness AND the stored reuse fields.
+    # Three-way once the trio is complete (CC1; conditions read the stored
+    # reuse-from / reuse-claude-effective above, NOT any in-memory Phase-2 state):
+    #   reuse-from empty                          -> attach + --resume (plain spawn)
+    #   reuse-from set AND reuse-claude-eff=true   -> ATTACH-ONLY (shared session;
+    #                                                 no independent --resume)
+    #   reuse-from set AND reuse-claude-eff in
+    #     {false, n/a}                             -> attach + --resume (independent
+    #                                                 session, same as plain spawn)
     local body
     if [ -n "$r_claude_pid" ] && [ -n "$r_claude_sid" ] && [ -n "$r_transcript" ]; then
-        body="This worker is bound to claude session \`$r_claude_sid\`. Recovery commands:
+        if [ -n "$p1_reuse_from" ] && [ "$p1_reuse_claude_eff" = "true" ]; then
+            body="This worker REUSES a shared claude session from task \`$p1_reuse_from\` (reuse-scope=$p1_reuse_scope, same claude process). Its \`claude-session-id\` \`$r_claude_sid\` is the SHARED (old+new merged) session. Recovery:
+
+- ONLY \`tmux attach -t $p1_tmux_session\` while the session is alive.
+- Do NOT run an independent \`claude --resume\` for this task — resuming the shared session-id from two dispatch.md files is a known footgun.
+- Transcript file (for read-only inspection): \`$r_transcript\`
+
+Discovered at $r_first_seen."
+        else
+            body="This worker is bound to claude session \`$r_claude_sid\`. Recovery commands:
 
 - If tmux session \`$p1_tmux_session\` is still alive: \`tmux attach -t $p1_tmux_session\`
 - If tmux is dead but the transcript exists: \`cd $p1_worktree && claude --resume $r_claude_sid --plugin-dir $p1_plugin_root\`
 - Transcript file (for read-only inspection): \`$r_transcript\`
 
 Discovered at $r_first_seen."
+        fi
     else
         body="(awaiting claude startup; orch-check-worker.sh populates this on the first poll where claude has registered AND first LLM round-trip has produced a transcript)"
     fi
@@ -180,6 +214,10 @@ branch: $p1_branch
 base: $p1_base
 plugin-root: $p1_plugin_root
 encoded-cwd: $p1_encoded_cwd
+reuse-from: $p1_reuse_from
+reuse-scope: $p1_reuse_scope
+reuse-claude-effective: $p1_reuse_claude_eff
+heartbeat-window-id: $p1_heartbeat_window
 claude-pid: $r_claude_pid
 claude-session-id: $r_claude_sid
 transcript-path: $r_transcript

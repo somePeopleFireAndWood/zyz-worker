@@ -357,6 +357,10 @@ branch: $BRANCH
 base: $BASE
 plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
+reuse-from:
+reuse-scope:
+reuse-claude-effective:
+heartbeat-window-id:
 claude-pid:
 claude-session-id:
 transcript-path:

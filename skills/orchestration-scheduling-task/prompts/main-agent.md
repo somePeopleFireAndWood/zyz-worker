@@ -71,6 +71,16 @@ For each `not-analyzed` task:
 
 For each `not-analyzed` task whose master entry has missing `source-repo:`, or `source-repo:` that is not absolute after `~/` expansion, or points at a directory that is not a git work tree: write `needs source-repo: <reason>` into the `## Orchestrator Analysis` section. **Do not** change `state:` — leave it `not-analyzed`. Do not dispatch.
 
+**Container-reuse prerequisite check.** For each `not-analyzed` task whose master entry has a non-empty `reuse-from`, run these checks (they mirror what `orch-reuse-worker.sh` enforces at dispatch, but doing them in analyze keeps the master entry honest and avoids a wasted dispatch):
+
+- The `reuse-from` value names a task in **this same `<list-dir>`** (`<list-dir>/tasks/<reuse-from>.md` exists). Cross-list reuse is unsupported.
+- That old task is `state: completed`. If not, write `needs reuse-from completed: <old-id> is <state>` into `## Orchestrator Analysis`, leave `state: not-analyzed`, and **do not dispatch**.
+- `reuse-scope` ∈ {`worktree`, `tmux`, `both`}; if absent, treat as `both` (tentative — record it).
+- The reused container is still present: for `worktree`/`both`, the old worktree path still exists; for `tmux`/`both`, the old session is still alive (`orch-check-worker.sh <old-id> <list-dir>` reports `session-alive=true`). If a required piece is gone, write the reason into `## Orchestrator Analysis`, leave the task un-dispatched (`not-analyzed`/`blocked`), and do not dispatch.
+- For `reuse-scope: tmux`, note in `## Orchestrator Analysis` that the new task will run in the **old pane's worktree** (cwd is immutable; the `worktree:` field is ignored) — to use a different worktree the user should pick `both` or a plain spawn.
+
+When all checks pass, record "reuse OK: from `<old-id>`, scope `<scope>`, reuse-claude-effective `<true|false|n/a>`" in `## Orchestrator Analysis` and let the task proceed to `ready` like any other (the dispatch step routes it to `orch-reuse-worker.sh`).
+
 ### plan
 
 - Walk `blocked` tasks. A dependency reaching `completed` is necessary but, since `completed` no longer implies merged-to-base, NOT mechanically sufficient. For each blocked task whose `blocked-by` deps are all `completed`, judge per-task whether it can really start: is each dependency's output actually available to this task (merged into this task's `base`, or only living on the dependency's own branch)? Are all its other `blocked-by` deps satisfied? Which branch should its worktree be based on — `main` if deps are merged, or (if a dependency is `completed`-but-unmerged and this task needs its code) set this task's `base:` to the dependency's branch to chain off it, rather than basing on stale `main`. Record the judgment and the chosen base in the task's `## Orchestrator Analysis`; set `ready` only when it can truly start, else keep it `blocked` with the reason recorded. A worker merely reaching `phase=awaiting-confirmation` (not yet `completed`) never unlocks downstream.
@@ -82,7 +92,9 @@ For each `not-analyzed` task whose master entry has missing `source-repo:`, or `
 
 For each task selected, dispatch happens in two stages: **spawn the container** (build worktree + tmux + heartbeat), then **dispatch an L2 driver** to start `claude` + `/execute-task`. Spawn never starts `claude`; only the L2 driver does.
 
-For each task selected:
+**Routing — reuse vs spawn.** If the selected task's master entry has a non-empty `reuse-from` (and it passed the analyze-step reuse prerequisite check), route it to the **container-reuse** sub-branch below (`orch-reuse-worker.sh` + L2 `intent=reuse-dispatch`). Otherwise use the standard spawn sub-branch (`orch-spawn-worker.sh` + L2 `intent=first-dispatch`).
+
+For each standard (non-reuse) task selected:
 
 - Call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` (2 args; there is no `--auto-start` — spawn only builds the container: worktree + tmux session + in-pane heartbeat daemon + `dispatch.md` Phase-1 fields. It **never** starts `claude`).
 - On exit code 0:
@@ -94,6 +106,17 @@ For each task selected:
 - On non-zero exit:
   - Set `state: blocked`. Write the script exit code + stderr summary into `## Notes`.
   - Do not dispatch an L2 (there is no container to drive). Cadence drops to 180 s (stale branch).
+
+For each **container-reuse** task selected (master entry `reuse-from` non-empty):
+
+- Call `scripts/orch-reuse-worker.sh <task-id> <list-dir>` (2 args; like spawn it builds/associates the container — reusing the old completed task's tmux session and/or worktree per `reuse-scope` — starts the heartbeat, and writes `dispatch.md` Phase-1 incl. the four reuse fields. It **never** starts `claude`).
+- On exit code 0:
+  - Set master entry `state: in-progress`.
+  - Read the new worker's `dispatch.md` (`<list-dir>/runtime/<task-id>/dispatch.md`) for the pane fields (`tmux-session`, `tmux-pane-id`, `shell-pid`, `worktree`, `plugin-root`) **and `reuse-claude-effective`** (`true | false | n/a`). The stdout report also prints `session-name`, `reuse-claude-effective`, and `heartbeat-window-id`.
+  - **Dispatch an L2 `orch-driver-agent` subagent with `intent=reuse-dispatch`**. The dispatch prompt is self-contained: pass `task-id`, `list-dir`, the tmux session name (from `dispatch.md` `tmux-session` — for `tmux`/`both` this is the **reused old session**, not `zyz-task-<new-id>`), `tmux-pane-id`, `shell-pid`, `worktree`, `plugin-root`, `reuse-claude-effective`, and `intent=reuse-dispatch`. The driver picks its branch from `reuse-claude-effective`: same-claude (`true`) sends the in-band runtime-config block + `/execute-task` to the already-running claude (no new launch); restart (`false`) exits the old claude then re-launches + sends the block; new-session (`n/a`) runs the plain first-dispatch flow with the script-exported clean env (no block).
+  - **Multiple reuse workers (or a mix of reuse + standard) → dispatch their L2s in one parallel batch** (one message, multiple `Agent` calls).
+- On non-zero exit:
+  - Set `state: blocked`. Write the script exit code + stderr summary into `## Notes` (the helper's stderr names which reuse precondition failed, e.g. old task not completed / old session not alive / old worktree gone). Do not dispatch an L2. Cadence drops to 180 s.
 
 ### poll (L1 inline, read-only)
 
@@ -152,7 +175,7 @@ Read each task's `## Pending Merge Approval` tokens and route. The orchestrator 
 - Otherwise, in this deterministic order:
   1. If `merge` / `merge: <base>` → `scripts/orch-merge.sh <task-id> <list-dir> <base-branch>` (merge + push only; no state change, no cleanup). A base in the token overrides the `base:` field.
   2. If `confirmed` (and the worker is at `phase=awaiting-confirmation`, i.e. not yet `done`/`completed`) → **dispatch an L2 `orch-driver-agent` subagent with `intent=relay-confirmation`** to `send-keys` a confirmation message ("user confirmed; advance to `phase=done` and finish") into the worker pane. Do **NOT** write `state: completed` here — the worker writes `phase=done`, and the next poll mirrors it to `completed`. **Idempotency:** dispatch the relay **AT MOST ONCE** per confirmation — skip if the worker's `monitor.md` already records `driver-intent=relay-confirmation` for this confirmation, UNLESS the worker has since gone stale (intervene criteria: `session-alive=false`, or `heartbeat-status=stale` with `phase-since` unchanged for ≥2 ticks), in which case re-arm one relay (or intervene-restart, then relay next tick). Once the worker is `phase=done` / `state: completed`, never dispatch relay again. This is the **third** L1 site that dispatches an L2 (alongside dispatch/`first-dispatch` and intervene/`intervene`); the relay is **not** suppressed by the throttle.
-  3. If `cleanup-approved` and the task is now `completed` → `scripts/orch-cleanup-worker.sh <task-id> <list-dir> --force`.
+  3. If `cleanup-approved` and the task is now `completed` → `scripts/orch-cleanup-worker.sh <task-id> <list-dir> --force`. **Shared-container guard (reuse tasks):** if this task's master entry has a non-empty `reuse-from`, the tmux session and/or worktree are **shared** with the `reuse-from` old task — running cleanup destroys the shared container. Before invoking cleanup, append a shared-container warning to this task's `## Notes` naming the `reuse-from` old id and the shared session/worktree (e.g. `shared container with <old-id>: session zyz-task-<old-id>, worktree <path> — cleanup destroys both`). Still require the explicit `cleanup-approved` token to be present (never auto-clean); the warning is informational and does not relax the token requirement. The orchestrator does no reference counting — it is the user's responsibility to ensure all sharers are `completed` before approving cleanup.
   4. If `rejected: <reason>` → set `state: blocked`, copy the reason into `## Notes`, leave the worker running (the user may iterate).
 
 Helper exit handling:
@@ -237,6 +260,8 @@ Self-scheduling here lives entirely in-session via `ScheduleWakeup`; it introduc
 - **`<list-dir>/tasks/` does not exist**: scan returns exit 4. Ask the user once whether to create it; otherwise exit.
 - **Worktree path collision** (`orch-spawn-worker.sh` exit 5/6): transition that task to `blocked`, log script exit code in `## Notes`, do not retry until user clears.
 - **Worker spawn fails** (exit ≥ 7): transition to `blocked`, log exit code, never auto-retry.
+- **Container-reuse precondition failed** (`orch-reuse-worker.sh` exit 5): the `reuse-from` task is not `completed`, the old master entry is missing, `reuse-scope` is illegal, the old worktree path is gone, the old session is not alive, or the new runtime dir already exists. Transition the task to `blocked`, copy the helper's stderr into `## Notes`, do **not** dispatch an L2, do **not** auto-retry. The analyze-step reuse prerequisite check usually catches these earlier (leaving the task un-dispatched), but the helper is the authoritative gate.
+- **Container-reuse other failures** (`orch-reuse-worker.sh` exit 2/3/4/6/7): same handling as the matching spawn exit codes — exit 2 invalid task-id (reject, ask the user to fix), exit 3 missing tmux/git (surface, cannot proceed), exit 4 new master entry missing/unreadable, exit 6 new-session conflict (worktree scope), exit 7 container association failed (e.g. `tmux new-window` failed). Transition to `blocked`, log the exit code, never auto-retry.
 - **Worker heartbeat stale + user not present**: surface in `SUMMARY.md` and conversation; do **not** auto-kill the worker (race risk with the user typing).
 - **Worker phase-since unchanged for 5 ticks**: treat as stale (see poll). Same: surface, do not auto-kill.
 - **Merge conflict**: helper exits 12 without touching `state`. Mark `paused`, leave the worktree intact; the user fixes the conflict by editing the worktree directly, then writes `approved` again.
@@ -294,6 +319,7 @@ When the orchestrator restarts (new conversation, after `Ctrl-C`, after a crash)
    - If that worker's `monitor.md` reports `claude-started=true` **OR** `orch-check-worker.sh` reports `dispatch-bound` non-empty (either signal means `claude` already started) → do **NOT** dispatch `first-dispatch`. Only inline-observe via poll; dispatch `intent=intervene` only if the poll shows it stuck.
    - Else (no evidence `claude` ever started) → dispatch `intent=first-dispatch` to launch it.
    This prevents re-launching `claude` on a worker that is already running after an L1 crash/restart. (The L2 driver's own pre-launch `capture-pane` check is a second, real-time safety net for the same invariant.)
+   - **Container-reuse hard rule (never first-dispatch a `reuse-from` worker).** If the worker's master entry / `dispatch.md` has a non-empty `reuse-from`, **NEVER** dispatch `intent=first-dispatch` for it on restart — that would start a SECOND `claude` in the shared/reused pane. For such a worker: if it needs driving at all, dispatch `intent=reuse-dispatch` (same-claude reuse re-sends the in-band config block + `/execute-task` to the running claude; it never launches) or `intent=intervene` (when stuck). Note that `dispatch-bound=true` is semantically overloaded for a same-claude reuse worker — it binds the SHARED session, so a non-empty `dispatch-bound` does not by itself prove the new task is making progress; lean on `worker-status.md` `phase`/`last-flush` and the new task's own heartbeat. This rule is the L1-side counterpart of the driver's same-claude pre-launch `capture-pane` guard.
 5. Resume the loop.
 
 The skill explicitly relies on file-only state. There is no persistent orchestrator-side state file (the master entries and `SUMMARY.md` are the persistent state).

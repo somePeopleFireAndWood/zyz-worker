@@ -11,6 +11,28 @@ branch: task/<task-id>            # default; override if needed
 base: main                        # merge target branch; override if needed
 worktree: ~/.zyz-worker/worktrees/<project>/task/<task-id>
 tmux-session: zyz-task-<task-id>
+reuse-from:                       # optional; a task-id in THIS SAME list whose container
+                                  # (tmux session and/or worktree) to reuse. Present => this is
+                                  # a REUSE task: orch-reuse-worker.sh associates the old
+                                  # container instead of orch-spawn-worker.sh building a fresh one.
+                                  # The reuse-from task MUST be `state: completed` (reuse only
+                                  # associates; it never advances the old task). Empty => normal spawn.
+reuse-scope: both                 # worktree | tmux | both (required when reuse-from is set; default both)
+                                  # worktree = reuse old worktree, NEW tmux session + NEW claude.
+                                  # tmux     = reuse old tmux session; the new task runs in the old
+                                  #            pane's worktree (cwd is immutable, so the `worktree:`
+                                  #            field above is IGNORED under tmux scope — use `both`
+                                  #            to reuse the old worktree explicitly, or a plain
+                                  #            spawn for a fresh worktree).
+                                  # both     = reuse old worktree AND old tmux session.
+reuse-claude: true                # true (default) | false; only meaningful when reusing tmux
+                                  # (tmux/both). true = reuse the SAME running claude process (no
+                                  # restart; the new task's runtime is handed to it via an in-band
+                                  # config block). false = restart claude in the reused session.
+                                  # IGNORED under worktree scope (always a new claude).
+                                  # WARNING: a reuse task SHARES its container with the reuse-from
+                                  # task — cleanup of either destroys the shared session/worktree.
+                                  # Ensure all sharers are completed before cleaning up.
 blocked-by: []                    # [<task-id>, ...]; user-maintained
 merged-with: []                   # [<task-id>, ...]; user-maintained
 deps-tentative: true              # orchestrator clears to false only when user approves the analysis

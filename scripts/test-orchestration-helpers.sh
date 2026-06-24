@@ -205,6 +205,7 @@ $(printf '%s\n' "$offenders" | sed 's/^/      | /')"
 # ---------------------------------------------------------------------------
 HELPER_SCRIPTS=(
     "scripts/orch-spawn-worker.sh"
+    "scripts/orch-reuse-worker.sh"
     "scripts/orch-check-worker.sh"
     "scripts/orch-scan-tasks.sh"
     "scripts/orch-heartbeat-daemon.sh"
@@ -1312,6 +1313,270 @@ run_T4_prime() {
 }
 
 # ---------------------------------------------------------------------------
+# TR-neg. orch-reuse-worker.sh negative / exit-code-precedence cases
+#         (orch-reuse-worker design §Testing Plan "reuse 脚本负路径", §Important
+#         Details exit-code table).
+#
+# This group is modeled EXACTLY on T4' (orch-spawn-worker.sh source-repo
+# negative cases): a temp <list-dir>, fixture master entries written by a small
+# helper, and run_and_check_exit / run_and_check_exit_stderr_regex assertions
+# pinning each exit code (and, for the precedence case, the precise stderr).
+#
+# Per design the reuse exit codes are:
+#   2  argv shape / invalid task-id charset
+#   4  NEW master entry missing/unreadable
+#   5  reuse precondition failed, split into:
+#        5-tmux-FREE (validated BEFORE the dep check, fires on a tmux-less host):
+#          reuse-from missing / illegal reuse-from charset (path-like) /
+#          old master entry missing / illegal reuse-scope / old task not completed
+#          / old worktree gone / new runtime dir already exists
+#        5-tmux-DEP (validated AFTER the dep check): old session not alive
+#   3  missing dependency (tmux/git)  — sits BETWEEN the two 5 classes
+#
+# CRITICAL precedence assertion (mirrors T4'): with tmux + git REMOVED from
+# PATH, a 5-tmux-FREE precondition (old task not completed) STILL exits 5 — NOT
+# 3 — proving the tmux-free checks run before the dependency gate.  And we
+# assert that the tmux-DEPENDENT old-session-alive check is only reachable after
+# the dep gate (a well-formed reuse task on a tmux-less host exits 3, never 5,
+# for the session-alive reason).
+#
+# This whole group needs NO real tmux (it never reaches the container-creation
+# branch), so it runs UNCONDITIONALLY, placed beside T4' so a tmux-less host
+# exercises the full reuse negative matrix.
+# ---------------------------------------------------------------------------
+
+# trneg_write_master_entry <list-dir> <task-id> <state> [reuse-from] [reuse-scope] [reuse-claude] [worktree-override]
+# Writes a minimal master entry under <list-dir>/tasks/<task-id>.md.  Any of the
+# reuse-* args may be empty to OMIT that frontmatter line (so we can exercise
+# "reuse-from missing", "reuse-scope omitted -> defaults to both", etc.).  When
+# <worktree-override> is non-empty it is used as the `worktree:` value (used to
+# point an old entry at a non-existent worktree path for the "old worktree gone"
+# case); otherwise a stable per-task path is emitted.
+trneg_write_master_entry() {
+    local list_dir="$1"
+    local task_id="$2"
+    local state="$3"
+    local reuse_from="${4:-}"
+    local reuse_scope="${5:-}"
+    local reuse_claude="${6:-}"
+    local worktree_override="${7:-}"
+    local wt="$worktree_override"
+    [ -z "$wt" ] && wt="/tmp/zyz-orch-trneg-worktree/$task_id"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $task_id"
+        echo "project: trneg-mock"
+        echo "source-repo: /tmp/zyz-orch-trneg-srcrepo"
+        echo "state: $state"
+        echo "priority: normal"
+        echo "branch: task/$task_id"
+        echo "base: main"
+        echo "worktree: $wt"
+        echo "tmux-session: zyz-task-$task_id"
+        [ -n "$reuse_from" ]   && echo "reuse-from: $reuse_from"
+        [ -n "$reuse_scope" ]  && echo "reuse-scope: $reuse_scope"
+        [ -n "$reuse_claude" ] && echo "reuse-claude: $reuse_claude"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-24"
+        echo "updated-at: 2026-06-24"
+        echo "---"
+        echo ""
+        echo "# $task_id"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "TR-neg reuse negative-case fixture."
+    } >"$list_dir/tasks/$task_id.md"
+}
+
+# trneg_path_without_tmux_git — echo a PATH with tmux + git stripped so the
+# dependency gate (exit 3) actually fires.  Same idiom as t4_missing_dep but we
+# strip BOTH tmux and git (reuse checks `for dep in tmux git`).  Returns empty
+# if it cannot strip tmux from this host's PATH (caller then SKIPs).
+trneg_path_without_tmux_git() {
+    local stripped
+    stripped="$(echo "$PATH" | tr ':' '\n' \
+        | grep -vE '/(tmux|git|gh|homebrew|brew)' \
+        | tr '\n' ':')"
+    stripped="${stripped%:}"
+    case ":$stripped:" in *:/usr/bin:*) : ;; *) stripped="/usr/bin:$stripped" ;; esac
+    case ":$stripped:" in *:/bin:*) : ;; *) stripped="/bin:$stripped" ;; esac
+    if PATH="$stripped" command -v tmux >/dev/null 2>&1; then
+        printf ''
+        return
+    fi
+    printf '%s' "$stripped"
+}
+
+run_TR_reuse_neg() {
+    say_header "TR-neg orch-reuse-worker.sh negative / exit-precedence cases"
+
+    local reuse="$REPO_ROOT/scripts/orch-reuse-worker.sh"
+    if [ ! -x "$reuse" ]; then
+        skip "TR-neg invalid new task-id 'bad space' -> exit 2 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg new master entry missing -> exit 4 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg reuse-from missing -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg reuse-from path-like charset -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg old master entry missing -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg illegal reuse-scope -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg old task not completed -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg (CC-impl-1) scope=tmux but OLD dispatch.md missing -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg PRECEDENCE: 5-tmux-free fires with tmux/git stripped (not 3) (orch-reuse-worker.sh missing or not executable)"
+        skip "TR-neg PRECEDENCE: session-alive (5-tmux-dep) is gated behind dep check -> exit 3 (orch-reuse-worker.sh missing or not executable)"
+        return
+    fi
+
+    local TRNEG_ROOT
+    TRNEG_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-trneg.XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$TRNEG_ROOT'" EXIT
+
+    # ---- (1) invalid NEW task-id -> exit 2 (argv/charset, first guard) ----
+    # `bad space` fails the [A-Za-z0-9_-]+ charset before any file is read.
+    run_and_check_exit 2 \
+        "TR-neg invalid new task-id 'bad space' -> exit 2" \
+        bash "$reuse" "bad space" "$TRNEG_ROOT/list-anything"
+
+    # ---- (2) NEW master entry missing -> exit 4 --------------------------
+    # Valid task-id charset, but no <list-dir>/tasks/<new-id>.md on disk.
+    local list2="$TRNEG_ROOT/list2"
+    mkdir -p "$list2/tasks"
+    run_and_check_exit 4 \
+        "TR-neg new master entry missing -> exit 4" \
+        bash "$reuse" newtask "$list2"
+
+    # ---- (3) reuse-from missing -> exit 5 (5-tmux-free) ------------------
+    # New entry exists but declares no reuse-from (not a reuse task).
+    local list3="$TRNEG_ROOT/list3"
+    trneg_write_master_entry "$list3" newtask ready "" "" ""
+    run_and_check_exit 5 \
+        "TR-neg reuse-from missing -> exit 5" \
+        bash "$reuse" newtask "$list3"
+
+    # ---- (4) reuse-from with illegal (path-like) charset -> exit 5 -------
+    # A `reuse-from` that looks like a path is rejected up front (S3: cross-list
+    # / absolute-path reuse-from is structurally forbidden).
+    local list4="$TRNEG_ROOT/list4"
+    trneg_write_master_entry "$list4" newtask ready "../other/old" both true
+    run_and_check_exit 5 \
+        "TR-neg reuse-from path-like charset '../other/old' -> exit 5" \
+        bash "$reuse" newtask "$list4"
+
+    # ---- (5) old master entry missing -> exit 5 --------------------------
+    # Legal reuse-from charset, but no <list-dir>/tasks/<old-id>.md exists.
+    local list5="$TRNEG_ROOT/list5"
+    trneg_write_master_entry "$list5" newtask ready oldtask both true
+    # (intentionally do NOT create tasks/oldtask.md)
+    run_and_check_exit 5 \
+        "TR-neg old master entry missing -> exit 5" \
+        bash "$reuse" newtask "$list5"
+
+    # ---- (6) illegal reuse-scope -> exit 5 -------------------------------
+    # Old entry exists + completed, but reuse-scope is not in {worktree,tmux,both}.
+    # scope legality is checked BEFORE the old-entry read, so the old entry's
+    # presence/state does not matter here — but we make it valid anyway so the
+    # ONLY reason to fail is the bad scope.
+    local list6="$TRNEG_ROOT/list6"
+    trneg_write_master_entry "$list6" newtask ready oldtask bogusscope true
+    trneg_write_master_entry "$list6" oldtask completed "" "" ""
+    run_and_check_exit 5 \
+        "TR-neg illegal reuse-scope 'bogusscope' -> exit 5" \
+        bash "$reuse" newtask "$list6"
+
+    # ---- (7) old task state != completed -> exit 5 -----------------------
+    # The old entry exists but is `ready`, not `completed` (G4 violation).
+    local list7="$TRNEG_ROOT/list7"
+    trneg_write_master_entry "$list7" newtask ready oldtask both true
+    trneg_write_master_entry "$list7" oldtask ready "" "" ""
+    run_and_check_exit 5 \
+        "TR-neg old task not completed (state: ready) -> exit 5" \
+        bash "$reuse" newtask "$list7"
+
+    # ---- (7b) CC-impl-1: same-claude reuse (scope tmux/both) but the OLD
+    #          task's runtime/<old-id>/dispatch.md is missing (or present with
+    #          empty shell-pid / tmux-pane-id) -> exit 5 ----------------------
+    # The old pane coordinates (shell-pid / tmux-pane-id) have NO master-entry
+    # fallback, and an empty shell-pid in the NEW same-claude dispatch.md would
+    # make orch-check-worker.sh's `pgrep -P "$DISPATCH_SHELL_PID"` never bind ->
+    # the worker is silently un-pollable.  orch-reuse-worker.sh therefore rejects
+    # this up front as a NEW tmux-free precondition (pure file read, runs BEFORE
+    # the tmux/git dep gate), exit 5.
+    #
+    # Fixture (simplest robust shape per the review note): NEW task reuse-scope
+    # = tmux (so the worktree-exists 5-tmux-free check is skipped and we don't
+    # need a real old worktree), OLD task `completed` (passes the old-completed
+    # check), and the OLD task's runtime/<old-id>/dispatch.md ABSENT (no pane
+    # coordinates available at all -> the guard's strictest trigger).  We assert
+    # on the EXIT CODE only (5); the guard's stderr string is intentionally NOT
+    # asserted (strings drift).
+    local list7b="$TRNEG_ROOT/list7b"
+    trneg_write_master_entry "$list7b" newtask ready oldtask tmux true
+    trneg_write_master_entry "$list7b" oldtask completed "" "" ""
+    # (intentionally do NOT create list7b/runtime/oldtask/dispatch.md)
+    run_and_check_exit 5 \
+        "TR-neg (CC-impl-1) scope=tmux but OLD dispatch.md missing (no shell-pid/pane-id to bind) -> exit 5" \
+        bash "$reuse" newtask "$list7b"
+
+    # ---- (8) PRECEDENCE: 5-tmux-free fires even with tmux/git stripped ---
+    # THE CRITICAL ASSERTION (mirrors T4'): the "old task not completed" check
+    # is a 5-tmux-FREE precondition; it MUST be evaluated BEFORE the `for dep in
+    # tmux git` dependency gate.  So on a host with tmux+git stripped from PATH,
+    # this case still exits 5 (the reuse precondition) and NOT 3 (missing dep).
+    # If the dep gate ran first, we would see 3 here — that regression is what
+    # this guard catches.
+    local stripped_path
+    stripped_path="$(trneg_path_without_tmux_git)"
+    if [ -z "$stripped_path" ]; then
+        skip "TR-neg PRECEDENCE: 5-tmux-free fires with tmux/git stripped (not 3) (cannot strip tmux from PATH on this host)"
+        skip "TR-neg PRECEDENCE: session-alive (5-tmux-dep) is gated behind dep check -> exit 3 (cannot strip tmux from PATH on this host)"
+    else
+        local list8="$TRNEG_ROOT/list8"
+        trneg_write_master_entry "$list8" newtask ready oldtask both true
+        trneg_write_master_entry "$list8" oldtask ready "" "" ""
+        local rc8
+        PATH="$stripped_path" bash "$reuse" newtask "$list8" </dev/null >/dev/null 2>&1
+        rc8=$?
+        if [ "$rc8" -eq 5 ]; then
+            pass "TR-neg PRECEDENCE: 5-tmux-free (old task not completed) fires with tmux/git stripped -> exit 5 (NOT 3)"
+        else
+            fail "TR-neg PRECEDENCE: old-task-not-completed with tmux/git stripped got exit=$rc8, expected 5 (a 3 would prove the dep gate ran before the tmux-free precondition — ordering regression)"
+        fi
+
+        # ---- (9) PRECEDENCE: session-alive (5-tmux-dep) is gated behind the
+        #         dep check.  Construct a WELL-FORMED reuse task: old task IS
+        #         completed, scope=tmux (needs a live session).  With tmux/git
+        #         stripped, ALL the 5-tmux-free preconditions pass, so control
+        #         reaches the dependency gate and exits 3 — it must NOT reach the
+        #         tmux-dependent `tmux has-session` check (which would be a 5).
+        #         This proves the session-alive check lives AFTER the dep gate.
+        local list9="$TRNEG_ROOT/list9"
+        # Old worktree must EXIST so the worktree-existence 5-tmux-free check
+        # (only run for worktree/both scope) does not pre-empt; scope=tmux skips
+        # it anyway, but make the old worktree real to be unambiguous.
+        local old_wt9="$TRNEG_ROOT/old-wt9"
+        mkdir -p "$old_wt9"
+        trneg_write_master_entry "$list9" newtask ready oldtask tmux true
+        trneg_write_master_entry "$list9" oldtask completed "" "" "" "$old_wt9"
+        local rc9
+        PATH="$stripped_path" bash "$reuse" newtask "$list9" </dev/null >/dev/null 2>&1
+        rc9=$?
+        if [ "$rc9" -eq 3 ]; then
+            pass "TR-neg PRECEDENCE: well-formed scope=tmux reuse with tmux/git stripped -> exit 3 (dep gate), proving session-alive (5-tmux-dep) is only reachable AFTER deps"
+        else
+            fail "TR-neg PRECEDENCE: well-formed scope=tmux reuse with tmux/git stripped got exit=$rc9, expected 3 (a 5 would mean the session-alive check ran before the dep gate — ordering regression; a 0/6/7 would mean it proceeded to container creation without tmux)"
+        fi
+    fi
+
+    trap - EXIT
+    rm -rf "$TRNEG_ROOT"
+}
+
+# ---------------------------------------------------------------------------
 # T5. Mock-worker behavior test
 #
 # Builds a temp <list-dir> with one master entry tasks/foo.md, then
@@ -2332,6 +2597,14 @@ T8_SKIP_ALL() {
         "dispatch.md Phase-2 key claude-session-id empty (a)" \
         "dispatch.md Phase-2 key transcript-path empty (a)" \
         "dispatch.md Phase-2 key first-seen-iso empty (a)" \
+        "dispatch.md reuse field 'reuse-from:' present on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'reuse-from:' is present-but-EMPTY on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'reuse-scope:' present on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'reuse-scope:' is present-but-EMPTY on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'reuse-claude-effective:' present on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'reuse-claude-effective:' is present-but-EMPTY on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'heartbeat-window-id:' present on normal spawn (a-reuse)" \
+        "dispatch.md reuse field 'heartbeat-window-id:' is present-but-EMPTY on normal spawn (a-reuse)" \
         "check exits 0 with Phase-2 fixture (b)" \
         "check stdout preserves legacy phase=/wait-state= lines in order (b)" \
         "check stdout has dispatch-bound=true (b)" \
@@ -2576,6 +2849,7 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
             "dispatch.md encoded-cwd equals pwd -P of worktree (a)" \
             "dispatch.md plugin-root equals repo root (a)" \
             "dispatch.md Phase-2 fields empty (a)" \
+            "dispatch.md 4 reuse fields present-but-empty on normal spawn (a-reuse)" \
             "Phase-2 lazy-fill bind / idempotency / re-bind (b/c/c2)" \
             "runtime/<task-id>/ gone after cleanup (d)" \
             "runtime/.archive/<task-id>-*/dispatch.md exists (d)" \
@@ -2612,6 +2886,11 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
         skip "T8 dispatch.md plugin-root equals repo root (CLAUDE_PLUGIN_ROOT unset) (a) (skipped: dispatch.md absent)"
         for k in claude-pid claude-session-id transcript-path first-seen-iso; do
             skip "T8 dispatch.md Phase-2 key $k empty (a) (skipped: dispatch.md absent)"
+        done
+        local rk
+        for rk in reuse-from reuse-scope reuse-claude-effective heartbeat-window-id; do
+            skip "T8 dispatch.md reuse field '$rk:' present on normal spawn (a-reuse) (skipped: dispatch.md absent)"
+            skip "T8 dispatch.md reuse field '$rk:' is present-but-EMPTY on normal spawn (a-reuse) (skipped: dispatch.md absent)"
         done
         # Emit the b/c/c2 SKIP set (the phase2 section self-SKIPs all its
         # labels via its own dispatch.md-absent guard, keeping the count
@@ -2768,6 +3047,40 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
             T8_PASS "dispatch.md Phase-2 key $key empty (a)"
         else
             T8_FAIL "dispatch.md Phase-2 key $key is NON-empty at spawn time ('$p2') (a)"
+        fi
+    done
+
+    # ---- T8(a-reuse): the 4 reuse fields are PRESENT-BUT-EMPTY on a NORMAL
+    #      spawn (orch-reuse-worker design step 1b + Testing Plan CC2).
+    # orch-spawn-worker.sh writes `reuse-from:` / `reuse-scope:` /
+    # `reuse-claude-effective:` / `heartbeat-window-id:` as empty lines so the
+    # dispatch.md schema is UNIFIED with reuse-produced files (and survives
+    # orch-check-worker.sh's fixed-field-list rewrite).  These are a NEW,
+    # independent assertion group — they do NOT touch the closed-set "12
+    # Phase-1 non-empty / 4 Phase-2 empty" loops above (which iterate an
+    # explicit key list, not "all keys").
+    #
+    # CC2 ANCHOR DISCIPLINE: we assert via the full-key `^<key>:` anchor (grep
+    # -E, line-anchored) so the match can never land on a colon-prefix sibling.
+    # The four reuse keys are mutually NON-prefixing (`reuse-from`/`reuse-scope`/
+    # `reuse-claude-effective`/`heartbeat-window-id`), so each anchor is exact.
+    # We assert BOTH (i) the line is present AND (ii) its VALUE is empty (the
+    # line is exactly `^<key>:[[:space:]]*$`), because present-but-empty is the
+    # whole point — a present line with a stray value would be a schema bug.
+    local rkey
+    for rkey in reuse-from reuse-scope reuse-claude-effective heartbeat-window-id; do
+        if grep -qE "^${rkey}:" "$DISPATCH"; then
+            T8_PASS "dispatch.md reuse field '$rkey:' present on normal spawn (a-reuse)"
+        else
+            T8_FAIL "dispatch.md reuse field '$rkey:' MISSING on normal spawn (schema not unified with reuse) (a-reuse)"
+        fi
+        # Value must be EMPTY (present-but-empty).  Match a line that is the key,
+        # a colon, then only optional whitespace to EOL.
+        if grep -qE "^${rkey}:[[:space:]]*$" "$DISPATCH"; then
+            T8_PASS "dispatch.md reuse field '$rkey:' is present-but-EMPTY on normal spawn (a-reuse)"
+        else
+            T8_FAIL "dispatch.md reuse field '$rkey:' is present but NON-empty on a normal spawn (expected empty value) (a-reuse).  Line:
+$(grep -E "^${rkey}:" "$DISPATCH" 2>/dev/null | sed 's/^/      | /')"
         fi
     done
 
@@ -3358,6 +3671,800 @@ $(sed 's/^/      | /' "$cleanup_err_file" 2>/dev/null)"
     fi
 }
 
+# tr_fm <file> <key> — top-level (file-scope) frontmatter value extractor with
+# the SAME semantics as run_T8's inline t8_fm (anchor `^<key>:`, trim, print the
+# value).  Defined at file scope — NOT inside a run_* function — so the reuse
+# groups (run_T8_reuse_rewrite / run_TR_reuse_pos) never depend on t8_fm having
+# been DEFINED by a particular run_T8 code path (t8_fm is local to run_T8 and is
+# only created after T8's spawn succeeds; if T8 skipped or its spawn failed,
+# t8_fm would be undefined).  Same ASSUMPTION as t8_fm: correct ONLY for
+# script-written dispatch.md (plain `key: value`, no inline comments, no quoted
+# values, no colon-prefix-colliding keys) — which is exactly what reuse/spawn
+# write and what these groups construct.
+tr_fm() {
+    local file="$1" key="$2"
+    [ -f "$file" ] || { printf ''; return 0; }
+    awk -F': ' -v k="$key" '
+        $0 ~ ("^" k ":") {
+            v = substr($0, length(k) + 2)
+            sub(/^[[:space:]]+/, "", v)
+            sub(/[[:space:]]+$/, "", v)
+            print v
+            exit
+        }
+    ' "$file"
+}
+
+# ---------------------------------------------------------------------------
+# T8-reuse-rewrite. orch-check-worker.sh preserves the 4 reuse fields across a
+#         Phase-2 rewrite AND emits an attach-only reuse-aware ## Recovery body
+#         for a same-claude reuse worker (orch-reuse-worker design step 1c, CC1,
+#         CC2; Testing Plan "check 的 Phase-2 重写保留 4 字段 + 复用感知 Recovery
+#         body").
+#
+# This is a UNIT test of orch-check-worker.sh's rewrite_dispatch_atomic — it
+# needs NO real tmux session, only `tmux` on PATH (the helper hard-checks tmux
+# at entry and exits 3 otherwise, exactly like T5).  We construct a dispatch.md
+# by hand with:
+#   - reuse-from NON-empty + reuse-scope=both + reuse-claude-effective=true
+#     (a same-claude reuse worker),
+#   - a POPULATED Phase-2 trio (claude-pid / claude-session-id / transcript-path
+#     all set) but first-seen-iso EMPTY.
+# With the trio complete and first-seen-iso empty, check's Step D stamps
+# first-seen-iso (NEWLY_BOUND), sets NEEDS_REWRITE=true, and calls
+# rewrite_dispatch_atomic — which (a) re-reads + re-emits the 4 reuse fields
+# (they would be DROPPED if the fixed-field-list rewriter forgot them), and
+# (b) regenerates the ## Recovery body using the reuse-aware THREE-WAY branch.
+# For a same-claude reuse (reuse-from set AND reuse-claude-effective=true) the
+# body is ATTACH-ONLY: it must NOT print an independent `claude --resume <sid>`
+# COMMAND LINE.
+#
+# CC2 ATTACH-ONLY ASSERTION (the load-bearing subtlety): the attach-only body
+# DELIBERATELY contains the literal warning phrase
+#   "Do NOT run an independent `claude --resume` for this task"
+# so a naive `grep -c "claude --resume"` returns 1 and a naive absence check on
+# the bare substring `claude --resume` would FALSE-FAIL on the correct body.
+# We therefore assert the absence of a `claude --resume <session-id>` COMMAND
+# LINE specifically — `claude --resume` followed by whitespace and a session-id
+# token — via the ERE  `claude --resume +[A-Za-z0-9-]` .  The warning phrase has
+# a backtick (`claude --resume\``) immediately after "resume", NOT a space +
+# id, so it does NOT match.  The plain-spawn / independent-session body, by
+# contrast, DOES emit `claude --resume <uuid> --plugin-dir ...`, which this ERE
+# matches — so the assertion is non-vacuous (it would fire if the reuse-aware
+# branch regressed to the plain body).
+# ---------------------------------------------------------------------------
+
+t8rr_write_master_entry() {
+    local list_dir="$1" task_id="$2" session="$3"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $task_id"
+        echo "project: t8rr-mock"
+        echo "source-repo: /tmp/zyz-orch-t8rr-srcrepo"
+        echo "state: in-progress"
+        echo "priority: normal"
+        echo "branch: task/$task_id"
+        echo "base: main"
+        echo "worktree: /tmp/zyz-orch-t8rr-worktree/$task_id"
+        echo "tmux-session: $session"
+        echo "reuse-from: t8rrold"
+        echo "reuse-scope: both"
+        echo "reuse-claude: true"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-24"
+        echo "updated-at: 2026-06-24"
+        echo "---"
+        echo ""
+        echo "# $task_id"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "T8-reuse-rewrite fixture."
+    } >"$list_dir/tasks/$task_id.md"
+}
+
+run_T8_reuse_rewrite() {
+    say_header "T8-reuse-rewrite orch-check-worker.sh reuse-field preservation + attach-only Recovery body"
+
+    local check="$REPO_ROOT/scripts/orch-check-worker.sh"
+
+    # Gated on tmux like T5 (check hard-requires tmux at entry; no real session
+    # is needed — session-alive simply reports false).
+    if ! command -v tmux >/dev/null 2>&1; then
+        skip "T8-reuse-rewrite check exits 0 on a reuse dispatch.md (tmux not available)"
+        skip "T8-reuse-rewrite reuse field 'reuse-from' survives rewrite (tmux not available)"
+        skip "T8-reuse-rewrite reuse field 'reuse-scope' survives rewrite (tmux not available)"
+        skip "T8-reuse-rewrite reuse field 'reuse-claude-effective' survives rewrite (tmux not available)"
+        skip "T8-reuse-rewrite reuse field 'heartbeat-window-id' survives rewrite (tmux not available)"
+        skip "T8-reuse-rewrite same-claude Recovery body is attach-only (no 'claude --resume <sid>' command line) (tmux not available)"
+        skip "T8-reuse-rewrite same-claude Recovery body keeps the attach 'tmux attach -t <session>' line (tmux not available)"
+        skip "T8-reuse-rewrite same-claude Recovery body keeps the literal --resume WARNING phrase (allowed) (tmux not available)"
+        return
+    fi
+    if [ ! -x "$check" ]; then
+        skip "T8-reuse-rewrite check exits 0 on a reuse dispatch.md (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite reuse field 'reuse-from' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite reuse field 'reuse-scope' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite reuse field 'reuse-claude-effective' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite reuse field 'heartbeat-window-id' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite same-claude Recovery body is attach-only (no 'claude --resume <sid>' command line) (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite same-claude Recovery body keeps the attach 'tmux attach -t <session>' line (orch-check-worker.sh missing or not executable)"
+        skip "T8-reuse-rewrite same-claude Recovery body keeps the literal --resume WARNING phrase (allowed) (orch-check-worker.sh missing or not executable)"
+        return
+    fi
+
+    local T8RR_ROOT
+    T8RR_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t8rr.XXXXXX")"
+    # NOTE: deliberately NO `trap ... EXIT` (same rationale as T11b/TR-pos) —
+    # installing one here would clobber T8's chained `trap "t8_teardown" EXIT`.
+    # We rm -rf the tmproot on every exit path explicitly.
+
+    local LIST_DIR="$T8RR_ROOT/list"
+    local TASK_ID="t8rrnew"
+    local SESSION="zyz-task-t8rrold"   # the (reused) old session name
+    local RUNTIME="$LIST_DIR/runtime/$TASK_ID"
+    local DISPATCH="$RUNTIME/dispatch.md"
+    mkdir -p "$RUNTIME"
+    t8rr_write_master_entry "$LIST_DIR" "$TASK_ID" "$SESSION"
+
+    # Fixed fake Phase-2 trio.  claude-pid does NOT need to be a live process:
+    # check only re-discovers it via pgrep when claude-pid is EMPTY; since we
+    # pre-populate it, Step A is skipped.  Likewise sid + transcript are
+    # pre-set, so Steps B/C are skipped.  first-seen-iso is left EMPTY so Step D
+    # stamps it and forces NEEDS_REWRITE=true -> rewrite_dispatch_atomic fires.
+    local FAKE_PID="424242"
+    local FAKE_SID="dddddddd-eeee-ffff-0000-111111111111"
+    # transcript-path must point at an existing file (Step C's `-f` guard would
+    # clear it otherwise — but Step C is skipped here since transcript is preset;
+    # still, make it real so nothing downstream rejects it).
+    local FAKE_TRANSCRIPT="$T8RR_ROOT/$FAKE_SID.jsonl"
+    printf '%s\n' '{"type":"user"}' >"$FAKE_TRANSCRIPT"
+
+    {
+        echo "---"
+        echo "task-id: $TASK_ID"
+        echo "spawn-iso: 2026-06-24T00:00:00+0000"
+        echo "tmux-session: $SESSION"
+        echo "tmux-window-id: @7"
+        echo "tmux-pane-id: %7"
+        echo "shell-pid: 777777"
+        echo "worktree: /tmp/zyz-orch-t8rr-worktree/$TASK_ID"
+        echo "source-repo: /tmp/zyz-orch-t8rr-srcrepo"
+        echo "branch: task/$TASK_ID"
+        echo "base: main"
+        echo "plugin-root: $REPO_ROOT"
+        echo "encoded-cwd: -tmp-zyz-orch-t8rr-worktree-$TASK_ID"
+        echo "reuse-from: t8rrold"
+        echo "reuse-scope: both"
+        echo "reuse-claude-effective: true"
+        echo "heartbeat-window-id: @9"
+        echo "claude-pid: $FAKE_PID"
+        echo "claude-session-id: $FAKE_SID"
+        echo "transcript-path: $FAKE_TRANSCRIPT"
+        echo "first-seen-iso:"
+        echo "---"
+        echo ""
+        echo "# Dispatch Info"
+        echo ""
+        echo "## Recovery"
+        echo ""
+        echo "(awaiting claude startup ...)"
+    } >"$DISPATCH"
+
+    local rr_out rr_rc
+    rr_out="$(
+        cd "$T8RR_ROOT" && bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null 2>&1
+    )"
+    rr_rc=$?
+
+    if [ "$rr_rc" -eq 0 ]; then
+        pass "T8-reuse-rewrite check exits 0 on a reuse dispatch.md"
+    else
+        fail "T8-reuse-rewrite check exited $rr_rc (expected 0).  Output:
+$(printf '%s\n' "$rr_out" | sed 's/^/      | /')"
+    fi
+
+    # ---- (1) the 4 reuse fields SURVIVE the rewrite (full-key anchors) ----
+    # Re-read with the file-scope tr_fm extractor.
+    local got_rf got_rs got_rce got_hbw
+    got_rf="$(tr_fm "$DISPATCH" reuse-from)"
+    got_rs="$(tr_fm "$DISPATCH" reuse-scope)"
+    got_rce="$(tr_fm "$DISPATCH" reuse-claude-effective)"
+    got_hbw="$(tr_fm "$DISPATCH" heartbeat-window-id)"
+
+    if [ "$got_rf" = "t8rrold" ]; then
+        pass "T8-reuse-rewrite reuse field 'reuse-from' survives rewrite"
+    else
+        fail "T8-reuse-rewrite reuse field 'reuse-from'='$got_rf' (expected 't8rrold') — DROPPED by the fixed-field-list rewrite"
+    fi
+    if [ "$got_rs" = "both" ]; then
+        pass "T8-reuse-rewrite reuse field 'reuse-scope' survives rewrite"
+    else
+        fail "T8-reuse-rewrite reuse field 'reuse-scope'='$got_rs' (expected 'both') — DROPPED by the rewrite"
+    fi
+    if [ "$got_rce" = "true" ]; then
+        pass "T8-reuse-rewrite reuse field 'reuse-claude-effective' survives rewrite"
+    else
+        fail "T8-reuse-rewrite reuse field 'reuse-claude-effective'='$got_rce' (expected 'true') — DROPPED by the rewrite"
+    fi
+    if [ "$got_hbw" = "@9" ]; then
+        pass "T8-reuse-rewrite reuse field 'heartbeat-window-id' survives rewrite"
+    else
+        fail "T8-reuse-rewrite reuse field 'heartbeat-window-id'='$got_hbw' (expected '@9') — DROPPED by the rewrite"
+    fi
+
+    # ---- (2) the regenerated ## Recovery body is reuse-aware ATTACH-ONLY ----
+    local rr_body
+    rr_body="$(awk '/^## Recovery$/{f=1; next} f' "$DISPATCH" 2>/dev/null || true)"
+
+    # CC2: NO `claude --resume <session-id>` COMMAND LINE.  Match the command
+    # form `claude --resume` + whitespace + a session-id token.  The literal
+    # warning phrase has a backtick right after "resume" (no space+id), so it
+    # does NOT match this ERE.
+    if printf '%s\n' "$rr_body" | grep -qE 'claude --resume +[A-Za-z0-9-]'; then
+        fail "T8-reuse-rewrite same-claude Recovery body is attach-only (no 'claude --resume <sid>' command line) — but found a resume COMMAND LINE.  Body:
+$(printf '%s\n' "$rr_body" | sed 's/^/      | /')"
+    else
+        pass "T8-reuse-rewrite same-claude Recovery body is attach-only (no 'claude --resume <sid>' command line)"
+    fi
+
+    # The attach line MUST be present (recovery is via attach for a same-claude
+    # reuse worker).
+    if printf '%s\n' "$rr_body" | grep -qF "tmux attach -t $SESSION"; then
+        pass "T8-reuse-rewrite same-claude Recovery body keeps the attach 'tmux attach -t <session>' line"
+    else
+        fail "T8-reuse-rewrite same-claude Recovery body MISSING 'tmux attach -t $SESSION'.  Body:
+$(printf '%s\n' "$rr_body" | sed 's/^/      | /')"
+    fi
+
+    # The literal --resume WARNING phrase is ALLOWED (it is the footgun warning,
+    # not a command line).  Asserting it is present documents WHY the naive
+    # grep -c approach is wrong, and pins the reuse-aware branch fired (the plain
+    # body never carries this warning).
+    if printf '%s\n' "$rr_body" | grep -qF 'Do NOT run an independent `claude --resume`'; then
+        pass "T8-reuse-rewrite same-claude Recovery body keeps the literal --resume WARNING phrase (allowed)"
+    else
+        fail "T8-reuse-rewrite same-claude Recovery body MISSING the footgun warning 'Do NOT run an independent \`claude --resume\`' (reuse-aware branch did not fire?).  Body:
+$(printf '%s\n' "$rr_body" | sed 's/^/      | /')"
+    fi
+
+    rm -rf "$T8RR_ROOT"
+}
+
+# ---------------------------------------------------------------------------
+# TR-pos. orch-reuse-worker.sh positive container-reuse cases
+#         (orch-reuse-worker design §Testing Plan "reuse 脚本正路径",
+#         registered as the real-tmux "container-layer e2e" — full claude
+#         end-to-end is SKIPPED-with-reason per the design's E2E decision).
+#
+# Gated on real tmux + git exactly like T6/T8.  Builds a throwaway git repo and
+# an OLD task that is `completed` and whose container is LIVE (a real tmux
+# session + a real linked worktree + an old dispatch.md recording the old pane
+# coordinates), then drives orch-reuse-worker.sh for three NEW tasks:
+#   - scope=worktree                 : NEW session zyz-task-<new>, OLD worktree,
+#                                       reuse-claude-effective=n/a, in-pane daemon
+#                                       touches the new heartbeat.
+#   - scope=both  + reuse-claude=true: OLD session reused, reuse-claude-effective
+#                                       =true, non-empty heartbeat-window-id,
+#                                       shell-pid == old pane's, a NEW window in
+#                                       the reused session, new heartbeat touched,
+#                                       OLD entry+runtime unchanged.
+#   - scope=tmux  + reuse-claude=true: worktree recorded == old worktree.
+#
+# Cleanup: NO `trap ... EXIT` (same rationale as T11b — installing one here would
+# clobber T8's chained `trap "t8_teardown" EXIT`).  Instead a local trpos_teardown
+# kills every tmux session this group created and removes the tmproot; it is
+# invoked on every early-return path AND at the natural end, so nothing leaks.
+# ---------------------------------------------------------------------------
+
+TR_POS_FAIL() { fail "TR-pos $1"; }
+TR_POS_PASS() { pass "TR-pos $1"; }
+
+TR_POS_SKIP_ALL() {
+    local reason="$1"
+    local i
+    for i in \
+        "scope=worktree: dispatch.md tmux-session=zyz-task-<new> (new session)" \
+        "scope=worktree: dispatch.md worktree=<old worktree>" \
+        "scope=worktree: dispatch.md reuse-claude-effective=n/a" \
+        "scope=worktree: dispatch.md reuse-from=<old-id>" \
+        "scope=worktree: dispatch.md reuse-scope=worktree" \
+        "scope=worktree: new session zyz-task-<new> is alive" \
+        "scope=worktree: new heartbeat file touched (in-pane daemon)" \
+        "scope=worktree: heartbeat-window-id empty (new session, in-pane daemon)" \
+        "scope=both: dispatch.md tmux-session=<old session>" \
+        "scope=both: dispatch.md reuse-claude-effective=true" \
+        "scope=both: dispatch.md heartbeat-window-id non-empty" \
+        "scope=both: dispatch.md shell-pid == old pane's shell-pid" \
+        "scope=both: dispatch.md worktree=<old worktree>" \
+        "scope=both: a NEW window opened in the reused session" \
+        "scope=both: new heartbeat file touched (new-window daemon)" \
+        "scope=both: OLD master entry unchanged after reuse" \
+        "scope=both: OLD runtime dispatch.md unchanged after reuse" \
+        "scope=tmux: dispatch.md worktree == old worktree" \
+        "scope=tmux: dispatch.md reuse-claude-effective=true" \
+        "TR-pos fixture teardown clean"
+    do
+        skip "TR-pos $i (skipped: $reason)"
+    done
+}
+
+run_TR_reuse_pos() {
+    say_header "TR-pos orch-reuse-worker.sh positive container-reuse (real tmux+git)"
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        TR_POS_SKIP_ALL "tmux not available on PATH"
+        return
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        TR_POS_SKIP_ALL "git not available on PATH"
+        return
+    fi
+
+    local reuse="$REPO_ROOT/scripts/orch-reuse-worker.sh"
+    if [ ! -x "$reuse" ]; then
+        TR_POS_SKIP_ALL "orch-reuse-worker.sh missing or not executable"
+        return
+    fi
+
+    # ---- Fixture setup --------------------------------------------------
+    local TRPOS_ROOT TRPOS_OLD_SESSION
+    TRPOS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-trpos.XXXXXX")"
+    local LIST_DIR="$TRPOS_ROOT/list"
+    local WORK_DIR="$TRPOS_ROOT/work"
+    local OLD_ID="trposold"
+    local OLD_WORKTREE="$TRPOS_ROOT/worktrees/$OLD_ID"
+    TRPOS_OLD_SESSION="zyz-task-$OLD_ID"
+    local NEW_WT_ID="trposwt"        # scope=worktree new task
+    local NEW_BOTH_ID="trposboth"    # scope=both new task
+    local NEW_TMUX_ID="trpostmux"    # scope=tmux new task
+    local NEW_WT_SESSION="zyz-task-$NEW_WT_ID"
+
+    # Teardown: kill every session this group may have created + remove tmproot.
+    # Defined as a closure over the locals (invoked synchronously, not from a
+    # trap, so the locals are in scope — unlike T6/T8's deferred-trap teardown).
+    trpos_teardown() {
+        tmux kill-session -t "$TRPOS_OLD_SESSION" 2>/dev/null || true
+        tmux kill-session -t "$NEW_WT_SESSION"    2>/dev/null || true
+        # Give SIGHUP a moment to reap the in-pane + new-window heartbeat
+        # daemons before we yank the tmproot out from under them.
+        sleep 1
+        rm -rf "$TRPOS_ROOT"
+    }
+
+    # --- Init the throwaway git repo (the source-repo for the old task) ---
+    mkdir -p "$WORK_DIR"
+    (
+        cd "$WORK_DIR" || exit 1
+        git init -q . >/dev/null 2>&1
+        git config user.email "trpos@example.com"
+        git config user.name "TRpos Test"
+        git checkout -q -b main 2>/dev/null || git checkout -q main
+        echo "TR-pos initial (work)" >README.md
+        git add README.md
+        git commit -q -m "initial"
+        # Linked worktree on a task branch — this is the OLD task's worktree,
+        # the thing the new tasks will reuse.
+        git worktree add -q -b "task/$OLD_ID" "$OLD_WORKTREE" main >/dev/null 2>&1
+    ) || { TR_POS_FAIL "git fixture init failed"; trpos_teardown; TR_POS_SKIP_ALL "git fixture init failed"; return; }
+
+    # --- The OLD master entry: completed, no reuse-* (it was a plain task) ---
+    mkdir -p "$LIST_DIR/tasks"
+    {
+        echo "---"
+        echo "task-id: $OLD_ID"
+        echo "project: trpos-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: completed"
+        echo "priority: normal"
+        echo "branch: task/$OLD_ID"
+        echo "base: main"
+        echo "worktree: $OLD_WORKTREE"
+        echo "tmux-session: $TRPOS_OLD_SESSION"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-24"
+        echo "updated-at: 2026-06-24"
+        echo "---"
+        echo ""
+        echo "# $OLD_ID (TR-pos old completed task)"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "TR-pos old completed task whose container is reused."
+    } >"$LIST_DIR/tasks/$OLD_ID.md"
+
+    # --- Bring up the OLD task's LIVE tmux session (a real session whose pane
+    #     shell is the old "claude pane"), and capture its real pane coordinates
+    #     so the old dispatch.md records a real, alive shell-pid / pane-id /
+    #     window-id (same-claude reuse reads these). ---
+    if ! tmux new-session -d -s "$TRPOS_OLD_SESSION" -c "$OLD_WORKTREE" 2>/dev/null; then
+        TR_POS_FAIL "could not create old tmux session $TRPOS_OLD_SESSION"
+        trpos_teardown
+        TR_POS_SKIP_ALL "could not create old tmux session"
+        return
+    fi
+    sleep 1
+    local old_pane_info old_win old_pane old_shell
+    old_pane_info="$(tmux list-panes -t "$TRPOS_OLD_SESSION" -F '#{window_id} #{pane_id} #{pane_pid}' 2>/dev/null | head -1)"
+    old_win="$(echo "$old_pane_info" | awk '{print $1}')"
+    old_pane="$(echo "$old_pane_info" | awk '{print $2}')"
+    old_shell="$(echo "$old_pane_info" | awk '{print $3}')"
+
+    # --- The OLD runtime dispatch.md: a plain-spawn-shaped Phase-1 file with
+    #     the real old pane coordinates + the 4 reuse fields empty (spawn's
+    #     schema).  orch-reuse-worker.sh reads tmux-session / worktree /
+    #     shell-pid / tmux-pane-id / tmux-window-id / source-repo / branch /
+    #     base / plugin-root from here. ---
+    mkdir -p "$LIST_DIR/runtime/$OLD_ID"
+    local OLD_DISPATCH="$LIST_DIR/runtime/$OLD_ID/dispatch.md"
+    {
+        echo "---"
+        echo "task-id: $OLD_ID"
+        echo "spawn-iso: 2026-06-24T00:00:00+0000"
+        echo "tmux-session: $TRPOS_OLD_SESSION"
+        echo "tmux-window-id: $old_win"
+        echo "tmux-pane-id: $old_pane"
+        echo "shell-pid: $old_shell"
+        echo "worktree: $OLD_WORKTREE"
+        echo "source-repo: $WORK_DIR"
+        echo "branch: task/$OLD_ID"
+        echo "base: main"
+        echo "plugin-root: $REPO_ROOT"
+        echo "encoded-cwd: $(cd "$OLD_WORKTREE" && pwd -P | tr '/.' '--' | tr -s '-')"
+        echo "reuse-from:"
+        echo "reuse-scope:"
+        echo "reuse-claude-effective:"
+        echo "heartbeat-window-id:"
+        echo "claude-pid:"
+        echo "claude-session-id:"
+        echo "transcript-path:"
+        echo "first-seen-iso:"
+        echo "---"
+        echo ""
+        echo "# Dispatch Info"
+        echo ""
+        echo "## Recovery"
+        echo ""
+        echo "(old task recovery body)"
+    } >"$OLD_DISPATCH"
+
+    # Snapshot the OLD entry + OLD dispatch.md so we can prove reuse NEVER
+    # rewrites them (G4 / acceptance criterion 3).
+    local old_entry_hash_pre old_dispatch_hash_pre
+    old_entry_hash_pre="$(t8_content_hash "$LIST_DIR/tasks/$OLD_ID.md")"
+    old_dispatch_hash_pre="$(t8_content_hash "$OLD_DISPATCH")"
+
+    # Frontmatter reads use the file-scope tr_fm helper (same `^<key>:` anchor
+    # semantics as run_T8's t8_fm, but defined at file scope so it is always in
+    # the function table regardless of which T8 code path ran).  Safe only
+    # against script-written dispatch.md — which is exactly what reuse writes.
+
+    # =====================================================================
+    # (A) scope=worktree — new session, reuse old worktree, new claude.
+    # =====================================================================
+    {
+        echo "---"
+        echo "task-id: $NEW_WT_ID"
+        echo "project: trpos-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: ready"
+        echo "priority: normal"
+        echo "branch: task/$NEW_WT_ID"
+        echo "base: main"
+        echo "worktree: $TRPOS_ROOT/worktrees/$NEW_WT_ID"
+        echo "tmux-session: $NEW_WT_SESSION"
+        echo "reuse-from: $OLD_ID"
+        echo "reuse-scope: worktree"
+        echo "reuse-claude: false"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-24"
+        echo "updated-at: 2026-06-24"
+        echo "---"
+        echo ""
+        echo "# $NEW_WT_ID"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "TR-pos scope=worktree reuse."
+    } >"$LIST_DIR/tasks/$NEW_WT_ID.md"
+
+    local wt_rc wt_out
+    wt_out="$(
+        cd "$TRPOS_ROOT" && bash "$reuse" "$NEW_WT_ID" "$LIST_DIR" </dev/null 2>&1
+    )"
+    wt_rc=$?
+    local WT_DISPATCH="$LIST_DIR/runtime/$NEW_WT_ID/dispatch.md"
+    if [ "$wt_rc" -ne 0 ] || [ ! -f "$WT_DISPATCH" ]; then
+        TR_POS_FAIL "scope=worktree reuse exited $wt_rc or wrote no dispatch.md.  Output:
+$(printf '%s\n' "$wt_out" | sed 's/^/      | /')"
+        local i
+        for i in \
+            "scope=worktree: dispatch.md tmux-session=zyz-task-<new> (new session)" \
+            "scope=worktree: dispatch.md worktree=<old worktree>" \
+            "scope=worktree: dispatch.md reuse-claude-effective=n/a" \
+            "scope=worktree: dispatch.md reuse-from=<old-id>" \
+            "scope=worktree: dispatch.md reuse-scope=worktree" \
+            "scope=worktree: new session zyz-task-<new> is alive" \
+            "scope=worktree: new heartbeat file touched (in-pane daemon)" \
+            "scope=worktree: heartbeat-window-id empty (new session, in-pane daemon)"
+        do
+            skip "TR-pos $i (skipped: scope=worktree reuse failed)"
+        done
+    else
+        local wt_sess wt_wt wt_rce wt_rf wt_rs wt_hbwin
+        wt_sess="$(tr_fm "$WT_DISPATCH" tmux-session)"
+        wt_wt="$(tr_fm "$WT_DISPATCH" worktree)"
+        wt_rce="$(tr_fm "$WT_DISPATCH" reuse-claude-effective)"
+        wt_rf="$(tr_fm "$WT_DISPATCH" reuse-from)"
+        wt_rs="$(tr_fm "$WT_DISPATCH" reuse-scope)"
+        wt_hbwin="$(tr_fm "$WT_DISPATCH" heartbeat-window-id)"
+
+        if [ "$wt_sess" = "$NEW_WT_SESSION" ]; then
+            TR_POS_PASS "scope=worktree: dispatch.md tmux-session=zyz-task-<new> (new session)"
+        else
+            TR_POS_FAIL "scope=worktree: dispatch.md tmux-session='$wt_sess' != '$NEW_WT_SESSION' (expected a NEW session)"
+        fi
+        if [ "$wt_wt" = "$OLD_WORKTREE" ]; then
+            TR_POS_PASS "scope=worktree: dispatch.md worktree=<old worktree>"
+        else
+            TR_POS_FAIL "scope=worktree: dispatch.md worktree='$wt_wt' != old worktree '$OLD_WORKTREE'"
+        fi
+        if [ "$wt_rce" = "n/a" ]; then
+            TR_POS_PASS "scope=worktree: dispatch.md reuse-claude-effective=n/a"
+        else
+            TR_POS_FAIL "scope=worktree: dispatch.md reuse-claude-effective='$wt_rce' != 'n/a' (reuse-claude is IGNORED for worktree scope)"
+        fi
+        if [ "$wt_rf" = "$OLD_ID" ]; then
+            TR_POS_PASS "scope=worktree: dispatch.md reuse-from=<old-id>"
+        else
+            TR_POS_FAIL "scope=worktree: dispatch.md reuse-from='$wt_rf' != '$OLD_ID'"
+        fi
+        if [ "$wt_rs" = "worktree" ]; then
+            TR_POS_PASS "scope=worktree: dispatch.md reuse-scope=worktree"
+        else
+            TR_POS_FAIL "scope=worktree: dispatch.md reuse-scope='$wt_rs' != 'worktree'"
+        fi
+        if tmux has-session -t "$NEW_WT_SESSION" 2>/dev/null; then
+            TR_POS_PASS "scope=worktree: new session zyz-task-<new> is alive"
+        else
+            TR_POS_FAIL "scope=worktree: new session '$NEW_WT_SESSION' is NOT alive after reuse"
+        fi
+        # heartbeat file is touched by the in-pane daemon within ~1-2s.
+        local wt_hb="$LIST_DIR/runtime/$NEW_WT_ID/heartbeat" wt_hb_present=0 _t
+        for _t in 1 2 3 4 5; do
+            if [ -e "$wt_hb" ]; then wt_hb_present=1; break; fi
+            sleep 1
+        done
+        if [ "$wt_hb_present" -eq 1 ]; then
+            TR_POS_PASS "scope=worktree: new heartbeat file touched (in-pane daemon)"
+        else
+            TR_POS_FAIL "scope=worktree: new heartbeat file '$wt_hb' NOT touched (in-pane daemon did not run)"
+        fi
+        # worktree scope uses an in-pane daemon (no new window), so
+        # heartbeat-window-id is empty.
+        if [ -z "$wt_hbwin" ]; then
+            TR_POS_PASS "scope=worktree: heartbeat-window-id empty (new session, in-pane daemon)"
+        else
+            TR_POS_FAIL "scope=worktree: heartbeat-window-id='$wt_hbwin' should be empty for worktree scope (in-pane daemon, no new window)"
+        fi
+    fi
+
+    # =====================================================================
+    # (B) scope=both + reuse-claude=true — reuse old session + old worktree,
+    #     same claude, new-window heartbeat daemon.
+    # =====================================================================
+    # Count windows in the reused session BEFORE so we can prove a NEW one
+    # was opened.
+    local both_win_before both_win_after
+    both_win_before="$(tmux list-windows -t "$TRPOS_OLD_SESSION" 2>/dev/null | wc -l | tr -d ' ')"
+
+    {
+        echo "---"
+        echo "task-id: $NEW_BOTH_ID"
+        echo "project: trpos-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: ready"
+        echo "priority: normal"
+        echo "branch: task/$NEW_BOTH_ID"
+        echo "base: main"
+        echo "worktree: $TRPOS_ROOT/worktrees/$NEW_BOTH_ID-ignored"
+        echo "tmux-session: zyz-task-$NEW_BOTH_ID"
+        echo "reuse-from: $OLD_ID"
+        echo "reuse-scope: both"
+        echo "reuse-claude: true"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-24"
+        echo "updated-at: 2026-06-24"
+        echo "---"
+        echo ""
+        echo "# $NEW_BOTH_ID"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "TR-pos scope=both same-claude reuse."
+    } >"$LIST_DIR/tasks/$NEW_BOTH_ID.md"
+
+    local both_rc both_out
+    both_out="$(
+        cd "$TRPOS_ROOT" && bash "$reuse" "$NEW_BOTH_ID" "$LIST_DIR" </dev/null 2>&1
+    )"
+    both_rc=$?
+    local BOTH_DISPATCH="$LIST_DIR/runtime/$NEW_BOTH_ID/dispatch.md"
+    if [ "$both_rc" -ne 0 ] || [ ! -f "$BOTH_DISPATCH" ]; then
+        TR_POS_FAIL "scope=both reuse exited $both_rc or wrote no dispatch.md.  Output:
+$(printf '%s\n' "$both_out" | sed 's/^/      | /')"
+        local i
+        for i in \
+            "scope=both: dispatch.md tmux-session=<old session>" \
+            "scope=both: dispatch.md reuse-claude-effective=true" \
+            "scope=both: dispatch.md heartbeat-window-id non-empty" \
+            "scope=both: dispatch.md shell-pid == old pane's shell-pid" \
+            "scope=both: dispatch.md worktree=<old worktree>" \
+            "scope=both: a NEW window opened in the reused session" \
+            "scope=both: new heartbeat file touched (new-window daemon)" \
+            "scope=both: OLD master entry unchanged after reuse" \
+            "scope=both: OLD runtime dispatch.md unchanged after reuse"
+        do
+            skip "TR-pos $i (skipped: scope=both reuse failed)"
+        done
+    else
+        local both_sess both_rce both_hbwin both_shell both_wt
+        both_sess="$(tr_fm "$BOTH_DISPATCH" tmux-session)"
+        both_rce="$(tr_fm "$BOTH_DISPATCH" reuse-claude-effective)"
+        both_hbwin="$(tr_fm "$BOTH_DISPATCH" heartbeat-window-id)"
+        both_shell="$(tr_fm "$BOTH_DISPATCH" shell-pid)"
+        both_wt="$(tr_fm "$BOTH_DISPATCH" worktree)"
+
+        if [ "$both_sess" = "$TRPOS_OLD_SESSION" ]; then
+            TR_POS_PASS "scope=both: dispatch.md tmux-session=<old session>"
+        else
+            TR_POS_FAIL "scope=both: dispatch.md tmux-session='$both_sess' != old session '$TRPOS_OLD_SESSION'"
+        fi
+        if [ "$both_rce" = "true" ]; then
+            TR_POS_PASS "scope=both: dispatch.md reuse-claude-effective=true"
+        else
+            TR_POS_FAIL "scope=both: dispatch.md reuse-claude-effective='$both_rce' != 'true'"
+        fi
+        if [ -n "$both_hbwin" ]; then
+            TR_POS_PASS "scope=both: dispatch.md heartbeat-window-id non-empty"
+        else
+            TR_POS_FAIL "scope=both: dispatch.md heartbeat-window-id is EMPTY (new-window daemon id should be recorded)"
+        fi
+        if [ -n "$old_shell" ] && [ "$both_shell" = "$old_shell" ]; then
+            TR_POS_PASS "scope=both: dispatch.md shell-pid == old pane's shell-pid"
+        else
+            TR_POS_FAIL "scope=both: dispatch.md shell-pid='$both_shell' != old pane's shell-pid '$old_shell'"
+        fi
+        if [ "$both_wt" = "$OLD_WORKTREE" ]; then
+            TR_POS_PASS "scope=both: dispatch.md worktree=<old worktree>"
+        else
+            TR_POS_FAIL "scope=both: dispatch.md worktree='$both_wt' != old worktree '$OLD_WORKTREE'"
+        fi
+
+        both_win_after="$(tmux list-windows -t "$TRPOS_OLD_SESSION" 2>/dev/null | wc -l | tr -d ' ')"
+        if [ -n "$both_win_before" ] && [ -n "$both_win_after" ] && [ "$both_win_after" -gt "$both_win_before" ]; then
+            TR_POS_PASS "scope=both: a NEW window opened in the reused session"
+        else
+            TR_POS_FAIL "scope=both: reused session window count did not grow ($both_win_before -> $both_win_after); expected a new heartbeat window"
+        fi
+
+        # new heartbeat file touched by the new-window daemon within ~1-2s.
+        local both_hb="$LIST_DIR/runtime/$NEW_BOTH_ID/heartbeat" both_hb_present=0 _t2
+        for _t2 in 1 2 3 4 5; do
+            if [ -e "$both_hb" ]; then both_hb_present=1; break; fi
+            sleep 1
+        done
+        if [ "$both_hb_present" -eq 1 ]; then
+            TR_POS_PASS "scope=both: new heartbeat file touched (new-window daemon)"
+        else
+            TR_POS_FAIL "scope=both: new heartbeat file '$both_hb' NOT touched (new-window daemon did not run)"
+        fi
+
+        # OLD entry + OLD dispatch.md must be byte-unchanged (reuse only
+        # associates; G4 / acceptance criterion 3).
+        local old_entry_hash_post old_dispatch_hash_post
+        old_entry_hash_post="$(t8_content_hash "$LIST_DIR/tasks/$OLD_ID.md")"
+        old_dispatch_hash_post="$(t8_content_hash "$OLD_DISPATCH")"
+        if [ -z "$old_entry_hash_pre" ] || [ -z "$old_entry_hash_post" ]; then
+            skip "TR-pos scope=both: OLD master entry unchanged after reuse (skipped: no shasum/sha256sum on host)"
+        elif [ "$old_entry_hash_pre" = "$old_entry_hash_post" ]; then
+            TR_POS_PASS "scope=both: OLD master entry unchanged after reuse"
+        else
+            TR_POS_FAIL "scope=both: OLD master entry CHANGED after reuse (reuse must never rewrite the old task)"
+        fi
+        if [ -z "$old_dispatch_hash_pre" ] || [ -z "$old_dispatch_hash_post" ]; then
+            skip "TR-pos scope=both: OLD runtime dispatch.md unchanged after reuse (skipped: no shasum/sha256sum on host)"
+        elif [ "$old_dispatch_hash_pre" = "$old_dispatch_hash_post" ]; then
+            TR_POS_PASS "scope=both: OLD runtime dispatch.md unchanged after reuse"
+        else
+            TR_POS_FAIL "scope=both: OLD runtime dispatch.md CHANGED after reuse (reuse must never rewrite the old container's dispatch.md)"
+        fi
+    fi
+
+    # =====================================================================
+    # (C) scope=tmux + reuse-claude=true — worktree recorded == old worktree
+    #     (the `worktree:` frontmatter field is intentionally ignored; cwd
+    #     follows the reused pane).
+    # =====================================================================
+    {
+        echo "---"
+        echo "task-id: $NEW_TMUX_ID"
+        echo "project: trpos-mock"
+        echo "source-repo: $WORK_DIR"
+        echo "state: ready"
+        echo "priority: normal"
+        echo "branch: task/$NEW_TMUX_ID"
+        echo "base: main"
+        # A bogus worktree override to prove it is IGNORED for tmux scope.
+        echo "worktree: $TRPOS_ROOT/worktrees/$NEW_TMUX_ID-should-be-ignored"
+        echo "tmux-session: zyz-task-$NEW_TMUX_ID"
+        echo "reuse-from: $OLD_ID"
+        echo "reuse-scope: tmux"
+        echo "reuse-claude: true"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-06-24"
+        echo "updated-at: 2026-06-24"
+        echo "---"
+        echo ""
+        echo "# $NEW_TMUX_ID"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "TR-pos scope=tmux same-claude reuse."
+    } >"$LIST_DIR/tasks/$NEW_TMUX_ID.md"
+
+    local tmux_rc tmux_out
+    tmux_out="$(
+        cd "$TRPOS_ROOT" && bash "$reuse" "$NEW_TMUX_ID" "$LIST_DIR" </dev/null 2>&1
+    )"
+    tmux_rc=$?
+    local TMUX_DISPATCH="$LIST_DIR/runtime/$NEW_TMUX_ID/dispatch.md"
+    if [ "$tmux_rc" -ne 0 ] || [ ! -f "$TMUX_DISPATCH" ]; then
+        TR_POS_FAIL "scope=tmux reuse exited $tmux_rc or wrote no dispatch.md.  Output:
+$(printf '%s\n' "$tmux_out" | sed 's/^/      | /')"
+        skip "TR-pos scope=tmux: dispatch.md worktree == old worktree (skipped: scope=tmux reuse failed)"
+        skip "TR-pos scope=tmux: dispatch.md reuse-claude-effective=true (skipped: scope=tmux reuse failed)"
+    else
+        local tmux_wt tmux_rce
+        tmux_wt="$(tr_fm "$TMUX_DISPATCH" worktree)"
+        tmux_rce="$(tr_fm "$TMUX_DISPATCH" reuse-claude-effective)"
+        if [ "$tmux_wt" = "$OLD_WORKTREE" ]; then
+            TR_POS_PASS "scope=tmux: dispatch.md worktree == old worktree"
+        else
+            TR_POS_FAIL "scope=tmux: dispatch.md worktree='$tmux_wt' != old worktree '$OLD_WORKTREE' (the new task's worktree: field must be ignored; cwd follows the reused pane)"
+        fi
+        if [ "$tmux_rce" = "true" ]; then
+            TR_POS_PASS "scope=tmux: dispatch.md reuse-claude-effective=true"
+        else
+            TR_POS_FAIL "scope=tmux: dispatch.md reuse-claude-effective='$tmux_rce' != 'true'"
+        fi
+    fi
+
+    trpos_teardown
+    TR_POS_PASS "fixture teardown clean"
+}
+
 # ---------------------------------------------------------------------------
 # T7. README / CLAUDE.md / project-structure.md key strings
 # ---------------------------------------------------------------------------
@@ -3572,6 +4679,42 @@ run_T9() {
         check_grep_fixed "$drvf" \
             "B8 driver intent 'relay-confirmation' present in $drvf" \
             "relay-confirmation"
+    done
+
+    # ---- TR-driver (orch-reuse-worker design §Testing Plan T9): presence-only
+    #      guards for the reuse-dispatch driver contract in BOTH mirror copies.
+    #      T9 does presence ONLY; the mirror byte-equality of the new
+    #      `## intent=reuse-dispatch` section (incl. the in-band runtime-config
+    #      block) is covered by T10's whole-body diff on the driver pair — we do
+    #      NOT add a byte-equality anchor here (design RC7 / Testing Plan: "T9
+    #      只做存在性，不做镜像逐字 diff").
+    local rdrvf
+    for rdrvf in "$drv_agent" "$drv_sub"; do
+        # (a) the new L2 driver intent value.
+        check_grep_fixed "$rdrvf" \
+            "TR-driver intent 'reuse-dispatch' present in $rdrvf" \
+            "reuse-dispatch"
+        # (b) the in-band runtime-config block fence keyword.
+        check_grep_fixed "$rdrvf" \
+            "TR-driver in-band block 'reuse-runtime-config' present in $rdrvf" \
+            "reuse-runtime-config"
+        # (c) the in-band block's worker-status-file override key (lower-case,
+        #     hyphenated; must match orch-reuse-worker.sh + execute-task contract).
+        check_grep_fixed "$rdrvf" \
+            "TR-driver in-band key 'worker-status-file' present in $rdrvf" \
+            "worker-status-file"
+        # (d) the in-band block's task-id override key.
+        check_grep_fixed "$rdrvf" \
+            "TR-driver in-band key 'task-id' present in $rdrvf" \
+            "task-id"
+        # (e) the `## Inputs` intent enum line must list ALL FOUR values.  We
+        #     anchor on the single line that carries every value in order
+        #     (ERE: the four backtick-quoted tokens on one line) so a future
+        #     edit that drops `reuse-dispatch` from the enum (but mentions it in
+        #     a section heading) still turns this red.
+        check_grep "$rdrvf" \
+            "TR-driver '## Inputs' intent enum line lists all four values in $rdrvf" \
+            '`first-dispatch`.*`intervene`.*`relay-confirmation`.*`reuse-dispatch`'
     done
 }
 
@@ -3918,10 +5061,13 @@ run_T2
 run_T3
 run_T4
 run_T4_prime
+run_TR_reuse_neg
 run_T5
 run_T6
 run_T7
 run_T8
+run_T8_reuse_rewrite
+run_TR_reuse_pos
 run_T9
 run_T10
 run_T11_confirm

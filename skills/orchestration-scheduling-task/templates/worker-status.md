@@ -36,6 +36,14 @@ last-flush: <iso>                 # ISO timestamp of this flush
 
   The orchestrator only sees what this file says. In-context memory does not
   count. See `docs/conventions/long-running-state.md`.
+
+  Reuse note: a worker started on a REUSED container (reuse-dispatch) may receive
+  an in-band runtime-config block in its pane that OVERRIDES the launch-time
+  ZYZ_* env. When present, this file's authoritative path is the
+  `worker-status-file:` from that block (under runtime/<new-task-id>/), not any
+  path derived from the inherited ZYZ_WORKER_STATUS_FILE. Such a worker also
+  `touch`es the block's `heartbeat-file` on every flush. See execute-task
+  `## Orchestrated Mode`.
 -->
 
 ## Current Activity

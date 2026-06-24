@@ -102,7 +102,7 @@ Repository-local automation belongs here. Good candidates include validation, fo
 
 Scripts should be safe to run repeatedly and should not depend on user-specific absolute paths unless documented.
 
-**Orchestration helpers (`scripts/orch-*.sh`).** The `orchestration-scheduling-task` skill calls a small fixed set of bash helpers — `orch-scan-tasks.sh`, `orch-spawn-worker.sh`, `orch-check-worker.sh`, `orch-heartbeat-daemon.sh`, `orch-cleanup-worker.sh`, `orch-merge-and-cleanup.sh`. They live in this directory and follow these conventions:
+**Orchestration helpers (`scripts/orch-*.sh`).** The `orchestration-scheduling-task` skill calls a small fixed set of bash helpers — `orch-scan-tasks.sh`, `orch-spawn-worker.sh`, `orch-reuse-worker.sh`, `orch-check-worker.sh`, `orch-heartbeat-daemon.sh`, `orch-cleanup-worker.sh`, `orch-merge-and-cleanup.sh`. They live in this directory and follow these conventions:
 
 - `#!/usr/bin/env bash` + `set -euo pipefail` + an in-file contract block at the top.
 - All `task-id` inputs are validated against `^[A-Za-z0-9_-]+$`; invalid → exit 2.

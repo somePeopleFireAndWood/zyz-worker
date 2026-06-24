@@ -32,7 +32,7 @@ Everything you need is passed in the dispatch prompt (self-contained; you share 
 - `shell-pid` — the pane shell's pid. The claude you start must become a DIRECT child of this pid.
 - `worktree` — the worker's git worktree path.
 - `plugin-root` — the plugin dir to pass to `claude --plugin-dir`.
-- `intent` — `first-dispatch`, `intervene`, or `relay-confirmation`.
+- `intent` — `first-dispatch`, `intervene`, `relay-confirmation`, or `reuse-dispatch`.
 
 If a required input is missing from the prompt, do not guess: flush `monitor.md` with `needs-attention=true` + an `attention-reason` naming the missing input and return an error summary.
 
@@ -79,6 +79,47 @@ L1 dispatches you here when the user wrote `confirmed` for a worker that is at `
 - Flush `monitor.md` with `driver-intent=relay-confirmation` and a one-line `## Last Action` recording the relay. L1 reads `driver-intent` to keep the relay idempotent (at most one relay per confirmation).
 - Then fall through to the Observe step (it sets `needs-user`/`needs-attention` from the live poll as usual) and return a one-line summary, e.g. `worker <id>: relayed user confirmation, observing`.
 
+## intent=reuse-dispatch
+
+L1 dispatches you here when the worker's container is a REUSED container (the new task's master entry declared `reuse-from`, and `orch-reuse-worker.sh` associated an old completed task's tmux session and/or worktree to it instead of building a fresh one). `reuse-dispatch` is a variant of `first-dispatch`: it gets the worker's `/execute-task` running in the (possibly already-occupied) pane. The pane fields in your prompt (`tmux-pane-id`, `shell-pid`, `tmux-session`, `worktree`, `plugin-root`) come from the NEW task's `dispatch.md`, which `orch-reuse-worker.sh` wrote; `reuse-claude-effective` (`true | false | n/a`) tells you which of the three branches below applies. Read it from the dispatch prompt (L1 passes it) or from the new task's `dispatch.md`.
+
+The **in-band runtime-config block** (used by the same-claude and restart branches below) is this exact structured, human-readable text, sent into the pane verbatim (field names lower-case, hyphenated; they MUST match `orch-reuse-worker.sh` and the execute-task `## Orchestrated Mode` contract byte-for-byte):
+
+```text
+[zyz-worker reuse-runtime-config]
+task-id: <new-task-id>
+worker-status-file: <list-dir>/runtime/<new-task-id>/worker-status.md
+question-file: <list-dir>/runtime/<new-task-id>/question.md
+answer-file: <list-dir>/runtime/<new-task-id>/answer.md
+heartbeat-file: <list-dir>/runtime/<new-task-id>/heartbeat
+note: 你正在复用一个仍在运行的 claude 进程承接新任务。请把上面的 task-id 视为本任务在
+      orchestrated 模式下的权威任务标识（覆盖启动时继承的 ZYZ_TASK_ID），把其余路径视为
+      worker-status/question/answer/heartbeat 的权威位置（覆盖任何 ZYZ_* 环境变量）。
+      所有由 task-id 派生的路径（含 .zyz-worker/tasks/<task-id>/ 详细状态目录、提交/分支引用）
+      都用上面的 task-id。随后运行 /zyz-worker:execute-task <new-task-id>。
+[/zyz-worker reuse-runtime-config]
+```
+
+Substitute the real `<new-task-id>` and `<list-dir>` from your prompt. Send the block as text into the recorded pane, then `Enter`. (Multi-line: send it with `tmux send-keys -l` per line, or send the whole block literally followed by `Enter` — do not let tmux interpret the bracket lines as key names.)
+
+Three branches by `reuse-claude-effective`:
+
+- **same-claude reuse** (`reuse-claude-effective=true`): the reused claude process is ALREADY running in the pane — do NOT start a new claude.
+  1. **Confirm a ready claude is present.** `tmux capture-pane -p -t <tmux-pane-id>` and verify the pane shows a ready claude (`❯ ` ready prompt). If it does NOT (claude has exited), do NOT blind-launch — flush `monitor.md` with `needs-attention=true` and `attention-reason="reuse-dispatch: expected a running claude in the reused pane but found none"` and return an error summary. (Blind-launching here would act on a wrong premise and pollute the worker; L1 decides whether to fall back.)
+  2. **Send the in-band runtime-config block** (above) into the pane, then `Enter`.
+  3. **Send the command.** `tmux send-keys -t <tmux-pane-id>` the literal `/zyz-worker:execute-task <new-task-id>`, then `Enter`.
+  4. **Unknown-command check** (same as first-dispatch): capture-pane; if the pane shows `Unknown command`, flush `needs-attention=true` + `attention-reason="execute-task rejected as Unknown command"` and return an error summary.
+  5. Flush `monitor.md`: `driver-intent=reuse-dispatch`, `claude-started=true` (claude was already running), then fall through to the Observe step and return a summary.
+- **restart-claude reuse** (`reuse-claude-effective=false`): claude must be RESTARTED in the reused session's pane (clean handshake escape hatch).
+  1. **Exit the old claude back to a shell.** `send-keys` the exit-to-shell sequence (e.g. `/exit`, or your existing "quit to shell" judgment), then **`capture-pane` to CONFIRM the old claude has fully exited to a bare shell prompt before relaunching** — this guard is mandatory (S2): if you relaunch during the exit/launch window, `orch-check-worker.sh`'s `pgrep -P <shell-pid> -n -x claude` (`-n` = newest) can bind to the dying old process. Do not relaunch until the pane shows a bare shell prompt.
+  2. **Run the first-dispatch launch flow** in that pane (launch `claude --plugin-dir <plugin-root> --permission-mode bypassPermissions --dangerously-skip-permissions`, clear the trust-folder and bypass-risk confirmation pages, readiness-probe). Honor the parent-shell invariant: launch in the recorded pane, never reparent.
+  3. **Send the in-band runtime-config block** (above) into the pane, then `Enter`. The restarted claude inherits the pane shell's STALE env (`ZYZ_TASK_ID=<old-id>` etc.), so the in-band block is still required to give it the new task's authoritative paths — do not rely on env reset.
+  4. **Send the command** `/zyz-worker:execute-task <new-task-id>` + `Enter`, then the Unknown-command check (same as first-dispatch).
+  5. Flush `monitor.md`: `driver-intent=reuse-dispatch`, `claude-started=true` (after the readiness probe passes). Fall through to Observe and return a summary.
+- **new-session reuse** (`reuse-claude-effective=n/a`, i.e. `reuse-scope=worktree`): `orch-reuse-worker.sh` created a NEW session + NEW pane + in-pane daemon and exported a clean env into the pane (the old worktree is reused, but the session and claude are fresh). This is identical to `first-dispatch`: run the full `first-dispatch` launch flow (pre-launch idempotency check, launch on a bare shell, clear confirmation pages, readiness probe + immediate `claude-started=true` flush, send `/zyz-worker:execute-task <new-task-id>`, Unknown-command check). **Do NOT send the in-band runtime-config block** — the freshly-launched claude inherits the clean env the script exported, so no override is needed. Flush `monitor.md` with `driver-intent=reuse-dispatch`.
+
+> `reuse-dispatch` keeps every driver invariant: you drive only this one pane, only `send-keys` / `capture-pane` against the recorded `tmux-pane-id`, never reparent the claude process, never read L3 internals, and write ONLY `monitor.md`. Like `first-dispatch`, claude must start (or be reused) exactly once — the same-claude branch never launches, and the restart/new-session branches honor the pre-launch idempotency check.
+
 ## Observe And Set needs-user (All Intents)
 
 After driving (or after the pre-launch short-circuit), observe overall state:
@@ -111,7 +152,7 @@ After driving (or after the pre-launch short-circuit), observe overall state:
   ---
   task-id: <task-id>
   last-driver-iso: <iso>            # this run's time
-  driver-intent: first-dispatch | intervene | relay-confirmation
+  driver-intent: first-dispatch | intervene | relay-confirmation | reuse-dispatch
   claude-started: true | false      # set true immediately after the readiness probe passes
   needs-user: true | false          # only projected from worker-status wait-state=waiting-user
   needs-user-window: <tmux session> # which window the user must attach to; non-empty when needs-user=true

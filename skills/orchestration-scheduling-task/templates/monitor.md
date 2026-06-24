@@ -1,7 +1,7 @@
 ---
 task-id: <task-id>                 # immutable; the worker this driver state belongs to
 last-driver-iso: <iso>             # ISO timestamp of the L2 driver's last run
-driver-intent: first-dispatch      # first-dispatch | intervene | relay-confirmation
+driver-intent: first-dispatch      # first-dispatch | intervene | relay-confirmation | reuse-dispatch
                                    # NOTE: the persisted frontmatter key here is `driver-intent`;
                                    # the L1->L2 dispatch INPUT field carrying the same values
                                    # is named `intent` (e.g. intent=first-dispatch). The two-name
@@ -11,6 +11,10 @@ driver-intent: first-dispatch      # first-dispatch | intervene | relay-confirma
                                    # relay a user confirmation into the worker pane (so the worker
                                    # advances to phase=done); L1 reads this value to keep the relay
                                    # idempotent (at most one relay per confirmation).
+                                   # `reuse-dispatch` is dispatched from the L1 dispatch step for a
+                                   # worker whose container was REUSED (master entry `reuse-from`);
+                                   # it is a first-dispatch variant — same-claude (no new claude),
+                                   # restart-claude, or new-session — see the driver agent.
 claude-started: false              # true | false; set true IMMEDIATELY after the
                                    # readiness probe passes (do not wait for end-of-tick)
 needs-user: false                  # true | false; set true ONLY when this worker's

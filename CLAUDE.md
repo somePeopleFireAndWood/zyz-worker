@@ -45,7 +45,7 @@ The workflow is defined by:
 - `skills/orchestration-scheduling-task/SKILL.md`
 - `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - `skills/orchestration-scheduling-task/templates/`
-- `scripts/orch-*.sh` (six bash helpers: scan, spawn, check, heartbeat-daemon, cleanup, merge-and-cleanup)
+- `scripts/orch-*.sh` (bash helpers: scan, spawn, reuse, check, heartbeat-daemon, cleanup, merge-and-cleanup; `orch-reuse-worker.sh` associates a completed task's tmux/worktree to a new `reuse-from` task instead of building a fresh container)
 
 Relationship to `/execute-task`: the orchestrator does NOT execute tasks itself. It schedules and dispatches. Each task runs in its own tmux session, in its own git worktree, as a separate `claude` process invoking `/execute-task`. The orchestrator and each worker communicate exclusively through files in `<list-dir>` (master entries, `worker-status.md`, `heartbeat`, `question.md`/`answer.md`); nothing crosses agent boundaries in memory.
 

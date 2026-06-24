@@ -20,7 +20,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
 - Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
 - Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
-- Orchestration bash helpers 位于 `scripts/orch-*.sh`
+- Orchestration bash helpers 位于 `scripts/orch-*.sh`（其中 `orch-reuse-worker.sh` 用于「复用已完成任务的 tmux/worktree 创建新任务」——见下方 *容器复用*）
 - 提示词式 SubAgent 定义位于 `subagents/`
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
@@ -39,6 +39,16 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 软警示：**不要**把某个 task 的 `source-repo:` 指向 zyz-worker 插件仓库自身，除非你的本意就是在插件源码内派发一个 worker。无意中指向插件 repo 会导致 worker 在插件仓库里建分支与 worktree，与正常项目开发混淆。
 
 三层调度架构（spawn → L2 启动真 claude → parent-shell invariant → exactly-once 幂等 → dispatch-bound 绑定）的端到端验收脚本是 `scripts/test-e2e-layered.sh`（可移植，Linux/macOS 均可）。运行：`bash scripts/test-e2e-layered.sh`（`--keep` 保留 fixture 供调试）。它需要 `tmux`/`git`/`claude` 都在 PATH 且 `claude` 已登录，并且会**消耗 API 配额**（A4 触发一次真实 LLM 往返）。这是真 claude 验收，与纯脚本单元测 `scripts/test-orchestration-helpers.sh` 分开。
+
+## 容器复用（container reuse）
+
+`/orchestrate-tasks` 支持「复用一个**已完成**任务遗留的 tmux session 和/或 git worktree 来创建新任务」，而不是再走一遍标准 spawn（重新 `git worktree add` + 新 session）。新任务在自己的 master entry frontmatter 里声明：
+
+- `reuse-from: <old-task-id>` —— 要复用其容器的旧任务（必须是**同一 list** 内、`state: completed` 的任务）。
+- `reuse-scope: worktree | tmux | both` —— 复用粒度（默认 `both`）。`worktree`=复用旧 worktree + 新 session + 新 claude；`tmux`=复用旧 session（新任务跑在旧 pane 的 worktree 里，cwd 不可变，`worktree:` 字段被忽略）；`both`=复用旧 worktree + 旧 session。
+- `reuse-claude: true | false` —— 仅在复用 tmux 时有意义。`true`（默认）=复用同一个正在运行的 claude 进程（不重启，新任务运行时通过 *带内运行时配置块* 交给它）；`false`=在复用的 session 里重启 claude。`worktree` scope 下被忽略（一定是新 claude）。
+
+落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## Container Reuse`。
 
 ## 安装与使用
 
@@ -205,6 +215,7 @@ subagents/
 │   ├── README.md
 │   ├── orch-scan-tasks.sh
 │   ├── orch-spawn-worker.sh
+│   ├── orch-reuse-worker.sh
 │   ├── orch-check-worker.sh
 │   ├── orch-heartbeat-daemon.sh
 │   ├── orch-cleanup-worker.sh
