@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.8.0] — 2026-06-26
+
+This release adds **Go build I/O optimization injection** to the `orchestration-scheduling-task` skill. Many parallel workers each running `go build ./...` saturate a single disk because total compile parallelism ≈ (worker count) × (each build's `-p`, default ≈ NumCPU) and all link intermediates write to disk. Each dispatched worker now, by default, gets `GOTMPDIR` pointed at a tmpfs RAM disk and `GOFLAGS=-p=N` lowering per-build concurrency, injected into its pane before claude starts. Cross-platform with graceful auto-degrade (hosts without tmpfs, e.g. macOS, simply skip `GOTMPDIR`); never clobbers user env; never touches `GOCACHE`/`GOMAXPROCS`.
+
+### Added
+- **`scripts/orch-build-env.sh`** — a standalone, side-effect-free helper that reads three host env vars and prints ONE shell snippet to stdout (empty when disabled). It does NOT touch tmux; spawn / reuse call it and send-keys the line into the new pane. The emitted snippet bakes candidate values but runs its no-clobber (`[ -z "${GOTMPDIR:-}" ]` / `[ -z "${GOFLAGS:-}" ]`) and existence+writable (`[ -d ] && [ -w ]`, auto-degrade) guards *in the pane*; it `mkdir -p`s `GOTMPDIR` (Go does not auto-create it) and never emits `GOCACHE` or `GOMAXPROCS`.
+- **Three tunable env switches** (read on the orchestrator host): `ZYZ_GO_BUILD_OPT` (default on; `0`/`false`/`off`/`no` disables all injection), `ZYZ_GO_BUILD_P` (the N in `GOFLAGS=-p=N`, default `4`, clamped ≤ 64 — illegal or over-cap values fall back to 4, because `-p` is the one knob that can silently re-detonate the I/O incident: total = workers × p), and `ZYZ_GO_TMPFS_DIR` (tmpfs base dir candidate, default `/dev/shm`; a value containing a single quote is rejected to keep the send-keys quoting intact). The probe is existence+writability, NOT a filesystem-type check — pointing it at a plain disk dir writes intermediates to disk (documented footgun).
+
+### Changed
+- **`orch-spawn-worker.sh` gains a Step 9b** that, after the `export ZYZ_*` send-keys, runs `orch-build-env.sh` and (if non-empty) send-keys the build-opt line into the pane — non-blocking: a missing/erroring helper yields an empty line and is simply skipped.
+- **`orch-reuse-worker.sh` injects the same line in the `worktree` scope branch only** (new session / new pane / new claude, same shape as spawn). The `tmux` / `both` branches do NOT inject — they reuse an already-started claude whose env is frozen, and send-keys'ing shell into a live claude pane is harmful.
+- README (new *Go 构建 I/O 优化注入* section: worker × p model, the three switches, auto-degrade, no-clobber, `GOCACHE`/`GOMAXPROCS` untouched, the existence-not-type probe footgun, the tmpfs-OOM risk with `watch -n5 'df -h /dev/shm; free -h'`, and a manual snippet for standalone users), orchestration SKILL.md (plan-step disk I/O caveat), `prompts/main-agent.md` (`## Inputs` env list), and `docs/conventions/project-structure.md` (helper list) updated in lockstep.
+- **Version bump 0.7.0 → 0.8.0** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated).
+
 ## [0.7.0] — 2026-06-24
 
 This release adds **container reuse** to the `orchestration-scheduling-task` skill: a new task can reuse a *completed* task's leftover tmux session and/or git worktree instead of building a fresh container.

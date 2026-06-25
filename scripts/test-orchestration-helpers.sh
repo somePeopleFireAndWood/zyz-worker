@@ -212,6 +212,7 @@ HELPER_SCRIPTS=(
     "scripts/orch-cleanup-worker.sh"
     "scripts/orch-merge-and-cleanup.sh"
     "scripts/orch-merge.sh"
+    "scripts/orch-build-env.sh"
 )
 
 AGENT_FILES=(
@@ -4587,6 +4588,48 @@ run_T7() {
         "ZYZ_AUTO_START_WORKER"
     check_grep_absent "$main_md" "T7'' main-agent.md stale 'manually start' claude instruction" \
         "manually start"
+
+    # ---- T7''' (go-build-io-optimization) -------------------------------
+    # The Go build I/O optimization injection feature adds load-bearing doc
+    # strings.  Per design §Testing Plan T7 ("README/CLAUDE/project-structure
+    # 含新关键串，如 orch-build-env.sh、ZYZ_GO_BUILD_OPT") and §Acceptance
+    # Criteria ("文档讲清 worker × p 模型、三个开关、降级、tmpfs 撑爆风险 + 观察
+    # 命令").  These are positive literal anchors so a future doc edit cannot
+    # silently drop the new helper / its three tunable env switches.
+
+    # (A) README.md documents the helper + all three tunable env switches.
+    check_grep_fixed "README.md" \
+        "T7''' README.md references the new helper 'orch-build-env.sh'" \
+        "orch-build-env.sh"
+    check_grep_fixed "README.md" \
+        "T7''' README.md documents 'ZYZ_GO_BUILD_OPT' master switch" \
+        "ZYZ_GO_BUILD_OPT"
+    check_grep_fixed "README.md" \
+        "T7''' README.md documents 'ZYZ_GO_BUILD_P' (-p cap)" \
+        "ZYZ_GO_BUILD_P"
+    check_grep_fixed "README.md" \
+        "T7''' README.md documents 'ZYZ_GO_TMPFS_DIR' (tmpfs base)" \
+        "ZYZ_GO_TMPFS_DIR"
+    # The README must surface the tmpfs blow-up observation command (df/free)
+    # so an operator can watch RAM-disk usage — design Risk + Acceptance.
+    if [ -f "$readme" ]; then
+        if grep -qF "/dev/shm" "$readme" && grep -qF "free -h" "$readme"; then
+            pass "T7''' README.md gives a tmpfs observation command (df /dev/shm + free -h)"
+        else
+            fail "T7''' README.md does not surface the tmpfs blow-up observation command (need '/dev/shm' and 'free -h')"
+        fi
+    fi
+
+    # (B) CLAUDE.md mentions the new helper (the orch-*.sh helper list line
+    #     names each script; orch-build-env.sh must be included).
+    check_grep_fixed "CLAUDE.md" \
+        "T7''' CLAUDE.md references 'orch-build-env.sh'" \
+        "orch-build-env.sh"
+
+    # (C) docs/conventions/project-structure.md lists the new helper.
+    check_grep_fixed "docs/conventions/project-structure.md" \
+        "T7''' project-structure.md lists 'orch-build-env.sh' in the helper list" \
+        "orch-build-env.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -5051,6 +5094,378 @@ $(sed -n '1,20p' "$entry" 2>/dev/null | sed 's/^/      | /')"
 }
 
 # ---------------------------------------------------------------------------
+# T12. orch-build-env.sh — Go build I/O optimization injection helper.
+#
+# Deterministic, API-free, tmux-free unit tests for the standalone helper
+# scripts/orch-build-env.sh (design task go-build-io-optimization §Testing Plan
+# / §Acceptance Criteria).  The helper reads three host env vars and prints ONE
+# shell snippet line to stdout (empty when disabled); spawn / reuse send-keys
+# that line into a fresh worker pane so each `go build` writes intermediates to
+# tmpfs (GOTMPDIR) and lowers per-build concurrency (GOFLAGS=-p=N).
+#
+# We test on three axes:
+#   (1) STDOUT shape — what literals the baked snippet does / does not contain
+#       under controlled env (default, OPT off, -p clamp boundaries, tmpfs dir
+#       override + single-quote rejection).
+#   (2) RUNTIME contract — `eval` the emitted snippet in a CLEAN subshell and
+#       observe the resulting GOTMPDIR / GOFLAGS.  This is the load-bearing part:
+#       it proves auto-degrade (no tmpfs => GOTMPDIR stays unset, GOFLAGS still
+#       set) and no-clobber (a pane-inherited GOTMPDIR/GOFLAGS always wins).
+#   (3) WIRING consistency — both orch-spawn-worker.sh AND orch-reuse-worker.sh
+#       source-call orch-build-env.sh, in lockstep, so the two injection points
+#       cannot drift.
+#
+# The helper runs with `set -euo pipefail`; we always invoke it via a fresh
+# `bash <script>` with `env -i`-style controlled env so host GOTMPDIR/GOFLAGS or
+# stray ZYZ_GO_* vars in the operator's shell cannot leak into the assertions.
+# ---------------------------------------------------------------------------
+
+# t12_emit <description> [VAR=val ...] :: result captured into T12_OUT / T12_RC
+# Runs `bash scripts/orch-build-env.sh` with EXACTLY the given env (nothing
+# inherited that could perturb output), captures stdout into the global
+# T12_OUT, and the exit code into T12_RC.  Always returns 0 so callers keep
+# going even when the helper is missing (the existence FAIL is recorded by the
+# caller).  Uses `env -i` plus a minimal PATH so the helper can still find its
+# coreutils (printf/grep/tr) but inherits none of the operator's ZYZ_GO_* /
+# GOTMPDIR / GOFLAGS.  The first arg (description) is shifted off; everything
+# after it is the KEY=VALUE env list handed to `env -i`.
+T12_OUT=""
+T12_RC=0
+t12_emit() {
+    local script="$REPO_ROOT/scripts/orch-build-env.sh"
+    shift   # drop the description; remaining args are KEY=VALUE pairs
+    local minpath="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+    T12_OUT="$(env -i PATH="$minpath" "$@" bash "$script" 2>/dev/null)"
+    T12_RC=$?
+    return 0
+}
+
+# t12_contains <description> <fixed-needle>
+# PASS iff T12_OUT contains <fixed-needle> (literal).  Prints the actual output
+# on FAIL so a mismatch is debuggable.
+t12_contains() {
+    local desc="$1"
+    local needle="$2"
+    case "$T12_OUT" in
+        *"$needle"*) pass "T12 $desc (output contains '$needle')" ;;
+        *) fail "T12 $desc — output did NOT contain '$needle'.  Actual stdout:
+      | $T12_OUT" ;;
+    esac
+}
+
+# t12_absent <description> <fixed-needle>
+# PASS iff T12_OUT does NOT contain <fixed-needle>.
+t12_absent() {
+    local desc="$1"
+    local needle="$2"
+    case "$T12_OUT" in
+        *"$needle"*) fail "T12 $desc — output UNEXPECTEDLY contained '$needle'.  Actual stdout:
+      | $T12_OUT" ;;
+        *) pass "T12 $desc (output does not contain '$needle')" ;;
+    esac
+}
+
+# t12_empty <description>
+# PASS iff T12_OUT is the empty string (injection disabled).
+t12_empty() {
+    local desc="$1"
+    if [ -z "$T12_OUT" ]; then
+        pass "T12 $desc (stdout empty as expected)"
+    else
+        fail "T12 $desc — expected EMPTY stdout but got:
+      | $T12_OUT"
+    fi
+}
+
+run_T12() {
+    say_header "T12  orch-build-env.sh Go build I/O optimization helper"
+
+    local script="scripts/orch-build-env.sh"
+    if [ ! -x "$REPO_ROOT/$script" ]; then
+        skip "T12 $script missing or not executable — all T12 stdout/runtime checks skipped"
+        # Still run the wiring-consistency guard below: it greps source files,
+        # independent of the helper being runnable.
+        t12_wiring_guard
+        return
+    fi
+
+    # =====================================================================
+    # (A) DEFAULT (no ZYZ_GO_* env) — the canonical baked snippet.
+    # =====================================================================
+    t12_emit "default (no env)"
+    if [ "$T12_RC" -ne 0 ]; then
+        fail "T12 default invocation exited non-zero (rc=$T12_RC) — helper must always exit 0"
+    else
+        pass "T12 default invocation exits 0"
+    fi
+    # Sets GOTMPDIR (the tmpfs steer) and GOFLAGS=-p=4 (the default cap).
+    t12_contains "default sets GOTMPDIR" "GOTMPDIR"
+    t12_contains "default GOFLAGS uses -p=4 (default cap)" "-p=4"
+    t12_contains "default exports GOFLAGS" "GOFLAGS"
+    # The two no-clobber guards (literal, byte-exact from the design snippet).
+    t12_contains 'default has GOTMPDIR no-clobber guard' '[ -z "${GOTMPDIR:-}" ]'
+    t12_contains 'default has GOFLAGS no-clobber guard' '[ -z "${GOFLAGS:-}" ]'
+    # The runtime existence+writable probe on the base dir, and the per-base
+    # subdir literal.
+    t12_contains "default references /dev/shm tmpfs base" "/dev/shm"
+    t12_contains "default mkdir-creates the zyz-gobuild subdir" "zyz-gobuild"
+    # Constraint 3: NEVER GOMAXPROCS, NEVER GOCACHE.
+    t12_absent "default never sets GOMAXPROCS" "GOMAXPROCS"
+    t12_absent "default never sets GOCACHE" "GOCACHE"
+    # Trailing `; true` keeps the pane exit status clean.
+    t12_contains "default ends with '; true' (clean pane exit status)" "; true"
+
+    # =====================================================================
+    # (B) MASTER SWITCH off — empty stdout for every falsey spelling.
+    # =====================================================================
+    t12_emit "ZYZ_GO_BUILD_OPT=0" ZYZ_GO_BUILD_OPT=0
+    t12_empty "ZYZ_GO_BUILD_OPT=0 disables injection"
+    t12_emit "ZYZ_GO_BUILD_OPT=false" ZYZ_GO_BUILD_OPT=false
+    t12_empty "ZYZ_GO_BUILD_OPT=false disables injection"
+    t12_emit "ZYZ_GO_BUILD_OPT=off" ZYZ_GO_BUILD_OPT=off
+    t12_empty "ZYZ_GO_BUILD_OPT=off disables injection"
+    t12_emit "ZYZ_GO_BUILD_OPT=no" ZYZ_GO_BUILD_OPT=no
+    t12_empty "ZYZ_GO_BUILD_OPT=no disables injection"
+    # Case-insensitive: an uppercase falsey value must also disable.
+    t12_emit "ZYZ_GO_BUILD_OPT=OFF (uppercase)" ZYZ_GO_BUILD_OPT=OFF
+    t12_empty "ZYZ_GO_BUILD_OPT=OFF (case-insensitive) disables injection"
+    # A truthy / unrecognized value leaves injection ON (snippet emitted).
+    t12_emit "ZYZ_GO_BUILD_OPT=1 (explicit on)" ZYZ_GO_BUILD_OPT=1
+    t12_contains "ZYZ_GO_BUILD_OPT=1 keeps injection ON" "GOFLAGS"
+
+    # =====================================================================
+    # (C) -p value clamp — valid passes through, out-of-range/garbage -> 4,
+    #     boundary 64 inclusive.
+    # =====================================================================
+    t12_emit "ZYZ_GO_BUILD_P=2" ZYZ_GO_BUILD_P=2
+    t12_contains "ZYZ_GO_BUILD_P=2 emits -p=2" "-p=2"
+    t12_emit "ZYZ_GO_BUILD_P=64 (upper boundary, inclusive)" ZYZ_GO_BUILD_P=64
+    t12_contains "ZYZ_GO_BUILD_P=64 emits -p=64 (boundary in range)" "-p=64"
+    t12_emit "ZYZ_GO_BUILD_P=999 (over the 64 clamp)" ZYZ_GO_BUILD_P=999
+    t12_contains "ZYZ_GO_BUILD_P=999 falls back to -p=4 (clamped)" "-p=4"
+    t12_absent "ZYZ_GO_BUILD_P=999 does NOT pass 999 through" "-p=999"
+    t12_emit "ZYZ_GO_BUILD_P=65 (just over boundary)" ZYZ_GO_BUILD_P=65
+    t12_contains "ZYZ_GO_BUILD_P=65 falls back to -p=4 (just over 64)" "-p=4"
+    t12_emit "ZYZ_GO_BUILD_P=abc (non-numeric)" ZYZ_GO_BUILD_P=abc
+    t12_contains "ZYZ_GO_BUILD_P=abc falls back to -p=4" "-p=4"
+    t12_emit "ZYZ_GO_BUILD_P=0 (not a positive integer)" ZYZ_GO_BUILD_P=0
+    t12_contains "ZYZ_GO_BUILD_P=0 falls back to -p=4" "-p=4"
+
+    # =====================================================================
+    # (D) tmpfs base dir override + single-quote rejection.
+    # =====================================================================
+    t12_emit "ZYZ_GO_TMPFS_DIR=/custom" ZYZ_GO_TMPFS_DIR=/custom
+    t12_contains "ZYZ_GO_TMPFS_DIR=/custom references /custom base" "/custom"
+    t12_contains "ZYZ_GO_TMPFS_DIR=/custom builds /custom/zyz-gobuild" "/custom/zyz-gobuild"
+    # A value containing a single quote would break the single-quote wrapping in
+    # the emitted snippet, so the helper must REJECT it and fall back to
+    # /dev/shm.  We pass a literal `/ev'il` candidate and assert the output uses
+    # /dev/shm and never echoes the quoted candidate.
+    t12_emit "ZYZ_GO_TMPFS_DIR=/ev'il (single quote)" "ZYZ_GO_TMPFS_DIR=/ev'il"
+    t12_contains "ZYZ_GO_TMPFS_DIR with single quote falls back to /dev/shm" "/dev/shm"
+    t12_absent "ZYZ_GO_TMPFS_DIR with single quote does NOT use the quoted value" "/ev'il"
+
+    # =====================================================================
+    # (E) RUNTIME contract — `eval` the snippet in a CLEAN subshell and observe
+    #     the resulting GOTMPDIR / GOFLAGS.  THE most important assertions.
+    # =====================================================================
+    t12_runtime_degrade
+    t12_runtime_tmpfs_present
+    t12_runtime_no_clobber
+
+    # =====================================================================
+    # (F) WIRING consistency — both injection points call the helper.
+    # =====================================================================
+    t12_wiring_guard
+}
+
+# t12_eval_capture <snippet> <preset-GOTMPDIR-or-empty> <preset-GOFLAGS-or-empty>
+#   :: sets T12_EVAL_GOTMPDIR and T12_EVAL_GOFLAGS to the post-eval values.
+# Runs the snippet in a CLEAN child bash with `env -i` so NOTHING from the
+# operator's environment leaks in.  When a preset value is non-empty it is
+# pre-exported BEFORE the eval, to simulate a pane that already inherited that
+# var (the no-clobber scenario).  After eval, the child prints the two vars on
+# two delimited lines which we parse out.  The sentinel `__UNSET__` distinguishes
+# "variable not set at all" from "set to empty string".
+T12_EVAL_GOTMPDIR=""
+T12_EVAL_GOFLAGS=""
+t12_eval_capture() {
+    local snippet="$1"
+    local preset_tmpdir="$2"
+    local preset_goflags="$3"
+    # Build the child program.  We pre-export presets (only when non-empty),
+    # eval the snippet, then emit the two vars with an unambiguous sentinel.
+    local preset_block=""
+    if [ -n "$preset_tmpdir" ]; then
+        preset_block="export GOTMPDIR='$preset_tmpdir'; "
+    fi
+    if [ -n "$preset_goflags" ]; then
+        preset_block="${preset_block}export GOFLAGS='$preset_goflags'; "
+    fi
+    local prog
+    prog="${preset_block}eval \"\$SNIPPET\"; printf 'GOTMPDIR=%s\n' \"\${GOTMPDIR-__UNSET__}\"; printf 'GOFLAGS=%s\n' \"\${GOFLAGS-__UNSET__}\""
+    local out
+    # SNIPPET is passed via env so quoting inside it survives intact; PATH gives
+    # the eval'd snippet access to mkdir/[ etc.
+    out="$(env -i PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" \
+        SNIPPET="$snippet" bash -c "$prog" 2>/dev/null)"
+    T12_EVAL_GOTMPDIR="$(printf '%s\n' "$out" | sed -n 's/^GOTMPDIR=//p')"
+    T12_EVAL_GOFLAGS="$(printf '%s\n' "$out" | sed -n 's/^GOFLAGS=//p')"
+}
+
+# Runtime case 1: base dir absent/non-writable => auto-degrade.
+#   Point ZYZ_GO_TMPFS_DIR at a guaranteed-nonexistent path.  In a clean pane
+#   (GOTMPDIR/GOFLAGS unset) the snippet's `[ -d ] && [ -w ]` probe is FALSE, so
+#   GOTMPDIR must stay UNSET while GOFLAGS is still set.  This is the
+#   macOS-no-/dev/shm degrade path and MUST pass on the macOS test host.
+t12_runtime_degrade() {
+    if [ ! -x "$REPO_ROOT/scripts/orch-build-env.sh" ]; then
+        skip "T12 runtime-degrade (helper missing)"
+        return
+    fi
+    local nonexistent="/nonexistent-zyz-xyz-$$-degrade"
+    t12_emit "degrade base" "ZYZ_GO_TMPFS_DIR=$nonexistent"
+    if [ -z "$T12_OUT" ]; then
+        fail "T12 runtime-degrade — helper produced empty snippet (cannot eval)"
+        return
+    fi
+    t12_eval_capture "$T12_OUT" "" ""
+    if [ "$T12_EVAL_GOTMPDIR" = "__UNSET__" ]; then
+        pass "T12 runtime-degrade: GOTMPDIR stays UNSET when base dir is absent (auto-degrade)"
+    else
+        fail "T12 runtime-degrade: expected GOTMPDIR UNSET (degrade) but it was set to '$T12_EVAL_GOTMPDIR' (base '$nonexistent' must not exist)"
+    fi
+    if [ "$T12_EVAL_GOFLAGS" = "-p=4" ]; then
+        pass "T12 runtime-degrade: GOFLAGS still set to -p=4 even when GOTMPDIR degraded"
+    else
+        fail "T12 runtime-degrade: expected GOFLAGS='-p=4' (set regardless of tmpfs) but got '$T12_EVAL_GOFLAGS'"
+    fi
+}
+
+# Runtime case 2: real writable temp base => GOTMPDIR set + dir created.
+#   Use mktemp -d as ZYZ_GO_TMPFS_DIR.  In a clean pane the probe passes, the
+#   snippet mkdir -p's <base>/zyz-gobuild and exports GOTMPDIR to it.  Assert the
+#   value AND that the directory now exists.  Clean up after.
+t12_runtime_tmpfs_present() {
+    if [ ! -x "$REPO_ROOT/scripts/orch-build-env.sh" ]; then
+        skip "T12 runtime-tmpfs-present (helper missing)"
+        return
+    fi
+    local tmpbase
+    tmpbase="$(mktemp -d "${TMPDIR:-/tmp}/zyz-gobuild-t12.XXXXXX")" || {
+        skip "T12 runtime-tmpfs-present (mktemp -d failed)"
+        return
+    }
+    t12_emit "real tmpfs base" "ZYZ_GO_TMPFS_DIR=$tmpbase"
+    if [ -z "$T12_OUT" ]; then
+        fail "T12 runtime-tmpfs-present — helper produced empty snippet (cannot eval)"
+        rm -rf "$tmpbase"
+        return
+    fi
+    t12_eval_capture "$T12_OUT" "" ""
+    local expected="$tmpbase/zyz-gobuild"
+    if [ "$T12_EVAL_GOTMPDIR" = "$expected" ]; then
+        pass "T12 runtime-tmpfs-present: GOTMPDIR set to '$expected'"
+    else
+        fail "T12 runtime-tmpfs-present: expected GOTMPDIR='$expected' but got '$T12_EVAL_GOTMPDIR'"
+    fi
+    if [ -d "$expected" ]; then
+        pass "T12 runtime-tmpfs-present: GOTMPDIR directory '$expected' was created by mkdir -p"
+    else
+        fail "T12 runtime-tmpfs-present: GOTMPDIR directory '$expected' was NOT created"
+    fi
+    rm -rf "$tmpbase"
+}
+
+# Runtime case 3: no-clobber — a pane that already has GOTMPDIR/GOFLAGS keeps
+#   them, even with a real writable base that WOULD otherwise set GOTMPDIR.
+#   Preset GOTMPDIR=/preset/keep and GOFLAGS=-p=9 in the (clean) child, then eval
+#   the snippet built from a real writable base; assert BOTH stayed unchanged.
+t12_runtime_no_clobber() {
+    if [ ! -x "$REPO_ROOT/scripts/orch-build-env.sh" ]; then
+        skip "T12 runtime-no-clobber (helper missing)"
+        return
+    fi
+    local tmpbase
+    tmpbase="$(mktemp -d "${TMPDIR:-/tmp}/zyz-gobuild-t12nc.XXXXXX")" || {
+        skip "T12 runtime-no-clobber (mktemp -d failed)"
+        return
+    }
+    # Emit a snippet whose baked base IS writable, so the ONLY thing stopping the
+    # export is the `-z` no-clobber guard reacting to the preset.
+    t12_emit "no-clobber base" "ZYZ_GO_TMPFS_DIR=$tmpbase"
+    if [ -z "$T12_OUT" ]; then
+        fail "T12 runtime-no-clobber — helper produced empty snippet (cannot eval)"
+        rm -rf "$tmpbase"
+        return
+    fi
+    t12_eval_capture "$T12_OUT" "/preset/keep" "-p=9"
+    if [ "$T12_EVAL_GOTMPDIR" = "/preset/keep" ]; then
+        pass "T12 runtime-no-clobber: preset GOTMPDIR='/preset/keep' preserved (not overwritten)"
+    else
+        fail "T12 runtime-no-clobber: preset GOTMPDIR='/preset/keep' was CLOBBERED to '$T12_EVAL_GOTMPDIR' (no-clobber guard failed)"
+    fi
+    if [ "$T12_EVAL_GOFLAGS" = "-p=9" ]; then
+        pass "T12 runtime-no-clobber: preset GOFLAGS='-p=9' preserved (not overwritten)"
+    else
+        fail "T12 runtime-no-clobber: preset GOFLAGS='-p=9' was CLOBBERED to '$T12_EVAL_GOFLAGS' (no-clobber guard failed)"
+    fi
+    # Defensive: the writable base proves the export WOULD have fired absent the
+    # preset (the directory gets created by the eval regardless, since mkdir runs
+    # before the export in the && chain ONLY when -z passes; here -z fails first,
+    # so the subdir must NOT exist — confirming the guard short-circuited early).
+    if [ ! -d "$tmpbase/zyz-gobuild" ]; then
+        pass "T12 runtime-no-clobber: subdir NOT created (no-clobber short-circuits before mkdir)"
+    else
+        fail "T12 runtime-no-clobber: '$tmpbase/zyz-gobuild' was created — mkdir ran despite preset GOTMPDIR (guard ordering wrong)"
+    fi
+    rm -rf "$tmpbase"
+}
+
+# Wiring-consistency guard: BOTH spawn and reuse source-call orch-build-env.sh,
+# in lockstep, so the two injection points cannot drift.  Fixed-string grep
+# against each file (design §Testing Plan "一致性守护").
+t12_wiring_guard() {
+    check_grep_fixed "scripts/orch-spawn-worker.sh" \
+        "T12 wiring: spawn calls orch-build-env.sh (injection point 1)" \
+        "orch-build-env.sh"
+    check_grep_fixed "scripts/orch-reuse-worker.sh" \
+        "T12 wiring: reuse calls orch-build-env.sh (injection point 2, worktree scope)" \
+        "orch-build-env.sh"
+
+    # NEGATIVE lockstep half (design Testing Plan): the reuse injection is
+    # scoped to the `worktree)` branch ONLY — it must NOT also fire in the
+    # `tmux|both)` scope, where the pane runs an ALREADY-STARTED claude whose env
+    # is frozen and into which send-keys'ing shell is harmful.  Proof: the call
+    # appears EXACTLY ONCE in reuse, and that one occurrence is positioned BEFORE
+    # the `tmux|both)` dispatch branch label that handles the send-keys path
+    # (line ~449).  Both together pin the call to the worktree branch so a future
+    # edit cannot leak it into the live-claude path.
+    local reuse="$REPO_ROOT/scripts/orch-reuse-worker.sh"
+    if [ ! -f "$reuse" ]; then
+        fail "T12 wiring(neg): scripts/orch-reuse-worker.sh missing (cannot scope-check injection)"
+    else
+        local n_calls
+        n_calls="$(grep -cF "orch-build-env.sh" "$reuse" 2>/dev/null || echo 0)"
+        if [ "$n_calls" -eq 1 ]; then
+            pass "T12 wiring(neg): reuse calls orch-build-env.sh EXACTLY once (not in tmux|both scope)"
+        else
+            fail "T12 wiring(neg): reuse has $n_calls orch-build-env.sh occurrences (expected exactly 1 — an extra occurrence risks injecting into a live-claude tmux|both pane)"
+        fi
+        # The single injection line must precede the LAST `tmux|both)` dispatch
+        # scope label (the branch that send-keys into the reused live pane).
+        local inj_line tmuxboth_line
+        inj_line="$(grep -nF "orch-build-env.sh" "$reuse" 2>/dev/null | tail -1 | cut -d: -f1)"
+        tmuxboth_line="$(grep -nE '^[[:space:]]*tmux\|both\)' "$reuse" 2>/dev/null | tail -1 | cut -d: -f1)"
+        if [ -n "$inj_line" ] && [ -n "$tmuxboth_line" ] && [ "$inj_line" -lt "$tmuxboth_line" ]; then
+            pass "T12 wiring(neg): reuse injection (line $inj_line) precedes the tmux|both dispatch branch (line $tmuxboth_line) — scoped to worktree)"
+        else
+            fail "T12 wiring(neg): reuse injection line ($inj_line) is NOT before the tmux|both branch label ($tmuxboth_line) — injection may have leaked into the live-claude scope"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 echo "Running orchestration-scheduling-task test suite"
@@ -5072,6 +5487,7 @@ run_T9
 run_T10
 run_T11_confirm
 run_T11_merge
+run_T12
 
 echo
 echo "============================================================"

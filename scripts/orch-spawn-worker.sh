@@ -315,6 +315,16 @@ tmux send-keys -t "$TMUX_SESSION" \
     "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
     Enter
 
+# Step 9b: inject Go build I/O optimization (GOTMPDIR tmpfs + GOFLAGS=-p=N) into
+# the pane BEFORE the L2 driver starts claude, so claude's `go build` children
+# inherit it. orch-build-env.sh bakes the candidate values and the snippet's own
+# in-pane guards handle no-clobber + auto-degrade. Non-blocking: if the helper is
+# missing or errors, BUILD_ENV_LINE is empty and we simply skip injection.
+BUILD_ENV_LINE="$("$SCRIPT_DIR/orch-build-env.sh" 2>/dev/null || true)"
+if [ -n "$BUILD_ENV_LINE" ]; then
+    tmux send-keys -t "$TMUX_SESSION" "$BUILD_ENV_LINE" Enter
+fi
+
 # Step 10: write the Phase-1 dispatch.md (atomic). This is the LAST step —
 # dispatch.md presence reliably means "spawn ran preflight to completion". The
 # check helper (orch-check-worker.sh) lazily fills the Phase-2 fields on later

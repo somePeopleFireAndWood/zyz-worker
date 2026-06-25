@@ -50,6 +50,52 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 
 落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## Container Reuse`。
 
+## Go 构建 I/O 优化注入（Go build I/O optimization）
+
+多个 worker 并行在各自 worktree 里跑 `go build ./...` 时，**总编译并行 ≈ worker 数 × 每个 build 的 `-p`**（`-p` 默认 = NumCPU，常为 16）。worker 不限本身没问题，真正会把单块磁盘 I/O 打满的是「每个 build 又各自十几路链接、且中间产物全写同一块盘」这个二次放大。
+
+为消除这个雪崩，orchestrator **默认**在派发每个 worker 时，向其 tmux pane 注入两项 Go 构建 env（注入发生在 L2 启动 claude **之前**，故 claude 派生的 `go build` 子进程继承之）：
+
+- `GOTMPDIR` 指向一块 tmpfs 内存盘（默认 `/dev/shm/zyz-gobuild`）——把链接中间产物从磁盘移到内存盘。
+- `GOFLAGS=-p=N`（默认 `N=4`）——压低单个 build 的编译/链接并发。
+
+注入由独立 helper `scripts/orch-build-env.sh` 产出片段、由 `orch-spawn-worker.sh`（标准 spawn）与 `orch-reuse-worker.sh` 的 `worktree` scope 分支送进 pane（same/restart-claude 复用一个已启动的 claude，其 env 已冻结，故**不**注入）。
+
+### 可调开关（在 orchestrator 宿主侧读取）
+
+| env | 默认 | 作用 |
+|---|---|---|
+| `ZYZ_GO_BUILD_OPT` | 开启 | 设 `0` / `false` / `off` / `no`（大小写不敏感）关闭全部构建优化注入 |
+| `ZYZ_GO_BUILD_P` | `4` | 注入的 `GOFLAGS=-p=N` 的 N（单 build 编译并发）；非正整数或 **> 64** 一律回落 `4`（`-p` 是唯一能把事故重新引爆的旋钮，故钳上限） |
+| `ZYZ_GO_TMPFS_DIR` | `/dev/shm` | tmpfs 基目录候选；运行期探测其**存在且可写**才设 `GOTMPDIR` |
+
+### 关键语义
+
+- **总并行 = worker × p，靠调小 `p` 控盘**，而不是靠减少 worker 数。
+- **自动降级（跨平台）**：探测是在 pane 内做「目录存在且可写」，探测不到（如 **macOS 无 `/dev/shm`**）就**跳过 `GOTMPDIR`**、绝不指向不存在的目录（Go 不会自动创建 `GOTMPDIR`，指向不存在目录会让 build 失败）；`GOFLAGS=-p` 在任何平台都注入。
+- **绝不覆盖用户 env**：pane 里若已有 `GOTMPDIR` / `GOFLAGS`（含你在宿主 shell 里先 `export` 再起 orchestrator 的情形），注入逻辑跳过对应项，你的值永远胜出。
+- **`GOCACHE` 保持默认**（磁盘持久化，跨 build 复用），**永不**设 `GOMAXPROCS`。
+- **探测是「存在且可写」，不是「文件系统类型 = tmpfs」**（脚枪提示）：把 `ZYZ_GO_TMPFS_DIR` 指向一个普通磁盘目录也会「探测成功」并把中间产物**写到磁盘上**——这是用户自负的风险。
+
+### tmpfs 撑爆风险与观察命令
+
+无上限 worker 并行编译时，tmpfs 占用 ≈ 同时活跃的各 build 中间产物之和，**有撑爆风险**（撑爆 = 吃物理内存，会导致 build 失败 + 加剧内存压力）。本插件**不**在代码里给 tmpfs 设独立 size 上限（那属于资源感知派发的范畴，另开任务）。请用以下命令观察：
+
+```sh
+watch -n5 'df -h /dev/shm; free -h'
+```
+
+真冲高了可以给 tmpfs 设独立上限、把 `ZYZ_GO_TMPFS_DIR` 退回磁盘目录、或直接 `ZYZ_GO_BUILD_OPT=0` 关闭注入。
+
+### standalone（非 orchestrated）用户手动设置
+
+standalone `execute-task` 是单 worker、用户直接起 claude、不经过 spawn，故代码**不**注入。需要同等优化的话，在起 claude 前手动 `export` 即可（注意 `GOTMPDIR` 须存在且可写）：
+
+```sh
+mkdir -p /dev/shm/zyz-gobuild && export GOTMPDIR=/dev/shm/zyz-gobuild
+export GOFLAGS=-p=4
+```
+
 ## 安装与使用
 
 当前 `zyz-worker` 还没有发布到 Codex 或 Claude Code 的官方 marketplace。现阶段推荐按本地插件/项目配置方式安装。

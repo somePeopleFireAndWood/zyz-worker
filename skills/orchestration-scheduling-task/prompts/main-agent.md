@@ -36,6 +36,9 @@ The orchestrator's source of truth is the master list directory `<list-dir>` on 
   - `ZYZ_HEARTBEAT_STALE_SEC` (default 300)
   - `ZYZ_HEARTBEAT_WAITING_USER_SEC` (default 900)
   - `ZYZ_MAX_PARALLEL_WORKERS` (default -1 = unlimited; set a positive integer to cap). **Resource caveat:** each worker = 1 tmux session + 1 git worktree + 1 full `claude` process (running the entire `execute-task` workflow including its own subagents) — far heavier than a prompt-only subagent. With no cap, watch API quota / memory / disk. Set a positive cap to limit.
+  - `ZYZ_GO_BUILD_OPT` (default on; set `0`/`false`/`off`/`no` to disable) — toggles injecting Go build I/O optimization (`GOTMPDIR` tmpfs + `GOFLAGS=-p`) into each dispatched worker's pane before claude starts.
+  - `ZYZ_GO_BUILD_P` (default 4; clamped ≤ 64, illegal/over-cap values fall back to 4) — the N in the injected `GOFLAGS=-p=N`. **Total compile parallelism = workers × p**; lower this, not worker count, to relieve disk I/O.
+  - `ZYZ_GO_TMPFS_DIR` (default `/dev/shm`) — tmpfs base dir candidate for `GOTMPDIR`. Probed in-pane for **existence + writability** (auto-degrades on hosts without tmpfs, e.g. macOS); it is NOT a filesystem-type check, so pointing it at a plain disk dir writes intermediates to disk.
   - `ZYZ_ORCH_ONCE=1` — when set, the orchestrator runs a single tick and returns without self-scheduling, even under `/loop`; unset (default) means a bare `/orchestrate-tasks` enters auto-timer mode and self-schedules via `ScheduleWakeup`.
 
 ## Startup

@@ -433,6 +433,13 @@ case "$REUSE_SCOPE" in
         tmux send-keys -t "$TMUX_SESSION" \
             "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
             Enter
+        # Inject Go build I/O optimization (worktree scope ONLY: new session/new
+        # pane/new claude, same shape as spawn). The tmux|both branches reuse an
+        # already-started claude whose env is frozen, so they do NOT get this.
+        BUILD_ENV_LINE="$("$SCRIPT_DIR/orch-build-env.sh" 2>/dev/null || true)"
+        if [ -n "$BUILD_ENV_LINE" ]; then
+            tmux send-keys -t "$TMUX_SESSION" "$BUILD_ENV_LINE" Enter
+        fi
         # Read back the new session's pane coordinates (one window, one pane).
         TMUX_PANE_INFO="$(tmux list-panes -t "$TMUX_SESSION" -F '#{window_id} #{pane_id} #{pane_pid}' | head -1)"
         TMUX_WINDOW_ID="$(echo "$TMUX_PANE_INFO" | awk '{print $1}')"
