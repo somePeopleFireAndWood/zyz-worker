@@ -39,7 +39,7 @@ Starting claude exactly once is the key correctness point. The same worker can b
 2. **Launch only on a bare shell prompt.** Only if the pane shows a bare shell prompt (no claude UI) do you launch. `tmux send-keys -t <tmux-pane-id>` the command, then send `Enter`:
 
    ```
-   claude --plugin-dir '<plugin-root>' --permission-mode bypassPermissions --dangerously-skip-permissions
+   claude --plugin-dir '<plugin-root>' --permission-mode bypassPermissions --dangerously-skip-permissions --settings '{"ultracode": true}'
    ```
 
    - **Parent-shell invariant (hard constraint).** Send the keystrokes into the recorded pane (`tmux-pane-id`) so claude becomes a DIRECT child of `shell-pid`. NEVER wrap the launch in `nohup`, `setsid`, a subshell `( … )`, a `&` background job, a new tmux window, or a new pane. ANY reparent breaks `pgrep -P <shell-pid> -n -x claude` in `orch-check-worker.sh`, which in turn breaks all of dispatch.md's Phase-2 binding and crash recovery. Cross-reference the SKILL.md section "How dispatch.md binding works (and why Phase-2 is lazy)": the claude process must be a direct child of the pane shell, which is why `pgrep -P <shell-pid>` finds it.
@@ -106,7 +106,7 @@ Three branches by `reuse-claude-effective`:
   5. Flush `monitor.md`: `driver-intent=reuse-dispatch`, `claude-started=true` (claude was already running), then fall through to the Observe step and return a summary.
 - **restart-claude reuse** (`reuse-claude-effective=false`): claude must be RESTARTED in the reused session's pane (clean handshake escape hatch).
   1. **Exit the old claude back to a shell.** `send-keys` the exit-to-shell sequence (e.g. `/exit`, or your existing "quit to shell" judgment), then **`capture-pane` to CONFIRM the old claude has fully exited to a bare shell prompt before relaunching** — this guard is mandatory (S2): if you relaunch during the exit/launch window, `orch-check-worker.sh`'s `pgrep -P <shell-pid> -n -x claude` (`-n` = newest) can bind to the dying old process. Do not relaunch until the pane shows a bare shell prompt.
-  2. **Run the first-dispatch launch flow** in that pane (launch `claude --plugin-dir <plugin-root> --permission-mode bypassPermissions --dangerously-skip-permissions`, clear the trust-folder and bypass-risk confirmation pages, readiness-probe). Honor the parent-shell invariant: launch in the recorded pane, never reparent.
+  2. **Run the first-dispatch launch flow** in that pane (launch `claude --plugin-dir <plugin-root> --permission-mode bypassPermissions --dangerously-skip-permissions --settings '{"ultracode": true}'`, clear the trust-folder and bypass-risk confirmation pages, readiness-probe). Honor the parent-shell invariant: launch in the recorded pane, never reparent.
   3. **Send the in-band runtime-config block** (above) into the pane, then `Enter`. The restarted claude inherits the pane shell's STALE env (`ZYZ_TASK_ID=<old-id>` etc.), so the in-band block is still required to give it the new task's authoritative paths — do not rely on env reset.
   4. **Send the command** `/zyz-worker:execute-task <new-task-id>` + `Enter`, then the Unknown-command check (same as first-dispatch).
   5. Flush `monitor.md`: `driver-intent=reuse-dispatch`, `claude-started=true` (after the readiness probe passes). Fall through to Observe and return a summary.

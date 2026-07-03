@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.8.1] — 2026-07-03
+
+This release enables **ultracode (dynamic workflow) in dispatched workers**: the orchestration-scheduling-task skill now launches each worker's `claude` with `--settings '{"ultracode": true}'` in addition to the existing bypass-permission flags, so every worker session runs with dynamic multi-agent workflow orchestration enabled.
+
+### Changed
+- **Worker launch command** is now `claude --plugin-dir <plugin-root> --permission-mode bypassPermissions --dangerously-skip-permissions --settings '{"ultracode": true}'` in all places that define it: the L2 driver's `first-dispatch` launch flow and `reuse-dispatch` restart-claude branch (`subagents/orch-driver-agent.md` + mirrored `agents/orch-driver-agent.md`), the L1 orchestrator dispatch-step description (`skills/orchestration-scheduling-task/prompts/main-agent.md`), and the e2e test's simulated launch (`scripts/test-e2e-layered.sh`).
+- Recovery `claude --resume` commands are intentionally unchanged (they carry no permission/settings flags).
+- **Version bump 0.8.0 → 0.8.1** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated); `scripts/test-release-0-5-0.sh` `EXPECTED_VERSION` aligned.
+
 ## [0.8.0] — 2026-06-26
 
 This release adds **Go build I/O optimization injection** to the `orchestration-scheduling-task` skill. Many parallel workers each running `go build ./...` saturate a single disk because total compile parallelism ≈ (worker count) × (each build's `-p`, default ≈ NumCPU) and all link intermediates write to disk. Each dispatched worker now, by default, gets `GOTMPDIR` pointed at a tmpfs RAM disk and `GOFLAGS=-p=N` lowering per-build concurrency, injected into its pane before claude starts. Cross-platform with graceful auto-degrade (hosts without tmpfs, e.g. macOS, simply skip `GOTMPDIR`); never clobbers user env; never touches `GOCACHE`/`GOMAXPROCS`.

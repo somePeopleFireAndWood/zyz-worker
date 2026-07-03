@@ -411,7 +411,7 @@ echo "=== A2: parent-shell invariant (L2 first-dispatch launch) ==="
 # break pgrep -P <shell-pid>. Use the plugin-root recorded in dispatch.md (fall
 # back to PLUGIN_ROOT if somehow empty).
 LAUNCH_PLUGIN_ROOT="${DISPATCH_PLUGIN_ROOT:-$PLUGIN_ROOT}"
-LAUNCH_CMD="claude --plugin-dir '$LAUNCH_PLUGIN_ROOT' --permission-mode bypassPermissions --dangerously-skip-permissions"
+LAUNCH_CMD="claude --plugin-dir '$LAUNCH_PLUGIN_ROOT' --permission-mode bypassPermissions --dangerously-skip-permissions --settings '{\"ultracode\": true}'"
 info "send-keys launch into pane $PANE_ID: $LAUNCH_CMD"
 tmux send-keys -t "$PANE_ID" "$LAUNCH_CMD" Enter
 
