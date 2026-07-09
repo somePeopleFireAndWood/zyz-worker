@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.9.0] — 2026-07-09
+
+This release adds a new skill-only artifact **`clean-tmp`**: a cross-platform (macOS + Linux) skill for safely cleaning up the current user's leftover temporary files, adapted from a Linux-only source skill while preserving its full safety contract (inventory → user confirms → delete; never `rm -rf /tmp/*`; named deletion lists only; never touch other users' files; when uncertain, keep). Like `git-worktree`, it is skill-only (no slash command) and triggers via its `description`.
+
+### Added
+- **`skills/clean-tmp/SKILL.md`** — cross-platform safe temp-directory cleanup, skill-only like `git-worktree`. Adapted from a Linux-only source into macOS + Linux double-coverage: enumerates temp roots by `$TMPDIR` presence (not OS name) so both `/tmp` and macOS's per-user `$TMPDIR` (`/var/folders/**/T/`) are covered; POSIX inventory via `find -user "$(id -un)"` + `du -sk` (no GNU `-printf`); socket liveness via a dual branch (`ss -lxp` preferred on Linux, `lsof -nP` fallback on macOS/no-ss) with `kill -0` process-alive re-check (replacing Linux-only `/proc/$pid`); "holder undetermined → keep" default so live sockets are never silently deleted; a **root-relative default keep-list** (`claude-*`, `tmux-<uid>`, `mcp-*`, `ssh-*` protected under every enumerated root), correcting the source's false claim that the macOS tmux socket lives in `/tmp` — it is at `$TMPDIR/tmux-<uid>/`, which the repo's tmux-based orchestration workers depend on.
+
+### Changed
+- **Version bump 0.8.1 → 0.9.0** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated).
+- **README skill enumerations updated in lockstep** — both the `## 当前状态` bullet list and the `## 仓库结构` ASCII tree now list `skills/clean-tmp/SKILL.md`; `docs/conventions/project-structure.md` notes `clean-tmp` as a `SKILL.md`-only utility skill.
+- **New static-check test `scripts/test-clean-tmp-skill.sh`** added (macOS bash 3.2 + Linux compatible) verifying skill existence, frontmatter, three-manifest version consistency at 0.9.0, cross-platform/safety lint of the skill body, doc wiring, the CHANGELOG section, and a pack smoke test; `scripts/test-release-0-5-0.sh` `EXPECTED_VERSION` aligned to 0.9.0.
+
 ## [0.8.1] — 2026-07-03
 
 This release enables **ultracode (dynamic workflow) in dispatched workers**: the orchestration-scheduling-task skill now launches each worker's `claude` with `--settings '{"ultracode": true}'` in addition to the existing bypass-permission flags, so every worker session runs with dynamic multi-agent workflow orchestration enabled.

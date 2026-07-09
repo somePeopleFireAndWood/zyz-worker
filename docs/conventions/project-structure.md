@@ -84,6 +84,8 @@ skills/
 
 Use `templates/` for reusable output shapes and `references/` for supporting material that the skill may load on demand.
 
+A skill may be a lightweight utility that ships only a `SKILL.md` (no `prompts/` or `templates/`), such as `git-worktree` or the cross-platform temp-directory cleanup skill `clean-tmp`.
+
 ### `subagents/`
 
 Shared prompt-only subagent definitions belong here when the project starts modeling separate roles such as product analysis, technical design, implementation, or testing.
