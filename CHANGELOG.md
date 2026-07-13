@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.9.2] — 2026-07-13
+
+This release hardens the design→implementation approval gate so the main agent never self-advances into implementation on user timeout, silence, or absence; it must wait for explicit user approval. The only exception is an explicit prior instruction that specifically authorizes skipping this gate (recorded verbatim to disk); generic trust/autonomy statements and bare goal statements do not count.
+
+### Changed
+- **execute-task gate wording hardened** in `skills/execute-task/SKILL.md` and `skills/execute-task/prompts/main-agent.md`: the design→implementation step is now an unconditional hard wait (WAIT indefinitely on timeout/absence, never self-advance); the Automatic Execution Policy's "final approval" escalation clause is reframed as a hard stop that cannot be satisfied-and-passed; the "proceed without asking" / "prefer continuing through non-blocking ambiguity" postures are explicitly carved out from this gate.
+- **Skip exception narrowed and made auditable**: only an instruction explicitly authorizing skipping THIS gate qualifies; it must be recorded verbatim in the status file before self-advancing. A material change to the approved approach (Goals, Acceptance Criteria, Implementation Plan, architecture, or Files To Change) re-arms the gate and requires fresh approval.
+- **Orchestrated mode**: a new hard rule requires flushing `wait-state=waiting-user` while holding `phase=design`, approving only via pane attach or a question-id'd `answer.md` (orchestrator never relays design approval), and recording the approval/skip to disk before `phase=implementation` so a resuming worker gates on the on-disk record, not `phase` alone. The phase-mapping implementation-dispatch row is annotated "on user approval only — never autonomous." No new `phase` enum value added.
+- **New `templates/task-status.md` field** `Design Approval Record` under `## Design Review` to hold the auditable approval/skip record.
+- **Version bump 0.9.1 → 0.9.2** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated).
+- **EXPECTED_VERSION aligned to 0.9.2** in both `scripts/test-release-0-5-0.sh` and `scripts/test-clean-tmp-skill.sh` (those two edits are made by test-agent; recorded here for completeness).
+
 ## [0.9.1] — 2026-07-13
 
 This release adds guidance emphasizing that fix / repair / backfill / migration scripts must be validated locally on fabricated (synthetic) representative data before touching real data. The typical failure mode for such one-off data-mutating scripts is that their first run against real data is also their first test — a logic error there causes irreversible damage. The new guidance lands in the roles that write, test, and plan for these scripts, without becoming a hard delivery gate (it applies only when a task actually produces such a script).

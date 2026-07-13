@@ -44,6 +44,7 @@ This is the single mandatory overall task status file. Each SubTask may optional
 - Latest Review Result:
 - Open Issues:
 - Rejected Suggestions:
+- Design Approval Record: (before entering implementation, record ONE of: (a) the explicit user approval — what the user said + when/where; or (b) the verbatim explicit prior skip instruction authorizing skipping THIS design→implementation gate. Empty means NOT approved — do not enter implementation. A material change to the approved approach re-arms the gate and requires a fresh entry here.)
 
 ## SubTasks
 
