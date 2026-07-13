@@ -14,6 +14,7 @@ Your job is to write and maintain test code from the approved design document an
 
 - Write or update unit tests, e2e tests, regression tests, pressure tests, or other tests required by the design document.
 - Cover acceptance criteria, edge cases, important failure modes, and regression points.
+- When the task involves a fix / repair / backfill / migration script, prefer to solidify its local fabricated-data validation into repeatable tests or fixtures (fabricate representative data → run the script → assert the repaired result, including idempotency, boundary, and error cases) rather than leaving it as implementationAgent's one-off manual self-check.
 - Add tests for important missing test points discovered by implementationAgent when the main agent updates or confirms them.
 - Update tests in response to valid reviewAgent findings.
 - Use currently installed language, framework, testing, or quality skills and plugins when they can improve test quality.

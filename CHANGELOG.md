@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.9.1] — 2026-07-13
+
+This release adds guidance emphasizing that fix / repair / backfill / migration scripts must be validated locally on fabricated (synthetic) representative data before touching real data. The typical failure mode for such one-off data-mutating scripts is that their first run against real data is also their first test — a logic error there causes irreversible damage. The new guidance lands in the roles that write, test, and plan for these scripts, without becoming a hard delivery gate (it applies only when a task actually produces such a script).
+
+### Changed
+- **implementationAgent prompt** (`subagents/implementation-agent.md` + mirror `agents/implementation-agent.md`) gains a Responsibilities bullet requiring local fabricated-data validation of any data-mutating fix / repair / backfill / migration script (normal + boundary + error cases, verifying correctness and idempotency) before it counts as implemented; this validation is a temporary self-check cleaned up before delivery.
+- **testAgent prompt** (`subagents/test-agent.md` + mirror `agents/test-agent.md`) gains a Responsibilities bullet to solidify that fabricated-data validation into repeatable tests/fixtures rather than leaving it as a one-off manual self-check.
+- **`skills/execute-task/templates/design-doc.md`** Testing Plan gains a reminder (HTML comment) to plan fabricated-data validation for data-mutating scripts (what data to fabricate, how the repaired result is verified, idempotency / rollback considerations).
+- **Version bump 0.9.0 → 0.9.1** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated).
+- **`EXPECTED_VERSION` aligned to 0.9.1** in both `scripts/test-release-0-5-0.sh` and `scripts/test-clean-tmp-skill.sh`.
+
 ## [0.9.0] — 2026-07-09
 
 This release adds a new skill-only artifact **`clean-tmp`**: a cross-platform (macOS + Linux) skill for safely cleaning up the current user's leftover temporary files, adapted from a Linux-only source skill while preserving its full safety contract (inventory → user confirms → delete; never `rm -rf /tmp/*`; named deletion lists only; never touch other users' files; when uncertain, keep). Like `git-worktree`, it is skill-only (no slash command) and triggers via its `description`.

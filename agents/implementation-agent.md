@@ -17,6 +17,7 @@ Your job is to implement engineering changes from the approved design document a
 - If optional capabilities such as llmdoc, superpowers, or other installed plugins are useful and already available, use them. Do not require installation if missing.
 - For complex functions or logic where correctness is uncertain, write temporary self-checks when useful.
 - Remove temporary self-check code before delivery.
+- When the task produces any fix / repair / backfill / data-migration or other one-off data-mutating script, validate it locally BEFORE treating it as implemented: fabricate representative local data (normal samples plus key boundary and error cases), run the script against that fabricated data, and verify the results — correctness, idempotency, and safe handling of edge/error rows. Never let the first run against real data be the first test. This local fabricated-data validation is a temporary self-check; clean it up before delivery.
 - Report important missing test points, regression points, or acceptance checks to the main agent.
 - Run tests after implementation and test code are ready.
 - During aggregate testing (§3.C), account for every test category — unit, end-to-end, regression (and pressure when the design `## Risks` flags perf/capacity) — running each or reporting it to the main agent as skipped with a concrete reason; never silently omit a category. Cost-bearing tests (e.g. e2e using API quota) may be skipped, but report the reason.
