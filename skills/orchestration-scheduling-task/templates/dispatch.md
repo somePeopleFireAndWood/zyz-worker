@@ -6,10 +6,20 @@ tmux-window-id: <e.g. @4>         # snapshot at spawn time; may go stale if the
                                   # user manually adds/removes windows
 tmux-pane-id: <e.g. %6>           # snapshot at spawn time; may go stale
 shell-pid: <int>                  # pane shell pid; parent of the claude process
-worktree: <absolute path>         # the git worktree the worker runs in
-source-repo: <absolute path>      # the project git work tree the worktree was cut from
-branch: <branch name>             # the task branch
-base: <base branch>               # base the branch was created from
+worktree: <absolute path>         # repo 1 (PRIMARY) worktree = the tmux pane cwd. Multi-repo tasks
+                                  # add worktree-2, worktree-3, … (one per repo); see the numbered
+                                  # group below. Single-repo tasks have this line only.
+source-repo: <absolute path>      # repo 1 (primary) project git work tree the worktree was cut from
+branch: <branch name>             # repo 1 (primary) task branch
+base: <base branch>               # repo 1 (primary) base the branch was created from
+# --- optional numbered group (multi-repo only; one contiguous block per extra repo, from 2) ---
+# worktree-2: <absolute path>     # repo 2 worktree
+# source-repo-2: <absolute path>  # repo 2 project git work tree
+# branch-2: <branch name>         # repo 2 task branch (fully resolved — never left empty)
+# base-2: <base branch>           # repo 2 base
+# …worktree-3/source-repo-3/branch-3/base-3, etc. Written ONLY when the task spans >1 repo.
+# All numbered-group values are the FULLY RESOLVED values spawn/reuse computed (defaults already
+# applied), because lifecycle scripts (merge/cleanup) read this file as the authoritative repo set.
 plugin-root: <absolute path>      # passed as `claude --plugin-dir` on resume
 encoded-cwd: <claude-projects-dir form of pwd -P of worktree>
                                   # both "/" and "." -> "-", then consecutive
@@ -50,6 +60,14 @@ first-seen-iso:                   # Phase-2; set when the trio above first compl
   Phase-1 fields are deterministic and never empty:
     task-id, spawn-iso, tmux-session, tmux-window-id, tmux-pane-id, shell-pid,
     worktree, source-repo, branch, base, plugin-root, encoded-cwd.
+  For a multi-repo task the writer ALSO emits the numbered group
+    worktree-N, source-repo-N, branch-N, base-N   (N = 2..repo-count),
+  one contiguous block per extra repo, with fully resolved values (defaults
+  already applied). The un-numbered worktree/source-repo/branch/base above are
+  repo 1 (primary); the primary worktree is the pane cwd. Single-repo tasks omit
+  the numbered group entirely. These numbered fields are the authoritative repo
+  set that the lifecycle scripts (merge/cleanup/reuse) read back — so check's
+  Phase-2 rewrite MUST preserve them alongside the fixed key list.
   The four reuse fields (reuse-from, reuse-scope, reuse-claude-effective,
   heartbeat-window-id) are ALSO Phase-1: empty for a plain spawn, populated for
   a reuse. Both writers emit the same field set, so check's Phase-2 rewrite has
@@ -93,7 +111,9 @@ first-seen-iso:                   # Phase-2; set when the trio above first compl
   - plain spawn (reuse-from empty) and independent reuse sessions
     (reuse-claude-effective in {false, n/a}): the concrete `tmux attach -t <session>`
     and `cd <worktree> && claude --resume <claude-session-id> --plugin-dir <plugin-root>`
-    recovery commands;
+    recovery commands. The `cd <worktree>` here is always the PRIMARY worktree
+    (repo 1 = pane cwd); a multi-repo worker reaches its other worktrees from
+    there (they are managed by the same single claude);
   - same-claude reuse (reuse-from set AND reuse-claude-effective=true): an
     ATTACH-ONLY body — `tmux attach -t <session>` only, with an explicit warning
     NOT to run an independent `claude --resume` (the session-id is the shared

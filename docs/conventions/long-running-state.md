@@ -42,4 +42,4 @@ This relies on conversation context as memory. The moment the context is compact
 - `skills/execute-task/prompts/main-agent.md` — the main-agent prompt enforces the convention.
 - `skills/orchestration-scheduling-task/SKILL.md` — the orchestration layer's file protocol (master entry, worker-status, heartbeat, question/answer) is built on top of this convention.
 - `subagents/*.md` and `agents/*.md` — subagent prompts include a short hard-constraint block referring back here, plus an `## Orchestrated Mode Hook` section for the orchestrator-facing snapshot.
-- `skills/git-worktree/SKILL.md` — worktree is execution isolation; status file is still the source of truth.
+- `skills/git-worktree/SKILL.md` — a worktree (a task may have one per repo it touches) is execution isolation; the status file is still the source of truth.

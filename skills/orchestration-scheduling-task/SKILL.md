@@ -5,7 +5,7 @@ description: Use when the user wants to drive a master task list — analyze dep
 
 # Orchestration Scheduling Task
 
-Use this skill to drive a master list of development tasks. The orchestrator scans the list, analyzes dependencies, dispatches isolated workers (each in its own tmux session + git worktree, each running the `execute-task` skill), aggregates worker state through files, and gates merges on explicit user approval.
+Use this skill to drive a master list of development tasks. The orchestrator scans the list, analyzes dependencies, dispatches isolated workers (each in its own tmux session + git worktree(s), each running the `execute-task` skill), aggregates worker state through files, and gates merges on explicit user approval. A worker gets one worktree per repo it touches — one for single-repo tasks, several (sibling directories) for a task that spans repos — all inside a single tmux session and a single `claude` process.
 
 The orchestrator does **not** execute tasks itself. It schedules, dispatches, polls, and reports. Each task is executed by a worker — a separate `claude` process inside a dedicated tmux session that runs `/execute-task`.
 
@@ -17,7 +17,7 @@ Load this skill when the user wants any of the following:
 
 - Drive a multi-task development backlog with parallel execution.
 - Watch a directory of task definitions and react to user edits as the source of truth.
-- Dispatch `execute-task` workers into isolated tmux sessions and git worktrees.
+- Dispatch `execute-task` workers into isolated tmux sessions and git worktrees (one worktree per repo the task touches).
 - Aggregate worker progress (phase, wait-state, heartbeat) into a single summary.
 - Gate merges and worktree cleanup on explicit user approval.
 
@@ -29,7 +29,7 @@ Orchestration is a **3-layer call hierarchy**. The split exists because interact
 
 - **L1 — orchestration main agent** (user-facing; single; holds the `<list-dir>` flock). Orchestrates everything: scan, analyze dependencies, plan dispatch, gate merges, notify. Keeps a cheap **inline read-only poll** (`orch-check-worker.sh` — files + `pgrep`, never `capture-pane` / `send-keys`) for each worker's overall-state projection. **Never touches a pane.** Only the one heavy job — interactively driving a pane — is delegated, on demand, to L2.
 - **L2 — per-worker `orch-driver-agent` subagent** (short-lived; dispatched on demand, NOT every tick). Does the heavy pane work for exactly one worker: start `claude` in bypass mode, clear the trust-folder and bypass-risk confirmation pages, run `/execute-task`, or intervene when that one worker is stuck. It is the **only** layer that touches a pane interactively (`send-keys` / `capture-pane`). It observes overall state only (`worker-status.md` / `dispatch.md` upward projections), **never reads task internals**, writes **only** `monitor.md`, and returns one line to L1 before exiting.
-- **L3 — the tmux window + independent `claude` process running `/execute-task`** (the execution layer). It has its own main agent plus `implementation` / `test` / `review` subagents and runs design → implementation → testing → review → delivery inside its own git worktree. It is **invisible to L1/L2** and driven (not nested) by L2 through `tmux send-keys`.
+- **L3 — the tmux window + independent `claude` process running `/execute-task`** (the execution layer). It has its own main agent plus `implementation` / `test` / `review` subagents and runs design → implementation → testing → review → delivery inside its own git worktree(s) (one per repo the task touches). It is **invisible to L1/L2** and driven (not nested) by L2 through `tmux send-keys`.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -122,8 +122,8 @@ Orchestration is a **3-layer call hierarchy**. The split exists because interact
 │  · review-agt │ │               │ │               │
 │               │ │               │ │               │
 │ works in its  │ │               │ │               │
-│ own git       │ │               │ │               │
-│ worktree ·    │ │               │ │               │
+│ own           │ │               │ │               │
+│ worktree(s) · │ │               │ │               │
 │ invisible to  │ │               │ │               │
 │ upper layers  │ │               │ │               │
 └───────┬───────┘ └───────────────┘ └───────────────┘
@@ -143,7 +143,7 @@ the user attaches to a pane directly):
   L1 ←→ files(<list-dir>/...) ←→ L2   [L2 writes state files, L1 reads]
   L1 ←  return value(one line) ←  L2   [L2 returns on exit]
   L2 ←→ tmux(send-keys/capture) ←→ L3  [out-of-process driving]
-  L3 ←→ files(in worktree + worker-status.md)  [L3's own execution state]
+  L3 ←→ files(in its worktree(s) + worker-status.md)  [L3's own execution state]
   user ←→ tmux attach ←→ L3            [Q&A, never through L1/L2]
 ```
 
@@ -153,7 +153,7 @@ the user attaches to a pane directly):
 |---|---|---|---|---|
 | **L1 main agent** | master entries, `worker-status.md` (projection), `dispatch.md`, `heartbeat`, `monitor.md`, L2's one-line summary | L3 internals (design / subtask / impl / test / review), L3↔user Q&A body, a worker's raw pane content | master entries, `SUMMARY.md`, notifications | orchestration-level interaction + notify "window Y needs you" (never relays content) |
 | **L2 driver subagent** | the one worker it drives: its `worker-status.md`, `dispatch.md` (upward projection), and a `capture-pane` glance when needed | that worker's L3 internals (design / subtask / impl / test / review / `question.md` body), other workers, master-entry decisions | that worker's `monitor.md` (and `send-keys` into the recorded pane to intervene) | not user-facing; only records a "needs-user" marker into `monitor.md` |
-| **L3 execute-task** | everything in its own worktree, its own `worker-status.md` | other workers, the master list, the existence of L1/L2 | `worker-status.md`, `question.md`, code/docs in the worktree | direct Q&A with the user when attached |
+| **L3 execute-task** | everything in its own worktree(s), its own `worker-status.md` | other workers' worktrees, the master list, the existence of L1/L2 | `worker-status.md`, `question.md`, code/docs in any of its own worktrees | direct Q&A with the user when attached |
 | **user** | everything (may attach to any window) | — | master entries, answers (typed directly into the pane) | orchestration-level + attach into a window for direct Q&A with L3 |
 
 ### Key invariants
@@ -163,6 +163,7 @@ the user attaches to a pane directly):
 - **"Internal" means** L3's design doc, subtask status, implementation / test / review files, and the **body** of `question.md`. L1 and L2 never read these.
 - **L1/L2 never relay Q&A.** The execute-task phase confirmations and blocking decisions stay between L3 and the user. L1 only notifies "task X needs you in window Y"; the user attaches and answers L3 directly. The Q&A never passes through L1/L2.
 - **notify keys off the live poll wait-state, never off `monitor.md`.** L1 never writes `monitor.md`; a stale `needs-user=true` left there by an earlier L2 is harmless scratch state (re-derived from a fresh poll the next time an L2 is actually dispatched).
+- **Worktree isolation is between workers, not within one.** Workers never touch each other's worktrees (spawn enforces this by requiring every task's worktree paths to be pairwise disjoint); within a single worker, that worker has full write access to all of its own worktrees (one per repo it touches).
 
 ## Main Agent Loading
 
@@ -192,17 +193,17 @@ Use these templates when creating master-list artifacts:
 ## Core Rules
 
 - **Long-running state lives in files.** The master list directory `<list-dir>` is the single source of truth. Conversation context never replaces a file. Every orchestrator decision must be derivable from disk content; if a fact is not on disk, it does not exist. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
-- **The orchestrator is cwd-independent; each task carries its own `source-repo`.** The orchestrator may be started from `~/` or any directory (not necessarily a git repo). Each master entry's `source-repo:` frontmatter field is mandatory and points at the absolute path of that task's project git work tree; all git operations for the task are scoped to `git -C "$SOURCE_REPO"`. One master list can therefore dispatch workers across multiple repos.
+- **The orchestrator is cwd-independent; each task carries its own `source-repo`.** The orchestrator may be started from `~/` or any directory (not necessarily a git repo). Each master entry's `source-repo:` frontmatter field is mandatory and points at the absolute path of that task's *primary* project git work tree; all git operations for that repo are scoped to `git -C "$SOURCE_REPO"`. A task that spans several repos lists the rest with numbered keys (`source-repo-2:`, `source-repo-3:`, …); spawn builds one worktree per repo (sibling directories) inside the task's single tmux session. One master list can therefore dispatch workers across multiple repos, and a single worker can itself manage multiple repos.
 - **Only one orchestrator at a time per master list.** The orchestrator acquires `<list-dir>/.orchestrator.lock` via `flock` at startup. Starting a second orchestrator against the same list fails. The lock guards orchestrator-vs-orchestrator concurrency; user edits to master entries are guarded procedurally (user must `Ctrl-C` the orchestrator first — see below).
 - **Master entries are co-written with the user.** The orchestrator writes via `tmpfile + rename`. **Before the user edits a master entry in an external editor, the user must `Ctrl-C` the orchestrator** so the flock releases. Restart the orchestrator once the edit is saved.
 - **Each worker writes only its own runtime files.** A worker writes `worker-status.md`, `question.md`, and uses `heartbeat` via the daemon. The orchestrator reads but never writes a worker's runtime files (except for archival during cleanup). The orchestrator writes the master entry; the worker never writes the master entry.
 - **Heuristic analysis is always tentative.** Dependency, project, merge-with suggestions written by the orchestrator carry `deps-tentative: true` in the master entry frontmatter until the user flips it to `false`.
-- **No automatic state change, merge, or cleanup.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates them autonomously. Tokens: `confirmed` (relay the user's confirmation to the worker so it writes `phase=done`, which the orchestrator then mirrors to `state: completed`; no direct state write, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`.
-- **`task-id` is whitelisted.** Helper scripts reject any `task-id` that does not match `^[a-zA-Z0-9_-]+$`. The `tmux` session, git branch, worktree path, and runtime dir all embed the literal `task-id`.
+- **No automatic state change, merge, or cleanup.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates them autonomously. Tokens: `confirmed` (relay the user's confirmation to the worker so it writes `phase=done`, which the orchestrator then mirrors to `state: completed`; no direct state write, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`. For a multi-repo task, merge and cleanup act **per repo** over the worker's worktree set (repo set sourced from the task's `dispatch.md`): merge is not cross-repo atomic, it fails fast on the first repo that cannot merge, and a re-run is idempotent (repos already merged are skipped).
+- **`task-id` is whitelisted.** Helper scripts reject any `task-id` that does not match `^[a-zA-Z0-9_-]+$`. The `tmux` session, git branch(es), worktree path(s), and runtime dir all embed the literal `task-id`.
 - **Worker tmux session name is fixed-prefix `zyz-task-<task-id>`.** Default git branch is `task/<task-id>`. Default merge base is `main`; override via master entry frontmatter `base:` field.
 - **Heartbeat thresholds default to 300 s** (fresh / suspect / stale tiers per §A.6 of the design spec). When the worker reports `wait-state=waiting-user`, the threshold widens to 900 s. Do not drop below 120 s except on a strictly local (non-network) filesystem.
 - **Orchestrated Mode handshake with `execute-task`.** The orchestrator exports `ZYZ_WORKER_STATUS_FILE`, `ZYZ_TASK_ID`, `ZYZ_QUESTION_FILE`, `ZYZ_ANSWER_FILE`, `ZYZ_HEARTBEAT_FILE` into the worker's tmux session. The worker's `execute-task` skill detects `ZYZ_WORKER_STATUS_FILE` and writes phase/wait-state to it. The orchestrator only sees what the worker flushes; in-context memory does not count.
-- **Container reuse is user-declared and old-task-must-be-completed.** A new task may reuse a *completed* task's leftover tmux session and/or git worktree by declaring `reuse-from: <old-task-id>` + `reuse-scope: worktree|tmux|both` + `reuse-claude: true|false` in its OWN master-entry frontmatter. The dispatch path then calls `scripts/orch-reuse-worker.sh` (not `orch-spawn-worker.sh`). Reuse only *associates* the container — it never advances or rewrites the old task, which stays `completed`. The `reuse-from` target must be in the SAME `<list-dir>` and already `completed`; otherwise reuse is refused and the new task is not dispatched. See `## Container Reuse` below.
+- **Container reuse is user-declared and old-task-must-be-completed.** A new task may reuse a *completed* task's leftover tmux session and/or git worktree(s) by declaring `reuse-from: <old-task-id>` + `reuse-scope: worktree|tmux|both` + `reuse-claude: true|false` in its OWN master-entry frontmatter. Reuse hands over the old task's **whole worktree set** (all repos), not a single worktree — partial reuse of one repo out of a set is not supported. The dispatch path then calls `scripts/orch-reuse-worker.sh` (not `orch-spawn-worker.sh`). Reuse only *associates* the container — it never advances or rewrites the old task, which stays `completed`. The `reuse-from` target must be in the SAME `<list-dir>` and already `completed`; otherwise reuse is refused and the new task is not dispatched. See `## Container Reuse` below.
 
 ## Workflow
 
@@ -210,11 +211,11 @@ The orchestrator runs a loop. Each tick (manual invocation, auto-timer self-sche
 
 1. **scan** — `scripts/orch-scan-tasks.sh <list-dir>` lists every task entry, its declared `state`, and (for in-progress/paused tasks) the worker-reported phase + wait-state. Missing or illegal `state` values are treated as `not-analyzed`.
 2. **analyze** — For `not-analyzed` tasks, run dependency / project / merge-with analysis. Write tentative results into the master entry `## Orchestrator Analysis` section. **If `## Description` is empty, leave `state: not-analyzed` and write `needs Description` into the analysis section; do not dispatch.**
-3. **plan** — Decide which `ready` tasks to dispatch this tick. The parallel cap is `ZYZ_MAX_PARALLEL_WORKERS` (**default `-1` = unlimited**; set a positive integer to cap — at `-1` no cap is applied and every `ready` task is dispatchable). Move `blocked` tasks whose dependencies are now met to `ready`. **Resource caveat:** each worker = 1 tmux session + 1 git worktree + 1 full `claude` process (running the entire `execute-task` workflow including its own subagents) — far heavier than execute-task's prompt-only subagents. With no cap, watch API quota / memory / disk; set a positive cap to limit. **Disk I/O caveat:** each worker gets Go build-opt env injected by default (`GOTMPDIR` on a tmpfs RAM disk + `GOFLAGS=-p`); **total compile parallelism = workers × p**, so control disk pressure by lowering `p` (`ZYZ_GO_BUILD_P`, default 4), not by reducing worker count (see README *Go 构建 I/O 优化注入* and `ZYZ_GO_BUILD_OPT` / `ZYZ_GO_TMPFS_DIR`).
-4. **dispatch** — For each task selected to dispatch, the orchestrator works in two stages. First call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` to build the **container only**: the worktree, tmux session, in-pane heartbeat daemon, and `dispatch.md` Phase-1 fields. Spawn **never** starts `claude` (there is no `--auto-start`). Then **dispatch an L2 `orch-driver-agent` subagent with `intent=first-dispatch`** to do the heavy pane work — start `claude` in bypass mode, clear the confirmation pages, readiness-probe, and run `/execute-task`. When several new workers are dispatched at once, their L2 drivers are launched in one batch (single message, multiple `Agent` calls).
+3. **plan** — Decide which `ready` tasks to dispatch this tick. The parallel cap is `ZYZ_MAX_PARALLEL_WORKERS` (**default `-1` = unlimited**; set a positive integer to cap — at `-1` no cap is applied and every `ready` task is dispatchable). Move `blocked` tasks whose dependencies are now met to `ready`. **Resource caveat:** each worker = 1 tmux session + n git worktrees (one per repo; n=1 for single-repo tasks) + 1 full `claude` process (running the entire `execute-task` workflow including its own subagents) — far heavier than execute-task's prompt-only subagents. With no cap, watch API quota / memory / disk; set a positive cap to limit. **Disk I/O caveat:** each worker gets Go build-opt env injected by default (`GOTMPDIR` on a tmpfs RAM disk + `GOFLAGS=-p`); **total compile parallelism = workers × p**, so control disk pressure by lowering `p` (`ZYZ_GO_BUILD_P`, default 4), not by reducing worker count (see README *Go 构建 I/O 优化注入* and `ZYZ_GO_BUILD_OPT` / `ZYZ_GO_TMPFS_DIR`).
+4. **dispatch** — For each task selected to dispatch, the orchestrator works in two stages. First call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` to build the **container only**: one worktree per repo the task declares (single tmux session regardless of repo count), the tmux session, in-pane heartbeat daemon, and `dispatch.md` Phase-1 fields (including the numbered `worktree-N` / `source-repo-N` / `branch-N` / `base-N` field group for a multi-repo task). Spawn **never** starts `claude` (there is no `--auto-start`). Then **dispatch an L2 `orch-driver-agent` subagent with `intent=first-dispatch`** to do the heavy pane work — start `claude` in bypass mode, clear the confirmation pages, readiness-probe, and run `/execute-task`. When several new workers are dispatched at once, their L2 drivers are launched in one batch (single message, multiple `Agent` calls).
 5. **poll** — For each `in-progress` or `paused` task, the orchestrator **inline** calls `scripts/orch-check-worker.sh <task-id> <list-dir>` (read-only: files + `pgrep`, never touches a pane) and projects worker state into the master entry. This inline poll runs for **every** active worker every tick (including throttled ones) and is the sole detection point for "user answered, worker left `waiting-user`". L1 dispatches an L2 driver with `intent=intervene` **only** for a worker the poll shows stuck/abnormal (session dead but should be alive, heartbeat stale while `phase-since` is unchanged for several ticks, Unknown-command signs); healthy workers get **no** L2. On `heartbeat-status=fresh`, update `last-seen`. On stale, write the stale summary into `## Notes` and shorten the cadence; do not silently change the master entry `state`.
 6. **handle errors** — If a worker reports `phase=error`, set the master entry `state: blocked`, copy the worker's `## Last Output Summary` into the master entry `## Notes`, and shorten cadence.
-7. **gate** — For tasks whose `## Pending Merge Approval` section contains `approved`, call `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`.
+7. **gate** — For tasks whose `## Pending Merge Approval` section contains `approved`, call `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`. For a multi-repo task it merges and cleans up each repo in the worker's worktree set (repo set read from `dispatch.md`); the merge is fail-fast and a re-run is idempotent (already-merged repos are skipped).
 8. **report** — Write a short summary to the conversation window and (re)write `<list-dir>/SUMMARY.md` listing all tasks and their current view.
 
 For full workflow detail, decision branches, failure modes, and cadence policy, load `prompts/main-agent.md`.
@@ -241,14 +242,18 @@ The lock guards only orchestrator-vs-orchestrator concurrency. User-vs-orchestra
 
 ```yaml
 task-id: <task-id>            # immutable
-project: <project name>       # user maintained; label only; default = basename source-repo when omitted
-source-repo: ~/workspace/<repo>  # required; absolute path or ~/-prefixed; supports ~/ expansion
+project: <project name>       # user maintained; label only; default = basename primary source-repo when omitted
+source-repo: ~/workspace/<repo>  # required; primary repo; absolute path or ~/-prefixed; supports ~/ expansion
+source-repo-2: ~/workspace/<repo2>  # optional; additional repos for a multi-repo task; numbered from 2, must be contiguous
 state: not-analyzed           # not-analyzed | blocked | ready | in-progress | paused | awaiting-user-confirmation | completed
 priority: normal              # low | normal | high
 branch: task/<task-id>        # default; user can override
+branch-2: task/<task-id>      # optional per-repo branch; defaults to branch's resolved value
 base: main                    # merge base; user can override
-worktree: ~/.zyz-worker/worktrees/<project>/task/<task-id>
-tmux-session: zyz-task-<task-id>
+base-2: main                  # optional per-repo base; defaults to base's resolved value
+worktree: ~/.zyz-worker/worktrees/<project>/task/<task-id>          # primary worktree = pane cwd
+worktree-2: ~/.zyz-worker/worktrees/<project>/task/<task-id>/<repo2>  # optional; default sibling-directory layout per repo
+tmux-session: zyz-task-<task-id>   # task-level single value regardless of repo count
 reuse-from:                   # optional; a completed task-id in THIS list to reuse the container of
 reuse-scope: both             # worktree | tmux | both; required when reuse-from is set (default both)
 reuse-claude: true            # true (default) | false; only meaningful when reusing tmux
@@ -260,6 +265,8 @@ heartbeat-stale-sec: 300      # optional override
 created-at: <date>
 updated-at: <date>
 ```
+
+The numbered keys (`source-repo-2:`, `branch-2:`, `base-2:`, `worktree-2:`, …) are optional and used only for multi-repo tasks; `source-repo-N` numbering starts at 2 and must be contiguous. A single-`source-repo:` entry is fully backward compatible — it parses, spawns, merges, and cleans up exactly as before. `branch-N` / `base-N` / `worktree-N` may each be omitted and default (per-repo branch/base inherit the primary's resolved value; `worktree-N` defaults to the sibling-directory layout). Worktree paths must not contain `:` (that character separates entries in the `ZYZ_WORKTREES` env and the reuse `worktrees:` line).
 
 Legal user-written values for `state:` are `not-analyzed | blocked | ready | completed`. The orchestrator writes `in-progress | paused | awaiting-user-confirmation` on its own (`awaiting-user-confirmation` is orchestrator-projected from the worker's phase, never user-written).
 
@@ -309,11 +316,11 @@ Full state machine and the phase mapping table for `execute-task` workflow posit
 
 ### PR flow (merge handled outside the orchestrator)
 
-Not every branch merges to `main`, and some require PR + human review. Native PR creation is out of scope. To finish a task via PR: let the worker reach `phase=awaiting-confirmation`, open and review/merge the PR yourself (outside zyz-worker), then write `confirmed` (NOT `merge`) in `## Pending Merge Approval` so the orchestrator records `state: completed` without running any git merge. The orchestrator never opens or merges PRs.
+Not every branch merges to `main`, and some require PR + human review. Native PR creation is out of scope. To finish a task via PR: let the worker reach `phase=awaiting-confirmation`, open and review/merge the PR yourself (outside zyz-worker) — one PR per repo for a multi-repo task, since each repo carries its own branch — then write `confirmed` (NOT `merge`) in `## Pending Merge Approval` so the orchestrator records `state: completed` without running any git merge. The orchestrator never opens or merges PRs.
 
 ## Container Reuse
 
-A new task can reuse a **completed** task's leftover tmux session and/or git worktree instead of building a fresh container. This is opt-in and entirely user-declared in the new task's master-entry frontmatter:
+A new task can reuse a **completed** task's leftover tmux session and/or git worktree(s) instead of building a fresh container. For a multi-repo old task, reuse takes over its **whole worktree set** (all repos) as a unit — reusing only one repo out of a set is not supported. This is opt-in and entirely user-declared in the new task's master-entry frontmatter:
 
 ```yaml
 reuse-from: <old-task-id>     # present => reuse; must be a completed task in THIS same list
@@ -325,17 +332,17 @@ When a selected-to-dispatch task has a non-empty `reuse-from`, the **dispatch** 
 
 ### Scope → container action
 
-| `reuse-scope` | worktree | tmux session | heartbeat | claude |
+| `reuse-scope` | worktree set | tmux session | heartbeat | claude |
 |---|---|---|---|---|
-| `worktree` | reuse old worktree (same dir/branch) | **new** `zyz-task-<new-id>` | in-pane daemon (same as spawn) | **new** claude (clean env; `first-dispatch`-style) — `reuse-claude` is **ignored** (`reuse-claude-effective=n/a`) |
-| `tmux` (`reuse-claude:true`, default) | **old** worktree (the reused pane's cwd is immutable; the `worktree:` field is ignored) | reuse old session | **new window** in the reused session runs the daemon | **same** running claude (in-band runtime-config block) |
-| `tmux` (`reuse-claude:false`) | old worktree (restart stays in the same pane) | reuse old session | new-window daemon | **restart** claude in the reused session (clean handshake) |
-| `both` (`reuse-claude:true`, default) | reuse old worktree | reuse old session | new-window daemon | **same** running claude (in-band config block) |
-| `both` (`reuse-claude:false`) | reuse old worktree | reuse old session | new-window daemon | **restart** claude |
+| `worktree` | reuse old worktree set (same dirs/branches) | **new** `zyz-task-<new-id>` | in-pane daemon (same as spawn) | **new** claude (clean env; `first-dispatch`-style) — `reuse-claude` is **ignored** (`reuse-claude-effective=n/a`) |
+| `tmux` (`reuse-claude:true`, default) | **old** worktree set (the reused pane's cwd is immutable at the old primary worktree; the `worktree:` field is ignored) | reuse old session | **new window** in the reused session runs the daemon | **same** running claude (in-band runtime-config block) |
+| `tmux` (`reuse-claude:false`) | old worktree set (restart stays in the same pane) | reuse old session | new-window daemon | **restart** claude in the reused session (clean handshake) |
+| `both` (`reuse-claude:true`, default) | reuse old worktree set | reuse old session | new-window daemon | **same** running claude (in-band config block) |
+| `both` (`reuse-claude:false`) | reuse old worktree set | reuse old session | new-window daemon | **restart** claude |
 
 ### Same-claude reuse: in-band runtime-config block + new-window heartbeat
 
-A still-running claude cannot see re-exported env (a Bash subprocess inherits the env claude started with, not later pane `export`s). So when `reuse-claude-effective=true`, the new task's runtime paths are handed to the live claude by the L2 `reuse-dispatch` driver **as an in-band runtime-config block** (a structured text message fenced by `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` carrying `task-id` / `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file`), sent into the pane alongside `/zyz-worker:execute-task <new-id>`. The execute-task contract (`skills/execute-task/SKILL.md ## Orchestrated Mode`) makes that block **override** the launch-time `ZYZ_*` env for the whole task lifecycle, **including the `task-id` and all task-id-derived paths** (the detailed `.zyz-worker/tasks/<task-id>/` status dir, commit/branch references).
+A still-running claude cannot see re-exported env (a Bash subprocess inherits the env claude started with, not later pane `export`s). So when `reuse-claude-effective=true`, the new task's runtime paths are handed to the live claude by the L2 `reuse-dispatch` driver **as an in-band runtime-config block** (a structured text message fenced by `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` carrying `task-id` / `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file`, plus an optional `worktrees:` line — colon-separated, primary first — for a multi-repo reuse task), sent into the pane alongside `/zyz-worker:execute-task <new-id>`. The execute-task contract (`skills/execute-task/SKILL.md ## Orchestrated Mode`) makes that block **override** the launch-time `ZYZ_*` env for the whole task lifecycle, **including the `task-id` and all task-id-derived paths** (the detailed `.zyz-worker/tasks/<task-id>/` status dir, commit/branch references).
 
 Because claude occupies the reused session's original window/pane, the new task's heartbeat daemon runs in a **new tmux window** opened in the reused session (it cannot start a shell daemon in claude's pane). The daemon points at the new task's heartbeat file and dies with the reused session (the `orch-heartbeat-daemon.sh` `tmux has-session` watchdog tracks the session name, so the new window is covered). A reuse worker also `touch`es the in-band `heartbeat-file` on every flush as a backup liveness signal.
 
@@ -345,7 +352,7 @@ A same-claude reuse task shares the old task's claude process: its `dispatch.md`
 
 ### Cleanup of shared containers (read this before `cleanup-approved`)
 
-A reuse task **shares** its tmux session and/or worktree with its `reuse-from` old task. Running cleanup on either will kill the shared session and remove the shared worktree, affecting the other. The orchestrator does **not** do shared-container reference counting (a deliberate Non-Goal). Two safeguards apply: (1) cleanup still requires an explicit `cleanup-approved` token (never automatic), and (2) the orchestrator gate step appends a shared-container warning to the task's `## Notes` (naming the `reuse-from` old id + the shared session/worktree) before honoring `cleanup-approved` for a `reuse-from` task. Ensure all sharers are completed before cleaning up.
+A reuse task **shares** its tmux session and/or worktree set with its `reuse-from` old task. Running cleanup on either will kill the shared session and remove the shared worktrees, affecting the other. The orchestrator does **not** do shared-container reference counting (a deliberate Non-Goal). Two safeguards apply: (1) cleanup still requires an explicit `cleanup-approved` token (never automatic), and (2) the orchestrator gate step appends a shared-container warning to the task's `## Notes` (naming the `reuse-from` old id + the shared session/worktrees) before honoring `cleanup-approved` for a `reuse-from` task. Ensure all sharers are completed before cleaning up.
 
 ## Long-Running State
 
@@ -377,10 +384,10 @@ The four recovery cases:
 
 2. **tmux session dead but `transcript-path` populated** (`session-alive=false`, `dispatch-bound=true`):
    - Read `dispatch.md ## Recovery` for the exact substituted commands.
-   - Run `cd <worktree> && claude --resume <claude-session-id> --plugin-dir <plugin-root>`. Claude reads the JSONL at the recorded `transcript-path` and resumes the conversation. The `--plugin-dir` keeps `/execute-task` registered in the resumed session — **omitting it re-triggers the "Unknown command: /execute-task" failure**, because the resumed transcript restores the conversation but not the plugin registration.
+   - Run `cd <worktree> && claude --resume <claude-session-id> --plugin-dir <plugin-root>` (for a multi-repo task, `<worktree>` is the primary worktree = the pane cwd). Claude reads the JSONL at the recorded `transcript-path` and resumes the conversation. The `--plugin-dir` keeps `/execute-task` registered in the resumed session — **omitting it re-triggers the "Unknown command: /execute-task" failure**, because the resumed transcript restores the conversation but not the plugin registration.
 
 3. **dispatch.md has Phase-1 fields but no Phase-2** (`dispatch-bound=false` — claude never bound; usually `/execute-task` was rejected at the slash-command layer, the spawn was killed before claude registered, or claude never made a first LLM round-trip):
-   - There is no useful claude state to resume. Treat it as a fresh task: clean up the worktree with `scripts/orch-cleanup-worker.sh <task-id> <list-dir>` and re-dispatch from the master entry.
+   - There is no useful claude state to resume. Treat it as a fresh task: clean up the worktree(s) with `scripts/orch-cleanup-worker.sh <task-id> <list-dir>` and re-dispatch from the master entry.
 
 4. **dispatch.md missing entirely** (`dispatch-bound=` empty): two possible causes — (i) a pre-feature worker spawned before this change, or (ii) a spawn that crashed before reaching the dispatch.md write step. Use `session-alive` to disambiguate:
    - `session-alive=true` → attach and continue per case 1. The worker may still be usable.
@@ -417,7 +424,7 @@ The `heartbeat-window-id` field in a reuse `dispatch.md` is diagnostics only (th
 Phase-2 binding is lazy because of *when* Claude Code persists its session files. On the verified host (Claude Code v2.1.152, macOS), Claude writes BOTH of these only after the session's first successful LLM round-trip — never at startup:
 
 - `~/.claude/sessions/<pid>.json` — the session pointer. Its filename `<pid>` equals the claude process PID, and it carries `{sessionId, cwd, ...}`. `orch-check-worker.sh` reads `sessionId` from it.
-- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — the full transcript. `encoded-cwd` is the worktree's PHYSICAL path (`pwd -P`, so symlinks like macOS `/var → /private/var` resolve) with both `/` and `.` replaced by `-`, then consecutive `-` squeezed into one. `orch-check-worker.sh` does NOT reconstruct this directory name to locate the transcript: it discovers the JSONL by session-id (a globally-unique UUID) via `find ~/.claude/projects -name "<sessionId>.jsonl"`, so discovery is robust to claude's exact path-encoding rule. The recorded `encoded-cwd` field is kept honest for diagnostics and the recovery command path, but binding does not depend on it.
+- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — the full transcript. `encoded-cwd` is the (primary) worktree's PHYSICAL path (`pwd -P`, so symlinks like macOS `/var → /private/var` resolve) with both `/` and `.` replaced by `-`, then consecutive `-` squeezed into one. `orch-check-worker.sh` does NOT reconstruct this directory name to locate the transcript: it discovers the JSONL by session-id (a globally-unique UUID) via `find ~/.claude/projects -name "<sessionId>.jsonl"`, so discovery is robust to claude's exact path-encoding rule. The recorded `encoded-cwd` field is kept honest for diagnostics and the recovery command path, but binding does not depend on it.
 
 Consequences a recovery operator should understand:
 
@@ -429,7 +436,7 @@ Consequences a recovery operator should understand:
 
 Before scanning, analyzing, dispatching, or summarizing, check whether the current agent already has relevant skills, plugins, or tools available:
 
-- Use git-related skills (e.g., the `git-worktree` skill in this plugin) to derive default worktree paths.
+- Use git-related skills (e.g., the `git-worktree` skill in this plugin) to derive default worktree paths (one per repo for a multi-repo task).
 - The orchestrator already auto-polls by default: each tick self-schedules the next via `ScheduleWakeup` with dynamic intervals (see the cadence policy in `prompts/main-agent.md`). Wrapping with the `/loop` slash command (Claude Code) is an optional explicit alternative; either way the same cadence policy drives the interval.
 - Use documentation, engineering workflow, or testing skills (`llmdoc`, `superpowers`, …) if available; record usage in the SUMMARY.
 
@@ -443,7 +450,7 @@ This skill is coupled to `execute-task`. If `execute-task` ever introduces a new
 - The phase mapping table (design-spec §D.5) must be extended.
 - This SKILL.md and `prompts/main-agent.md` should mention the new phase explicitly.
 
-If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh` **and** in `scripts/orch-reuse-worker.sh` (both writers emit the same field set — spawn writes the four reuse fields empty, reuse populates them), the Phase-2 lazy fill / field-preservation rewrite in `scripts/orch-check-worker.sh` (`rewrite_dispatch_atomic` reads back and re-emits the four reuse fields `reuse-from` / `reuse-scope` / `reuse-claude-effective` / `heartbeat-window-id`, else the first Phase-2 poll would drop them), the `## Crash Recovery` section above (incl. the reused-container recovery subsection), and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
+If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh` **and** in `scripts/orch-reuse-worker.sh` (both writers emit the same field set — spawn writes the four reuse fields empty, reuse populates them; for a multi-repo task both also emit the numbered field group `worktree-N` / `source-repo-N` / `branch-N` / `base-N`, N from 2, as fully-resolved non-empty values), the Phase-2 lazy fill / field-preservation rewrite in `scripts/orch-check-worker.sh` (`rewrite_dispatch_atomic` reads back and re-emits the four reuse fields `reuse-from` / `reuse-scope` / `reuse-claude-effective` / `heartbeat-window-id` **and** the numbered `worktree-N` / `source-repo-N` / `branch-N` / `base-N` group, else the first Phase-2 poll would drop them), the merge/cleanup/reuse scripts that read the numbered group from `dispatch.md` as the authoritative repo set, the `## Crash Recovery` section above (incl. the reused-container recovery subsection), and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
 
 If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state. The L2 driver's `intent` enum has **four** values — `first-dispatch`, `intervene`, `relay-confirmation`, `reuse-dispatch` — dispatched from these L1 sites: **dispatch** (`intent=first-dispatch` for a plain spawn, OR `intent=reuse-dispatch` for a `reuse-from` task), **poll** (`intent=intervene`, only for a stuck worker), and **gate** (`intent=relay-confirmation`, to relay a user confirmation into the worker pane). If the L2 driver's contract or its `intent` enum changes, keep ALL of these in lockstep: every dispatch site, the `intent` enum (driver `## Inputs` line in BOTH `agents/` + `subagents/`, the driver `## intent=…` section headings in both, and `templates/monitor.md` `driver-intent`).
 

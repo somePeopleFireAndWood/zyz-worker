@@ -122,4 +122,4 @@ Run `git worktree repair [<path>...]` to fix the bidirectional links between the
 
 ## Long-Running Considerations
 
-A git worktree provides an isolated execution checkout; it is not a place to track task state. Persist task progress, decisions, and blockers in the task status file under `.zyz-worker/tasks/<task-id>/` (or the path provided by the dispatching agent). See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
+A git worktree provides an isolated execution checkout; it is not a place to track task state. A single task may hold several worktrees (one per repo it touches), but they are all execution isolation, not state. Persist task progress, decisions, and blockers in the task status file under `.zyz-worker/tasks/<task-id>/` (or the path provided by the dispatching agent). See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).

@@ -131,9 +131,11 @@ fm_field() {
 # independently is a footgun). All <…> tokens in the recovery block are
 # substituted with real values at generation time, so the rendered body contains
 # no angle brackets. Phase-1 keys (INCLUDING the four reuse fields reuse-from /
-# reuse-scope / reuse-claude-effective / heartbeat-window-id, which would
-# otherwise be dropped by this fixed-field-list rewrite) are read back via
-# fm_field BEFORE the unquoted heredoc (fm_field can't run inside it cleanly).
+# reuse-scope / reuse-claude-effective / heartbeat-window-id AND the multi-repo
+# numbered field group worktree-N / source-repo-N / branch-N / base-N, all of
+# which would otherwise be dropped by this fixed-field-list rewrite) are read
+# back via fm_field BEFORE the unquoted heredoc (fm_field can't run inside it
+# cleanly).
 rewrite_dispatch_atomic() {
     local file="$1"
     local r_claude_pid="$2"
@@ -166,6 +168,32 @@ rewrite_dispatch_atomic() {
     p1_reuse_scope="$(fm_field "$file" reuse-scope)"
     p1_reuse_claude_eff="$(fm_field "$file" reuse-claude-effective)"
     p1_heartbeat_window="$(fm_field "$file" heartbeat-window-id)"
+
+    # Multi-repo numbered field group (worktree-N / source-repo-N / branch-N /
+    # base-N, written by spawn for REPO_COUNT>=2). Like the reuse fields above,
+    # these are unknown to this fixed-field-list rewriter and would be silently
+    # DROPPED on the first Phase-2 rewrite unless read back and re-emitted here.
+    # Accumulated into ONE variable BEFORE the heredoc (the heredoc cannot loop);
+    # it carries a LEADING newline and no trailing newline so it splices directly
+    # after the `base:` scalar. Single-repo dispatch.md has no source-repo-2, so
+    # the loop never runs, the variable stays empty, and the rewrite is
+    # byte-identical to the legacy layout.
+    local p1_numbered ni nwt nsr nbr nba
+    p1_numbered=""
+    ni=2
+    while :; do
+        nsr="$(fm_field "$file" "source-repo-$ni")"
+        [ -n "$nsr" ] || break
+        nwt="$(fm_field "$file" "worktree-$ni")"
+        nbr="$(fm_field "$file" "branch-$ni")"
+        nba="$(fm_field "$file" "base-$ni")"
+        p1_numbered="${p1_numbered}
+worktree-$ni: $nwt
+source-repo-$ni: $nsr
+branch-$ni: $nbr
+base-$ni: $nba"
+        ni=$((ni + 1))
+    done
 
     # Body — pure function of trio-completeness AND the stored reuse fields.
     # Three-way once the trio is complete (CC1; conditions read the stored
@@ -211,7 +239,7 @@ shell-pid: $p1_shell_pid
 worktree: $p1_worktree
 source-repo: $p1_source_repo
 branch: $p1_branch
-base: $p1_base
+base: $p1_base$p1_numbered
 plugin-root: $p1_plugin_root
 encoded-cwd: $p1_encoded_cwd
 reuse-from: $p1_reuse_from

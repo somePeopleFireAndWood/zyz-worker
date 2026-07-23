@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# orch-merge-and-cleanup.sh — merge a finished worker's branch into the base
-# branch, mark the master entry completed, push, and clean up the worktree.
+# orch-merge-and-cleanup.sh — merge a finished worker's branch(es) into the base
+# branch, mark the master entry completed, push, and clean up the worktree(s).
 #
 # This is the LEGACY combined path, triggered by the `approved` token (merge +
 # `state: completed` + cleanup, atomically). It is a deliberate exception to the
@@ -10,33 +10,52 @@
 # instead use the `confirmed` token (which relays the user's confirmation to the
 # worker so it writes `phase=done`, and the orchestrator then mirrors
 # `state: completed` — see the orchestration gate step) and orch-merge.sh (merge +
-# push only, `merge` token) separately. Behavior here is unchanged.
+# push only, `merge` token) separately. Single-repo behavior here is unchanged.
 #
-# Order (critical — see design-spec §E.6):
+# Order (critical — see design-spec §E.6 and 02-D2):
 #
-#   1. preconditions
+#   1. preconditions (`approved` token present; every repo worktree clean; repo
+#                     locatable) — fail-fast across ALL repos before any merge
 #   2. merge        (gh pr merge --merge, OR fall back to local `git merge --no-ff`)
-#   3. write `state: completed` into master entry frontmatter
-#   4. push
-#   5. cleanup (calls orch-cleanup-worker.sh --force)
+#                    per repo, repo 1..N
+#   3. write `state: completed` — ONLY after ALL N repos merged, BEFORE push/cleanup
+#   4. push         (only if origin exists), per repo
+#   5. cleanup (calls orch-cleanup-worker.sh --force; already multi-repo aware)
 #
-# Step 3 must happen AFTER step 2 succeeds and BEFORE steps 4–5, so that if
-# anything later crashes the user can re-run the script idempotently and
+# Step 3 must happen AFTER all repos merge (step 2) and BEFORE steps 4–5, so that
+# if anything later crashes the user can re-run the script idempotently and
 # recover from the documented intermediate state.
+#
+# Multi-repo (design 02-D0/D1/D2): the authoritative repo set comes from the
+# RESOLVED numbered field groups in `runtime/<task-id>/dispatch.md` (written by
+# spawn/reuse), NOT the master entry. dispatch.md carries, after the unnumbered
+# `base:` line, for N=2..count ascending: worktree-N / source-repo-N / branch-N /
+# base-N — all resolved non-empty. Repo 1 = the unnumbered worktree/branch/base.
+# SINGLE-REPO FALLBACK: if dispatch.md is absent or lacks `worktree:`, the legacy
+# single-repo path is used (N=1): worktree from the master entry `worktree:`,
+# branch from the existing resolution, base from argv <base-branch>. This
+# dispatch-ABSENT single-repo fallback is byte-for-byte identical to the
+# pre-multi-repo behaviour. When dispatch.md IS present, the base (and branch) are
+# sourced from dispatch.md's resolved fields per the design's authoritative-
+# dispatch decision (02-D0), so it is not byte-identical to the legacy path.
+# There is no `merge: <base>` token here (the token is `approved`), so base is
+# never overridden by a token.
 #
 # Contract:
 #   Inputs:
 #     $1  <task-id>           must match [A-Za-z0-9_-]+
 #     $2  <list-dir>          master list directory
-#     $3  <base-branch>       merge target (e.g. main)
+#     $3  <base-branch>       merge target (e.g. main); used for the single-repo
+#                             fallback base (multi-repo uses each repo's base-N)
 #
 #   Side effects:
 #     See above.
 #
 #   Output (stdout):
-#     merge-status=success
-#     pr-url=<url-or-empty>
-#     gh-fallback=true|false
+#     merge-status=success            (repo 1; unnumbered = repo 1)
+#     pr-url=<url-or-empty>           (repo 1)
+#     gh-fallback=true|false          (repo 1)
+#     merge-status-2=…  pr-url-2=…    (repo 2..N when multi-repo)
 #
 #   Exit codes:
 #     0   success
@@ -44,7 +63,7 @@
 #     3   missing dependency (git)
 #     4   master entry missing
 #     10  `## Pending Merge Approval` does not contain `approved`
-#     11  worker worktree is dirty
+#     11  worker worktree is dirty / repo not found
 #     12  merge conflict (state UNCHANGED, no push, no cleanup)
 #     13  push failed (state already written `completed`; user can retry)
 #
@@ -114,16 +133,14 @@ fm_field() {
     ' "$file"
 }
 
-BRANCH="$(fm_field "$MASTER_ENTRY" branch)"
-[ -z "$BRANCH" ] && BRANCH="task/$TASK_ID"
-
-WORKTREE="$(fm_field "$MASTER_ENTRY" worktree)"
-case "$WORKTREE" in
-    "~/"*) WORKTREE="$HOME/${WORKTREE#"~/"}" ;;
-esac
+# Authoritative repo set (design 02-D0) lives in the RESOLVED numbered field
+# groups of dispatch.md, discovered below (after the token scan). BRANCH/WORKTREE
+# resolution moves into that discovery block so the single-repo fallback stays
+# byte-for-byte identical to the legacy master-entry path.
+DISPATCH_FILE="$LIST_DIR/runtime/$TASK_ID/dispatch.md"
 
 # ---------------------------------------------------------------------------
-# Step 1: preconditions
+# Step 1: preconditions (`approved` token)
 # ---------------------------------------------------------------------------
 
 # Check the body of the master entry for the literal `approved` token in the
@@ -141,123 +158,258 @@ if [ "$APPROVED" != "true" ]; then
     exit 10
 fi
 
-if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
-    echo "error: worktree path missing or invalid: $WORKTREE" >&2
-    exit 11
+# ---------------------------------------------------------------------------
+# Repo-set discovery (design 02-D0/D1). The authoritative repo set = the RESOLVED
+# numbered field groups in dispatch.md. Fill parallel arrays WT / BR / BASE_ARR,
+# repo 1 at index 0. Single-repo fallback (dispatch.md absent or no `worktree:`)
+# reads the master entry so the legacy path stays byte-for-byte identical.
+# There is NO `merge: <base>` token here (the token is `approved`); the base for
+# the single-repo fallback comes from argv <base-branch>, multi-repo uses base-N.
+# ---------------------------------------------------------------------------
+WT=()
+BR=()
+BASE_ARR=()
+
+DISPATCH_WORKTREE=""
+if [ -f "$DISPATCH_FILE" ]; then
+    DISPATCH_WORKTREE="$(fm_field "$DISPATCH_FILE" worktree)"
 fi
 
-# Worktree must be clean.
-if porcelain="$(git -C "$WORKTREE" status --porcelain 2>/dev/null)"; then
-    if [ -n "$porcelain" ]; then
-        echo "error: worktree is dirty: $WORKTREE" >&2
+if [ -n "$DISPATCH_WORKTREE" ]; then
+    # Multi-repo capable path: iterate worktree / worktree-2 / … until empty.
+    disc_n=1
+    while :; do
+        if [ "$disc_n" -ge 2 ]; then
+            wt="$(fm_field "$DISPATCH_FILE" "worktree-$disc_n")"
+            br="$(fm_field "$DISPATCH_FILE" "branch-$disc_n")"
+            bs="$(fm_field "$DISPATCH_FILE" "base-$disc_n")"
+        else
+            wt="$DISPATCH_WORKTREE"
+            br="$(fm_field "$DISPATCH_FILE" branch)"
+            bs="$(fm_field "$DISPATCH_FILE" base)"
+        fi
+        [ -n "$wt" ] || break
+        case "$wt" in
+            "~/"*) wt="$HOME/${wt#"~/"}" ;;
+        esac
+        WT+=("$wt")
+        BR+=("$br")
+        BASE_ARR+=("$bs")
+        disc_n=$((disc_n + 1))
+    done
+else
+    # Single-repo legacy fallback: master entry worktree/branch, argv base.
+    br="$(fm_field "$MASTER_ENTRY" branch)"
+    [ -z "$br" ] && br="task/$TASK_ID"
+    # Tilde-expand through a variable literally named WORKTREE using the quoted
+    # strip form, byte-for-byte identical to the legacy single-repo script (this
+    # exact token is what the BUG-1 regression guard greps for).
+    WORKTREE="$(fm_field "$MASTER_ENTRY" worktree)"
+    case "$WORKTREE" in
+        "~/"*) WORKTREE="$HOME/${WORKTREE#"~/"}" ;;
+    esac
+    # Emptiness/existence is checked uniformly in the fail-fast precheck below
+    # (same exit 11 + message as the legacy single-repo path).
+    WT+=("$WORKTREE")
+    BR+=("$br")
+    BASE_ARR+=("$BASE_BRANCH")
+fi
+
+REPO_COUNT="${#WT[@]}"
+
+# ---------------------------------------------------------------------------
+# Step 2 precheck: fail-fast across ALL repos before any merge (design 02-D2-1).
+# For each repo verify the worktree is non-empty + present, clean, and its main
+# checkout is resolvable via the worktree's git common-dir. Any failure => exit
+# 11 with nothing merged. MAIN_REPO_ARR is resolved here and reused in the loop.
+# ---------------------------------------------------------------------------
+MAIN_REPO_ARR=()
+pre_i=0
+while [ "$pre_i" -lt "$REPO_COUNT" ]; do
+    pre_wt="${WT[$pre_i]}"
+    if [ -z "$pre_wt" ] || [ ! -d "$pre_wt" ]; then
+        echo "error: worktree path missing or invalid: $pre_wt" >&2
         exit 11
     fi
-else
-    echo "error: cannot read git status in $WORKTREE" >&2
-    exit 11
-fi
-
-# ---------------------------------------------------------------------------
-# Step 2: merge
-# ---------------------------------------------------------------------------
-
-# Identify the "main" repo (we cannot do git operations against the worktree's
-# branch *into* the same worktree, so use the worktree's git common-dir to
-# locate the main checkout).
-COMMON_DIR="$(git -C "$WORKTREE" rev-parse --git-common-dir 2>/dev/null)"
-# `git-common-dir` typically returns `<main-repo>/.git`; the main checkout is
-# its parent. When the common dir is a relative path, resolve it against the
-# worktree.
-if [ -n "$COMMON_DIR" ]; then
-    case "$COMMON_DIR" in
-        /*) ;;
-        *) COMMON_DIR="$(cd "$WORKTREE" && cd "$COMMON_DIR" && pwd)" ;;
-    esac
-    MAIN_REPO="$(dirname "$COMMON_DIR")"
-else
-    MAIN_REPO=""
-fi
-
-if [ -z "$MAIN_REPO" ] || [ ! -d "$MAIN_REPO" ]; then
-    echo "error: cannot locate main repo checkout for worktree $WORKTREE" >&2
-    exit 11
-fi
-
-PR_URL=""
-GH_FALLBACK="false"
-MERGE_OK="false"
-
-# Decide whether origin exists.
-HAS_ORIGIN="false"
-if git -C "$MAIN_REPO" remote get-url origin >/dev/null 2>&1; then
-    HAS_ORIGIN="true"
-fi
-
-if command -v gh >/dev/null 2>&1 && [ "$HAS_ORIGIN" = "true" ]; then
-    # Try gh first.
-    gh_stderr="$(mktemp -t gh.XXXXXX 2>/dev/null || echo "/tmp/gh.$$")"
-    # Push the branch so gh has something to PR against.
-    if git -C "$MAIN_REPO" push origin "$BRANCH" >/dev/null 2>"$gh_stderr"; then
-        :
+    if pre_porcelain="$(git -C "$pre_wt" status --porcelain 2>/dev/null)"; then
+        if [ -n "$pre_porcelain" ]; then
+            echo "error: worktree is dirty: $pre_wt" >&2
+            exit 11
+        fi
     else
-        # Push may legitimately fail (e.g. upstream rejects or auth); fall through.
-        :
+        echo "error: cannot read git status in $pre_wt" >&2
+        exit 11
     fi
-    if gh_out="$(gh pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "$TASK_ID" --body "Auto-created by orchestrator for task $TASK_ID" 2>"$gh_stderr")"; then
-        # gh emits the URL on stdout.
-        PR_URL="$(printf '%s\n' "$gh_out" | grep -Eo 'https://[^[:space:]]+' | tail -n1 || true)"
-        if gh pr merge "$BRANCH" --merge 2>>"$gh_stderr"; then
+    # Locate the main checkout via the worktree's git common-dir (we cannot merge
+    # a branch into the worktree that has it checked out). `git-common-dir`
+    # typically returns `<main-repo>/.git`; the main checkout is its parent. When
+    # the common dir is a relative path, resolve it against the worktree.
+    pre_common="$(git -C "$pre_wt" rev-parse --git-common-dir 2>/dev/null)"
+    if [ -n "$pre_common" ]; then
+        case "$pre_common" in
+            /*) ;;
+            *) pre_common="$(cd "$pre_wt" && cd "$pre_common" && pwd)" ;;
+        esac
+        pre_main="$(dirname "$pre_common")"
+    else
+        pre_main=""
+    fi
+    if [ -z "$pre_main" ] || [ ! -d "$pre_main" ]; then
+        echo "error: cannot locate main repo checkout for worktree $pre_wt" >&2
+        exit 11
+    fi
+    MAIN_REPO_ARR+=("$pre_main")
+    pre_i=$((pre_i + 1))
+done
+
+# ---------------------------------------------------------------------------
+# Step 2: per-repo merge loop (design 02-D2). Repo 1..N reuses the original
+# single-repo flow (gh push+PR+merge, else local checkout base + merge --no-ff +
+# push). Idempotency is split by path (D2-3): local uses merge-base --is-ancestor;
+# gh probes PR state by head branch. Real conflict => exit 12 (merged repos NOT
+# rolled back); push failure => record + continue, exit 13 after the loop.
+# Per-repo results accumulate in RESULT_STATUS / RESULT_PRURL / RESULT_GHFB.
+# The `state: completed` write (Step 3) fires only AFTER this whole loop succeeds.
+# ---------------------------------------------------------------------------
+RESULT_STATUS=()
+RESULT_PRURL=()
+RESULT_GHFB=()
+ANY_PUSH_FAILED="false"
+
+# Emit accumulated per-repo results (design 02-D2-5): repo 1 uses the unnumbered
+# keys (byte-unchanged for single-repo); repos 2..N append -N-suffixed keys.
+emit_results() {
+    local r=0 n
+    while [ "$r" -lt "${#RESULT_STATUS[@]}" ]; do
+        n=$((r + 1))
+        if [ "$n" -eq 1 ]; then
+            printf 'merge-status=%s\n' "${RESULT_STATUS[$r]}"
+            printf 'pr-url=%s\n' "${RESULT_PRURL[$r]}"
+            printf 'gh-fallback=%s\n' "${RESULT_GHFB[$r]}"
+        else
+            printf 'merge-status-%s=%s\n' "$n" "${RESULT_STATUS[$r]}"
+            printf 'pr-url-%s=%s\n' "$n" "${RESULT_PRURL[$r]}"
+            printf 'gh-fallback-%s=%s\n' "$n" "${RESULT_GHFB[$r]}"
+        fi
+        r=$((r + 1))
+    done
+}
+
+loop_i=0
+while [ "$loop_i" -lt "$REPO_COUNT" ]; do
+    REPO_NUM=$((loop_i + 1))
+    MAIN_REPO="${MAIN_REPO_ARR[$loop_i]}"
+    BRANCH="${BR[$loop_i]}"
+    BASE_BRANCH="${BASE_ARR[$loop_i]}"
+
+    PR_URL=""
+    GH_FALLBACK="false"
+    MERGE_OK="false"
+    STATUS="success"
+
+    # Decide whether origin exists.
+    HAS_ORIGIN="false"
+    if git -C "$MAIN_REPO" remote get-url origin >/dev/null 2>&1; then
+        HAS_ORIGIN="true"
+    fi
+
+    if command -v gh >/dev/null 2>&1 && [ "$HAS_ORIGIN" = "true" ]; then
+        # gh path idempotency (design 02-D2-3): probe PR state by head branch.
+        # `--head` is a `gh pr list` flag (NOT `gh pr view`). gh has a built-in
+        # --jq, so no external jq. MERGED => already-merged skip; OPEN => reuse
+        # the PR (merge only, no re-create); none => create + merge.
+        gh_stderr="$(mktemp -t gh.XXXXXX 2>/dev/null || echo "/tmp/gh.$$")"
+        pr_state=""
+        pr_url_existing=""
+        if gh_probe="$( (cd "$MAIN_REPO" && gh pr list --head "$BRANCH" --state all --json state,url,number --jq '.[0] | "\(.state)\t\(.url)"') 2>"$gh_stderr")"; then
+            pr_state="${gh_probe%%$'\t'*}"
+            pr_url_existing="${gh_probe#*$'\t'}"
+            [ "$pr_url_existing" = "$pr_state" ] && pr_url_existing=""
+        fi
+
+        if [ "$pr_state" = "MERGED" ]; then
+            # Already merged upstream: idempotent no-op.
             MERGE_OK="true"
+            STATUS="already-merged"
+            PR_URL="$pr_url_existing"
+        else
+            # Push the branch so gh has something to PR against.
+            git -C "$MAIN_REPO" push origin "$BRANCH" >/dev/null 2>"$gh_stderr" || true
+
+            if [ "$pr_state" = "OPEN" ]; then
+                # Reuse the existing open PR — merge directly, do NOT re-create.
+                PR_URL="$pr_url_existing"
+                if (cd "$MAIN_REPO" && gh pr merge "$BRANCH" --merge) 2>"$gh_stderr"; then
+                    MERGE_OK="true"
+                fi
+            elif gh_out="$( (cd "$MAIN_REPO" && gh pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "$TASK_ID" --body "Auto-created by orchestrator for task $TASK_ID") 2>"$gh_stderr")"; then
+                PR_URL="$(printf '%s\n' "$gh_out" | grep -Eo 'https://[^[:space:]]+' | tail -n1 || true)"
+                if (cd "$MAIN_REPO" && gh pr merge "$BRANCH" --merge) 2>>"$gh_stderr"; then
+                    MERGE_OK="true"
+                fi
+            fi
+
+            if [ "$MERGE_OK" != "true" ]; then
+                gh_err_lc="$(LC_ALL=C tr '[:upper:]' '[:lower:]' < "$gh_stderr" 2>/dev/null || true)"
+                if printf '%s' "$gh_err_lc" | grep -Eq 'already merged|no commits between'; then
+                    # gh reports the branch is already merged / nothing to merge:
+                    # normalize to already-merged, NOT a conflict (design 02-D2-3).
+                    MERGE_OK="true"
+                    STATUS="already-merged"
+                elif printf '%s' "$gh_err_lc" | grep -Eq 'auth|unauthenticated|not logged in'; then
+                    GH_FALLBACK="true"
+                    PR_URL=""
+                else
+                    rm -f "$gh_stderr"
+                    echo "error: gh merge failed for repo $REPO_NUM without auth-error indicator; treating as merge conflict; resume from repo $REPO_NUM" >&2
+                    # stdout: report per-repo status accumulated so far (merged
+                    # repos 1..k-1 are NOT rolled back — design 02-D2-3). state is
+                    # NOT written completed (that only fires after ALL repos merge).
+                    emit_results
+                    exit 12
+                fi
+            fi
+        fi
+        rm -f "$gh_stderr"
+    fi
+
+    # Fallback / no-gh path: local idempotency + `git merge --no-ff`.
+    if [ "$MERGE_OK" != "true" ]; then
+        # Local idempotency (design 02-D2-3): branch already an ancestor of base.
+        if git -C "$MAIN_REPO" merge-base --is-ancestor "$BRANCH" "$BASE_BRANCH" >/dev/null 2>&1; then
+            MERGE_OK="true"
+            STATUS="already-merged"
+        elif ! git -C "$MAIN_REPO" checkout "$BASE_BRANCH" >/dev/null 2>&1; then
+            echo "error: failed to checkout $BASE_BRANCH in $MAIN_REPO (repo $REPO_NUM)" >&2
+            exit 11
+        elif git -C "$MAIN_REPO" merge --no-ff "$BRANCH" >/dev/null 2>&1; then
+            MERGE_OK="true"
+        else
+            git -C "$MAIN_REPO" merge --abort >/dev/null 2>&1 || true
+            echo "error: local merge conflict between $BRANCH and $BASE_BRANCH (repo $REPO_NUM); resume from repo $REPO_NUM" >&2
+            # merged repos 1..k-1 are NOT rolled back (design 02-D2-3).
+            emit_results
+            exit 12
         fi
     fi
 
     if [ "$MERGE_OK" != "true" ]; then
-        # Inspect stderr for auth failure → fall back; otherwise treat as a
-        # conflict (or transient gh error). We use a permissive auth pattern:
-        # case-insensitive match on auth / unauthenticated / not logged in.
-        gh_err_lc="$(LC_ALL=C tr '[:upper:]' '[:lower:]' < "$gh_stderr" 2>/dev/null || true)"
-        if printf '%s' "$gh_err_lc" | grep -Eq 'auth|unauthenticated|not logged in'; then
-            GH_FALLBACK="true"
-            # Drop PR URL — local merge has no PR.
-            PR_URL=""
-        else
-            # Non-auth gh failure: surface as merge conflict (or "unknown gh failure").
-            # Be conservative — bail at exit 12 so the user resolves manually.
-            rm -f "$gh_stderr"
-            echo "error: gh merge failed without auth-error indicator; treating as merge conflict" >&2
-            exit 12
-        fi
-    fi
-    rm -f "$gh_stderr"
-fi
-
-# Fallback / no-gh path: local `git merge --no-ff`.
-if [ "$MERGE_OK" != "true" ]; then
-    # Ensure the main repo is on the base branch before merging.
-    if ! git -C "$MAIN_REPO" checkout "$BASE_BRANCH" >/dev/null 2>&1; then
-        echo "error: failed to checkout $BASE_BRANCH in $MAIN_REPO" >&2
-        exit 11
-    fi
-    if git -C "$MAIN_REPO" merge --no-ff "$BRANCH" >/dev/null 2>&1; then
-        MERGE_OK="true"
-    else
-        # Abort the in-progress merge so the repo is left in a sane state.
-        git -C "$MAIN_REPO" merge --abort >/dev/null 2>&1 || true
-        echo "error: local merge conflict between $BRANCH and $BASE_BRANCH" >&2
+        echo "error: merge did not complete for repo $REPO_NUM" >&2
         exit 12
     fi
-fi
 
-if [ "$MERGE_OK" != "true" ]; then
-    echo "error: merge did not complete" >&2
-    exit 12
-fi
+    RESULT_STATUS+=("$STATUS")
+    RESULT_PRURL+=("$PR_URL")
+    RESULT_GHFB+=("$GH_FALLBACK")
+    loop_i=$((loop_i + 1))
+done
 
 # ---------------------------------------------------------------------------
 # Step 3: write state=completed to the master entry frontmatter.
-# This MUST happen before push / cleanup so the user can recover from any
-# subsequent failure (which would otherwise leave the merge done but state
-# never advanced).
+# ALL N repos have now merged (each success or already-merged; none conflicted —
+# a conflict would have exited 12 above without reaching here). Per design 02-D2-4
+# this write happens AFTER the whole merge loop and BEFORE push/cleanup, so the
+# user can recover from any subsequent failure (merge done but state not advanced).
 # ---------------------------------------------------------------------------
 NOW_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
 TMP_ENTRY="$MASTER_ENTRY.tmp.$$"
@@ -292,32 +444,47 @@ awk -v now="$NOW_ISO" '
 mv -f "$TMP_ENTRY" "$MASTER_ENTRY"
 
 # ---------------------------------------------------------------------------
-# Step 4: push (only if origin exists).
+# Step 4: push (per repo, only if origin exists and the repo was actually
+# merged). state is already `completed`, so a push failure is recoverable by a
+# re-run (design: preserve exit-13 "state already completed; retry" semantics).
 # ---------------------------------------------------------------------------
-if [ "$HAS_ORIGIN" = "true" ]; then
-    if ! git -C "$MAIN_REPO" push origin "$BASE_BRANCH" >/dev/null 2>&1; then
-        echo "warning: push of $BASE_BRANCH failed; state already written completed; you can retry by re-running this script" >&2
-        # state is completed; do not cleanup.
-        printf 'merge-status=push-failed\n'
-        printf 'pr-url=%s\n' "$PR_URL"
-        printf 'gh-fallback=%s\n' "$GH_FALLBACK"
-        exit 13
+push_i=0
+while [ "$push_i" -lt "$REPO_COUNT" ]; do
+    push_num=$((push_i + 1))
+    push_main="${MAIN_REPO_ARR[$push_i]}"
+    push_base="${BASE_ARR[$push_i]}"
+    push_status="${RESULT_STATUS[$push_i]}"
+
+    if [ "$push_status" != "already-merged" ]; then
+        if git -C "$push_main" remote get-url origin >/dev/null 2>&1; then
+            if ! git -C "$push_main" push origin "$push_base" >/dev/null 2>&1; then
+                echo "warning: push of $push_base failed for repo $push_num; state already written completed; you can retry by re-running this script" >&2
+                RESULT_STATUS[$push_i]="push-failed"
+                ANY_PUSH_FAILED="true"
+            fi
+        fi
     fi
+    push_i=$((push_i + 1))
+done
+
+if [ "$ANY_PUSH_FAILED" = "true" ]; then
+    # state is completed; do NOT cleanup. Report per-repo status and exit 13.
+    emit_results
+    exit 13
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5: cleanup via orch-cleanup-worker.sh --force.
+# Step 5: cleanup via orch-cleanup-worker.sh --force (already multi-repo aware:
+# it removes the full worktree set from dispatch.md). Errors here do not undo the
+# merge; surface them as a warning but still report success.
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLEANUP_SCRIPT="$SCRIPT_DIR/orch-cleanup-worker.sh"
 if [ -x "$CLEANUP_SCRIPT" ]; then
-    # Cleanup errors do not undo the merge; surface them but still report success.
     "$CLEANUP_SCRIPT" "$TASK_ID" "$LIST_DIR" --force >/dev/null 2>&1 || \
         echo "warning: cleanup helper reported a failure; manual cleanup may be required" >&2
 fi
 
-printf 'merge-status=success\n'
-printf 'pr-url=%s\n' "$PR_URL"
-printf 'gh-fallback=%s\n' "$GH_FALLBACK"
+emit_results
 
 exit 0

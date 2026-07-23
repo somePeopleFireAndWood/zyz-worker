@@ -237,17 +237,63 @@ OLD_BASE="$(fm_field "$OLD_DISPATCH" base)"
 [ -z "$OLD_BASE" ] && OLD_BASE="$(fm_field "$OLD_ENTRY" base)"
 OLD_PLUGIN_ROOT="$(fm_field "$OLD_DISPATCH" plugin-root)"
 
-# (e) reusing worktree (worktree/both) -> the old worktree path must still exist.
+# ─── Old worktree SET (D4) ───────────────────────────────────────────────────
+#
+# The reuse axis is the old task's worktree SET, not just its primary worktree.
+# Index 0 = primary = repo 1 (the fields read above, dispatch-first / master
+# fallback — byte-identical to the historical single-repo path). Indices 1..N-1
+# come from the old dispatch.md's RESOLVED numbered group (worktree-2 /
+# source-repo-2 / branch-2 / base-2, …), the single authoritative source for the
+# repo set (02-D0). The master entry has no reliable resolved numbered group, so
+# the numbered tail is dispatch-only; a single-repo old task (dispatch absent or
+# carrying no numbered group) yields a 1-element set and every downstream path
+# stays byte-identical.
+OLD_WT=("$OLD_WORKTREE")
+OLD_SR=("$OLD_SOURCE_REPO")
+OLD_BR=("$OLD_BRANCH")
+OLD_BS=("$OLD_BASE")
+if [ -f "$OLD_DISPATCH" ]; then
+    i=2
+    while :; do
+        wv="$(fm_field "$OLD_DISPATCH" "worktree-$i")"
+        [ -n "$wv" ] || break
+        OLD_WT+=("$(expand_tilde "$wv")")
+        OLD_SR+=("$(expand_tilde "$(fm_field "$OLD_DISPATCH" "source-repo-$i")")")
+        OLD_BR+=("$(fm_field "$OLD_DISPATCH" "branch-$i")")
+        OLD_BS+=("$(fm_field "$OLD_DISPATCH" "base-$i")")
+        i=$((i + 1))
+    done
+fi
+
+# (e) reusing worktree (worktree/both) -> EVERY worktree in the old set must
+# still exist. Any missing repo aborts with exit 5 naming which one. The primary
+# (index 0) keeps its historical diagnostic text; extra repos name their number.
 case "$REUSE_SCOPE" in
     worktree|both)
-        if [ -z "$OLD_WORKTREE" ]; then
-            echo "error: reuse-from old task has no worktree recorded (entry/dispatch): $REUSE_FROM" >&2
-            exit 5
-        fi
-        if [ ! -e "$OLD_WORKTREE" ]; then
-            echo "error: reuse-from old worktree path no longer exists: $OLD_WORKTREE" >&2
-            exit 5
-        fi
+        idx=0
+        while [ "$idx" -lt "${#OLD_WT[@]}" ]; do
+            owt="${OLD_WT[$idx]}"
+            if [ "$idx" -eq 0 ]; then
+                if [ -z "$owt" ]; then
+                    echo "error: reuse-from old task has no worktree recorded (entry/dispatch): $REUSE_FROM" >&2
+                    exit 5
+                fi
+                if [ ! -e "$owt" ]; then
+                    echo "error: reuse-from old worktree path no longer exists: $owt" >&2
+                    exit 5
+                fi
+            else
+                if [ -z "$owt" ]; then
+                    echo "error: reuse-from old task repo $((idx + 1)) has no worktree recorded in dispatch.md: $REUSE_FROM" >&2
+                    exit 5
+                fi
+                if [ ! -e "$owt" ]; then
+                    echo "error: reuse-from old worktree path (repo $((idx + 1))) no longer exists: $owt" >&2
+                    exit 5
+                fi
+            fi
+            idx=$((idx + 1))
+        done
         ;;
 esac
 
@@ -331,6 +377,21 @@ case "$REUSE_SCOPE" in
         WORKTREE="$OLD_WORKTREE"
         ;;
 esac
+
+# ZYZ_WORKTREES: colon-separated worktree set, primary first (01-D4-6). Only
+# meaningful for a >=2 worktree set; a single-worktree set leaves it EMPTY so
+# worktree-scope env injection stays byte-compatible with the single-repo case
+# (variable absent = single-worktree behavior).
+ZYZ_WORKTREES=""
+if [ "${#OLD_WT[@]}" -ge 2 ]; then
+    for _owt in "${OLD_WT[@]}"; do
+        if [ -z "$ZYZ_WORKTREES" ]; then
+            ZYZ_WORKTREES="$_owt"
+        else
+            ZYZ_WORKTREES="$ZYZ_WORKTREES:$_owt"
+        fi
+    done
+fi
 
 # ─── Dependencies (checked AFTER the tmux-free preconditions above) ───────────
 for dep in tmux git; do
@@ -433,6 +494,16 @@ case "$REUSE_SCOPE" in
         tmux send-keys -t "$TMUX_SESSION" \
             "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
             Enter
+        # Multi-repo (>=2 worktree set): export ZYZ_WORKTREES so the reused
+        # worker has write scope over the whole inherited set (01-D4-6, mirrors
+        # spawn's Step 9 multi-repo export). Emitted as a SEPARATE export ONLY
+        # when the set has >=2 worktrees, so the single-worktree case above is
+        # byte-identical (variable absent = single-worktree behavior).
+        if [ -n "$ZYZ_WORKTREES" ]; then
+            tmux send-keys -t "$TMUX_SESSION" \
+                "export ZYZ_WORKTREES='$ZYZ_WORKTREES'" \
+                Enter
+        fi
         # Inject Go build I/O optimization (worktree scope ONLY: new session/new
         # pane/new claude, same shape as spawn). The tmux|both branches reuse an
         # already-started claude whose env is frozen, so they do NOT get this.
@@ -495,6 +566,27 @@ else
     RECOVERY_BODY="(awaiting claude startup; orch-check-worker.sh populates this on the first poll where claude has registered AND first LLM round-trip has produced a transcript)"
 fi
 
+# Build the numbered field group (repos 2..N) inherited from the old worktree
+# SET, matching the exact format spawn emits: after `base:`, append
+# worktree-N / source-repo-N / branch-N / base-N per extra repo. Accumulated
+# into a variable (heredocs can't inline a loop; same idiom as spawn's Phase-1
+# and check's rewrite_dispatch_atomic). Empty for a single-repo set, so the
+# heredoc inlines it right before `plugin-root:` with NO extra blank line ->
+# single-repo dispatch.md stays byte-identical.
+NUMBERED_GROUP=""
+if [ "${#OLD_WT[@]}" -ge 2 ]; then
+    idx=1
+    while [ "$idx" -lt "${#OLD_WT[@]}" ]; do
+        n=$((idx + 1))
+        NUMBERED_GROUP="${NUMBERED_GROUP}worktree-$n: ${OLD_WT[$idx]}
+source-repo-$n: ${OLD_SR[$idx]}
+branch-$n: ${OLD_BR[$idx]}
+base-$n: ${OLD_BS[$idx]}
+"
+        idx=$((idx + 1))
+    done
+fi
+
 TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 cat > "$TMP_DISPATCH" <<EOF
 ---
@@ -508,7 +600,7 @@ worktree: $WORKTREE
 source-repo: $SOURCE_REPO
 branch: $BRANCH
 base: $BASE
-plugin-root: $PLUGIN_ROOT
+${NUMBERED_GROUP}plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
 reuse-from: $REUSE_FROM
 reuse-scope: $REUSE_SCOPE

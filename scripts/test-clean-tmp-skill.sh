@@ -54,7 +54,7 @@ SKIPPED=0
 
 # Single source of truth for the expected release version (design §5).  A
 # future bump is one edit here.
-EXPECTED_VERSION="0.9.2"
+EXPECTED_VERSION="0.10.0"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns.  Derived so a version bump only requires editing EXPECTED_VERSION.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"

@@ -110,37 +110,85 @@ fm_field() {
 # fire even on hosts without tmux. The order matters: argv (2) → master
 # entry missing (4) → source-repo invalid (5) → tmux/git missing (3) →
 # rest.
-SOURCE_REPO="$(fm_field "$MASTER_ENTRY" source-repo)"
-if [ -z "$SOURCE_REPO" ]; then
+# --- Repo discovery (D2). Multi-repo tasks declare additional repos via the
+# numbered flat keys source-repo-2, source-repo-3, ... (numbering MUST start at
+# 2 and be contiguous). The primary (repo 1) is the unnumbered `source-repo:`.
+# Read raw declared values until the first empty key; REPO_COUNT is the count.
+# A single-repo entry (only `source-repo:`) yields REPO_COUNT=1 and walks the
+# exact legacy code path below (byte-identical diagnostics — T4' depends on it).
+declare -a RAW_SOURCE_REPOS
+i=1
+while :; do
+    if [ "$i" -ge 2 ]; then rkey="source-repo-$i"; else rkey="source-repo"; fi
+    rval="$(fm_field "$MASTER_ENTRY" "$rkey")"
+    [ -n "$rval" ] || break
+    RAW_SOURCE_REPOS[$i]="$rval"
+    i=$((i + 1))
+done
+REPO_COUNT=$((i - 1))
+
+# Primary source-repo is mandatory. Message kept byte-identical to the legacy
+# single-repo path.
+if [ "$REPO_COUNT" -lt 1 ]; then
     echo "error: master entry has no source-repo field: $MASTER_ENTRY" >&2
     exit 5
 fi
-# Expand a leading `~/` if present (bash does not expand ~ inside a
-# variable). The `~/` pattern MUST be quoted inside ${…#PAT} — otherwise
-# bash treats the leading `~` as the tilde-expansion metachar and the
-# strip silently becomes a no-op, leaving e.g. `$HOME/~/workspace/...`
-# which then fails the path-existence check below.
-case "$SOURCE_REPO" in
-    "~/"*) SOURCE_REPO="$HOME/${SOURCE_REPO#"~/"}" ;;
-esac
-# After expansion, the path must be absolute. Reject everything that is
-# neither `/...` nor a `~/...` that just got expanded. (`~` alone with no
-# trailing `/` also lands here — see §Important Details > Quoting and `~`.)
-case "$SOURCE_REPO" in
-    /*) : ;;
-    *)
-        echo "error: source-repo must be an absolute path or start with ~/: $SOURCE_REPO" >&2
+
+# Numbering-gap detection: the discovery loop stops at the first empty key, so a
+# hole (e.g. source-repo-3 present but source-repo-2 absent) would silently drop
+# the higher repos. Probe indices past REPO_COUNT (up to 9); any populated higher
+# key means the numbering is not contiguous → exit 5 naming the gap.
+gap_probe=$((REPO_COUNT + 1))
+while [ "$gap_probe" -le 9 ]; do
+    if [ -n "$(fm_field "$MASTER_ENTRY" "source-repo-$gap_probe")" ]; then
+        echo "error: source-repo numbering gap: source-repo-$((REPO_COUNT + 1)) is missing but source-repo-$gap_probe is present" >&2
         exit 5
-        ;;
-esac
-if [ ! -e "$SOURCE_REPO" ]; then
-    echo "error: source-repo path does not exist: $SOURCE_REPO" >&2
-    exit 5
-fi
-if ! git -C "$SOURCE_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "error: source-repo is not a git work tree: $SOURCE_REPO" >&2
-    exit 5
-fi
+    fi
+    gap_probe=$((gap_probe + 1))
+done
+
+# --- Per-repo validation (D4-1). Run the existing four checks (non-empty /
+# absolute-or-~ / exists / is-git-work-tree) for every repo. For a single-repo
+# entry the diagnostics are byte-identical to the legacy path (pfx empty); for
+# repo N>=2 each message carries a `repo <N> (<path>)` prefix.
+declare -a SOURCE_REPOS
+n=1
+while [ "$n" -le "$REPO_COUNT" ]; do
+    sr="${RAW_SOURCE_REPOS[$n]}"
+    if [ "$n" -ge 2 ]; then pfx="repo $n ($sr): "; else pfx=""; fi
+    # Expand a leading `~/` if present (bash does not expand ~ inside a
+    # variable). The `~/` pattern MUST be quoted inside ${…#PAT} — otherwise
+    # bash treats the leading `~` as the tilde-expansion metachar and the
+    # strip silently becomes a no-op, leaving e.g. `$HOME/~/workspace/...`
+    # which then fails the path-existence check below.
+    case "$sr" in
+        "~/"*) sr="$HOME/${sr#"~/"}" ;;
+    esac
+    # After expansion, the path must be absolute. Reject everything that is
+    # neither `/...` nor a `~/...` that just got expanded. (`~` alone with no
+    # trailing `/` also lands here — see §Important Details > Quoting and `~`.)
+    case "$sr" in
+        /*) : ;;
+        *)
+            echo "error: ${pfx}source-repo must be an absolute path or start with ~/: $sr" >&2
+            exit 5
+            ;;
+    esac
+    if [ ! -e "$sr" ]; then
+        echo "error: ${pfx}source-repo path does not exist: $sr" >&2
+        exit 5
+    fi
+    if ! git -C "$sr" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "error: ${pfx}source-repo is not a git work tree: $sr" >&2
+        exit 5
+    fi
+    SOURCE_REPOS[$n]="$sr"
+    n=$((n + 1))
+done
+
+# Primary repo scalar (repo 1). Downstream single-repo write paths and the
+# dispatch.md/stdout primary fields use this byte-identically.
+SOURCE_REPO="${SOURCE_REPOS[1]}"
 
 # Dependencies. Checked AFTER source-repo so the source-repo negative
 # tests fire even when tmux is absent. (Note: the source-repo git
@@ -177,21 +225,68 @@ fi
 PROJECT="$(fm_field "$MASTER_ENTRY" project)"
 PROJECT="${PROJECT:-$(basename "$SOURCE_REPO")}"
 
+# Repo-1 branch/base resolution (unchanged single-repo semantics). These also
+# serve as the default-inheritance source for repos N>=2: branch-N defaults to
+# the RESOLVED value of branch, base-N to the RESOLVED value of base.
 BRANCH="$(fm_field "$MASTER_ENTRY" branch)"
 [ -z "$BRANCH" ] && BRANCH="task/$TASK_ID"
 
 BASE="$(fm_field "$MASTER_ENTRY" base)"
 [ -z "$BASE" ] && BASE="main"
 
-WORKTREE="$(fm_field "$MASTER_ENTRY" worktree)"
-if [ -z "$WORKTREE" ]; then
-    WORKTREE="$HOME/.zyz-worker/worktrees/$PROJECT/$BRANCH"
-fi
-# Expand a leading `~/` if present. Quote the pattern — see the
-# source-repo expansion above for why the bare `~/` form is a no-op.
-case "$WORKTREE" in
-    "~/"*) WORKTREE="$HOME/${WORKTREE#"~/"}" ;;
-esac
+# Per-repo branch / base / worktree resolution (D4-2, layout D3).
+#
+# Worktree default layout:
+#   single-repo (REPO_COUNT==1): ~/.zyz-worker/worktrees/<project>/<branch>
+#       (byte-identical to legacy).
+#   multi-repo  (REPO_COUNT>=2): every repo — including the primary — nests under
+#       the shared task dir as siblings:
+#       ~/.zyz-worker/worktrees/<primary-project>/task/<task-id>/<repo-basename>
+#
+# The resolved values are the authoritative concrete values written into
+# dispatch.md (02-D0): downstream merge/cleanup read them, so branch-N/base-N/
+# worktree-N are never left empty.
+declare -a BRANCHES BASES WORKTREES
+n=1
+while [ "$n" -le "$REPO_COUNT" ]; do
+    sr="${SOURCE_REPOS[$n]}"
+    if [ "$n" -ge 2 ]; then
+        bkey="branch-$n"; basekey="base-$n"; wkey="worktree-$n"
+    else
+        bkey="branch"; basekey="base"; wkey="worktree"
+    fi
+
+    # branch-N defaults to the resolved repo-1 branch; base-N to resolved base.
+    br="$(fm_field "$MASTER_ENTRY" "$bkey")"
+    [ -z "$br" ] && br="$BRANCH"
+    ba="$(fm_field "$MASTER_ENTRY" "$basekey")"
+    [ -z "$ba" ] && ba="$BASE"
+
+    # worktree-N default layout depends on REPO_COUNT (see above).
+    wt="$(fm_field "$MASTER_ENTRY" "$wkey")"
+    if [ -z "$wt" ]; then
+        if [ "$REPO_COUNT" -ge 2 ]; then
+            wt="$HOME/.zyz-worker/worktrees/$PROJECT/task/$TASK_ID/$(basename "$sr")"
+        else
+            wt="$HOME/.zyz-worker/worktrees/$PROJECT/$BRANCH"
+        fi
+    fi
+    # Expand a leading `~/` if present. Quote the pattern — see the
+    # source-repo expansion above for why the bare `~/` form is a no-op.
+    case "$wt" in
+        "~/"*) wt="$HOME/${wt#"~/"}" ;;
+    esac
+
+    BRANCHES[$n]="$br"
+    BASES[$n]="$ba"
+    WORKTREES[$n]="$wt"
+    n=$((n + 1))
+done
+
+# Repo-1 scalars (byte-compat with the legacy single-repo write/stdout paths).
+BRANCH="${BRANCHES[1]}"
+BASE="${BASES[1]}"
+WORKTREE="${WORKTREES[1]}"
 
 TMUX_SESSION="$(fm_field "$MASTER_ENTRY" tmux-session)"
 [ -z "$TMUX_SESSION" ] && TMUX_SESSION="zyz-task-$TASK_ID"
@@ -214,10 +309,52 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     exit 6
 fi
 
-if [ -e "$WORKTREE" ]; then
-    echo "error: worktree path already exists: $WORKTREE" >&2
-    exit 5
+# Per-repo worktree-existence check (loop). Single-repo message byte-identical.
+n=1
+while [ "$n" -le "$REPO_COUNT" ]; do
+    if [ -e "${WORKTREES[$n]}" ]; then
+        echo "error: worktree path already exists: ${WORKTREES[$n]}" >&2
+        exit 5
+    fi
+    n=$((n + 1))
+done
+
+# NEW pairwise-distinctness check (D4-3b, review finding 6): no two resolved
+# worktree paths may be equal. Two source-repos with the same basename resolve
+# to the same default nested path; the existence check above passes for both
+# (nothing created yet) and only the SECOND `git worktree add` would fail (as
+# exit 7, not the intended exit 5). This runs before any creation so the
+# collision surfaces as exit 5, naming the colliding repos.
+if [ "$REPO_COUNT" -ge 2 ]; then
+    a=1
+    while [ "$a" -le "$REPO_COUNT" ]; do
+        b=$((a + 1))
+        while [ "$b" -le "$REPO_COUNT" ]; do
+            if [ "${WORKTREES[$a]}" = "${WORKTREES[$b]}" ]; then
+                echo "error: worktree path collision between repo $a and repo $b: ${WORKTREES[$a]} (give an explicit worktree-$b:)" >&2
+                exit 5
+            fi
+            b=$((b + 1))
+        done
+        a=$((a + 1))
+    done
 fi
+
+# NEW no-colon check (D4-3c, review finding 7): ZYZ_WORKTREES / the reuse-config
+# `worktrees:` line use ':' as the path separator, so no worktree path may
+# contain a colon. The default sibling layout never contains one; this guards
+# user-supplied worktree-N: overrides.
+n=1
+while [ "$n" -le "$REPO_COUNT" ]; do
+    case "${WORKTREES[$n]}" in
+        *:*)
+            if [ "$n" -ge 2 ]; then wpfx="repo $n "; else wpfx=""; fi
+            echo "error: ${wpfx}worktree path must not contain ':': ${WORKTREES[$n]}" >&2
+            exit 5
+            ;;
+    esac
+    n=$((n + 1))
+done
 
 if [ -e "$RUNTIME_DIR" ]; then
     echo "error: runtime dir already exists: $RUNTIME_DIR" >&2
@@ -240,15 +377,46 @@ if [ -n "$LIST_PARENT" ] && [ -d "$LIST_PARENT" ]; then
     done
 fi
 
-# Step 4: create the worktree.
-mkdir -p "$(dirname "$WORKTREE")"
-if ! git -C "$SOURCE_REPO" worktree add "$WORKTREE" -b "$BRANCH" "$BASE" >/dev/null 2>&1; then
-    # Try again without -b (branch may already exist locally).
-    if ! git -C "$SOURCE_REPO" worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1; then
-        echo "error: git worktree add failed (branch=$BRANCH base=$BASE target=$WORKTREE)" >&2
-        exit 7
+# Step 4: create the worktrees (one per repo, in ascending N).
+#
+# Partial-failure rollback: if repo k fails, reverse-order
+# `git worktree remove --force` the worktrees already created for repos 1..k-1
+# (their newly-created branches are intentionally NOT deleted — a stray branch
+# is harmless and deleting one risks clobbering a pre-existing branch), then
+# exit 7. Preserves the "exit 7 = container not built" semantics.
+#
+# Single-repo: this loop runs exactly once and the failure diagnostic is
+# byte-identical to the legacy path (kfx empty for repo 1).
+n=1
+while [ "$n" -le "$REPO_COUNT" ]; do
+    sr="${SOURCE_REPOS[$n]}"
+    wt="${WORKTREES[$n]}"
+    br="${BRANCHES[$n]}"
+    ba="${BASES[$n]}"
+    mkdir -p "$(dirname "$wt")"
+    if ! git -C "$sr" worktree add "$wt" -b "$br" "$ba" >/dev/null 2>&1; then
+        # Try again without -b (branch may already exist locally).
+        if ! git -C "$sr" worktree add "$wt" "$br" >/dev/null 2>&1; then
+            if [ "$n" -ge 2 ]; then kfx="repo $n "; else kfx=""; fi
+            # Roll back worktrees already created for repos 1..n-1 (reverse order).
+            rolled=""
+            k=$((n - 1))
+            while [ "$k" -ge 1 ]; do
+                if git -C "${SOURCE_REPOS[$k]}" worktree remove --force "${WORKTREES[$k]}" >/dev/null 2>&1; then
+                    rolled="repo $k (${WORKTREES[$k]})${rolled:+, }$rolled"
+                fi
+                k=$((k - 1))
+            done
+            if [ -n "$rolled" ]; then
+                echo "error: ${kfx}git worktree add failed (branch=$br base=$ba target=$wt); rolled back: $rolled" >&2
+            else
+                echo "error: ${kfx}git worktree add failed (branch=$br base=$ba target=$wt)" >&2
+            fi
+            exit 7
+        fi
     fi
-fi
+    n=$((n + 1))
+done
 
 # Step 5: create the runtime dir.
 mkdir -p "$RUNTIME_DIR"
@@ -315,6 +483,23 @@ tmux send-keys -t "$TMUX_SESSION" \
     "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
     Enter
 
+# Step 9a: multi-repo only — export ZYZ_WORKTREES (colon-separated, primary
+# first) so the worker (claude + execute-task) knows it owns N worktrees and has
+# full write access to each. Single-repo does NOT export this: its absence means
+# single-worktree legacy behavior (D4-6, D6). Injected the same way as the
+# other env above.
+if [ "$REPO_COUNT" -ge 2 ]; then
+    ZYZ_WT_LIST=""
+    n=1
+    while [ "$n" -le "$REPO_COUNT" ]; do
+        ZYZ_WT_LIST="${ZYZ_WT_LIST:+$ZYZ_WT_LIST:}${WORKTREES[$n]}"
+        n=$((n + 1))
+    done
+    tmux send-keys -t "$TMUX_SESSION" \
+        "export ZYZ_WORKTREES='$ZYZ_WT_LIST'" \
+        Enter
+fi
+
 # Step 9b: inject Go build I/O optimization (GOTMPDIR tmpfs + GOFLAGS=-p=N) into
 # the pane BEFORE the L2 driver starts claude, so claude's `go build` children
 # inherit it. orch-build-env.sh bakes the candidate values and the snippet's own
@@ -352,6 +537,28 @@ SHELL_PID="$(echo "$TMUX_PANE_INFO" | awk '{print $3}')"
 WORKTREE_PHYS="$(cd "$WORKTREE" && pwd -P)"
 ENCODED_CWD="$(echo "$WORKTREE_PHYS" | tr '/.' '--' | tr -s '-')"
 
+# Multi-repo numbered field group (D4-7). Accumulated into a single variable
+# BEFORE the heredoc so it can be expanded inline (the heredoc cannot loop).
+# For N=2..REPO_COUNT, in ascending N and this exact per-repo order:
+#   worktree-N: / source-repo-N: / branch-N: / base-N:
+# Values are the RESOLVED concrete values (never empty) — 02-D0 relies on this.
+# The variable carries a LEADING newline (so it splices directly after the
+# `base:` scalar) and NO trailing newline. Single-repo: it stays empty, so the
+# `base: $BASE$NUMBERED_FIELDS` line renders byte-identically to the legacy
+# layout (`base: <value>` with the next line being `plugin-root:`).
+NUMBERED_FIELDS=""
+if [ "$REPO_COUNT" -ge 2 ]; then
+    n=2
+    while [ "$n" -le "$REPO_COUNT" ]; do
+        NUMBERED_FIELDS="${NUMBERED_FIELDS}
+worktree-$n: ${WORKTREES[$n]}
+source-repo-$n: ${SOURCE_REPOS[$n]}
+branch-$n: ${BRANCHES[$n]}
+base-$n: ${BASES[$n]}"
+        n=$((n + 1))
+    done
+fi
+
 TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 cat > "$TMP_DISPATCH" <<EOF
 ---
@@ -364,7 +571,7 @@ shell-pid: $SHELL_PID
 worktree: $WORKTREE
 source-repo: $SOURCE_REPO
 branch: $BRANCH
-base: $BASE
+base: $BASE$NUMBERED_FIELDS
 plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
 reuse-from:
@@ -387,8 +594,21 @@ mv -f "$TMP_DISPATCH" "$DISPATCH_FILE"
 
 # Step 11: stdout report. spawn never starts claude — that is the L2 driver's
 # job. spawn's job ends here, with the container built and dispatch.md written.
+# Single-repo output is byte-identical (session-name= / worktree= / source-repo=
+# = primary). Multi-repo appends worktree-N= / source-repo-N= for N=2..REPO_COUNT
+# and repo-count=<N> (repo-count is emitted ONLY for multi-repo, so existing
+# single-repo line-set assertions are not broken).
 printf 'session-name=%s\n' "$TMUX_SESSION"
 printf 'worktree=%s\n' "$WORKTREE"
 printf 'source-repo=%s\n' "$SOURCE_REPO"
+if [ "$REPO_COUNT" -ge 2 ]; then
+    n=2
+    while [ "$n" -le "$REPO_COUNT" ]; do
+        printf 'worktree-%s=%s\n' "$n" "${WORKTREES[$n]}"
+        printf 'source-repo-%s=%s\n' "$n" "${SOURCE_REPOS[$n]}"
+        n=$((n + 1))
+    done
+    printf 'repo-count=%s\n' "$REPO_COUNT"
+fi
 
 exit 0

@@ -59,7 +59,7 @@ Per-SubTask scoreboard:
 - Coded: (true once implementation is complete)
 - Tested: (true once this SubTask's tests pass)
 - Reviewed: (true once review-agent reports no changes for this SubTask; rejected findings allowed if reasons are recorded)
-- Committed: (commit sha for this SubTask's autonomous commit, or the failure reason if the commit/push failed — failure is non-blocking)
+- Committed: (commit sha for this SubTask's autonomous commit, or the failure reason if the commit/push failed — failure is non-blocking. For a multi-repo SubTask that touched more than one worktree, record one `<repo>:<sha>` per line, one line per repo committed.)
 - SubTask Status File: (path if this SubTask keeps its own status file; optional)
 - Rejected Suggestions: (list each rejection with reason, one per line)
 - Notes:

@@ -36,8 +36,10 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - orchestrator 可以在任意 cwd 启动，包括 `~/` 或任何非 git 目录；它不假设自己 cwd 在被调度项目的 git repo 内。
 - 一份 master list（`<list-dir>/tasks/*.md`）里可以混合来自不同项目的 task，每个 task 各自在自己的 master entry frontmatter 里声明 `source-repo: <绝对路径或 ~/ 开头的路径>`。
 - `source-repo` 是**必须**字段，由用户写；orchestrator 不自动推断。`~/workspace/foo` 与 `~/workspace/bar` 这种跨 repo 调度由此原生支持。
-- spawn helper 会对 `source-repo` 做 4 道校验：缺字段、非绝对路径、路径不存在、不是 git work tree —— 任何一道失败都直接以 exit 5 + 精确诊断字符串退出，task 留在 `not-analyzed`。
+- **单任务跨多仓（默认行为）**：一个 task 涉及多个仓库时，默认就是**一个 tmux session + 一个 claude 管理该任务名下的多个仓库 worktree**（每仓一个 worktree + 各自分支 / 各自提交推送），不再默认按仓拆成多个 session。附加仓用编号键 `source-repo-2:`、`source-repo-3:`… 声明（编号从 2 起、必须连续）；无编号的 `source-repo:` 为主仓（primary，其 worktree = pane cwd）。`branch-N:` / `base-N:` / `worktree-N:` 可逐仓覆盖，省略时按默认继承（分支/基线继承主仓解析值，worktree 走兄弟目录布局：同一父目录、目录名 = 仓库名，`go.work` 的 `../<repo>` 相对引用可解析）。只写单个 `source-repo:` 的条目与旧行为逐字节兼容。
+- spawn helper 会对**每个** `source-repo[-N]` 做 4 道校验：缺字段、非绝对路径、路径不存在、不是 git work tree —— 任何一道失败都直接以 exit 5 + 精确诊断字符串退出（多仓诊断带 `repo <N>` 前缀），task 留在 `not-analyzed`；编号空洞（有 `-3` 无 `-2`）与 worktree 路径含 `:`（`ZYZ_WORKTREES` 分隔符）同样 exit 5。多仓时 spawn 建 N 个 worktree + 仅 1 个 tmux session + 1 个 claude；merge / cleanup / reuse 按仓逐个处理（仓集从 `dispatch.md` 的已解析编号字段组读取），merge 非原子、fail-fast、重跑幂等（已合仓跳过）。
 - 软警示：**不要**把某个 task 的 `source-repo:` 指向 zyz-worker 插件仓库自身，除非你的本意就是在插件源码内派发一个 worker。无意中指向插件 repo 会导致 worker 在插件仓库里建分支与 worktree，与正常项目开发混淆。
+- **隔离边界**：worker 与 worker 之间互不触碰对方的 worktree（spawn 以各 worktree 路径两两不相交强制）；worker 内部对名下**所有** worktree 有完整写权。即 `each worker = 1 tmux session + n git worktrees (one per repo; n=1 for single-repo tasks) + 1 full claude process`（保留 worker 概念与全部标识符，仅 worktree 数量不再限定为 1）。
 
 三层调度架构（spawn → L2 启动真 claude → parent-shell invariant → exactly-once 幂等 → dispatch-bound 绑定）的端到端验收脚本是 `scripts/test-e2e-layered.sh`（可移植，Linux/macOS 均可）。运行：`bash scripts/test-e2e-layered.sh`（`--keep` 保留 fixture 供调试）。它需要 `tmux`/`git`/`claude` 都在 PATH 且 `claude` 已登录，并且会**消耗 API 配额**（A4 触发一次真实 LLM 往返）。这是真 claude 验收，与纯脚本单元测 `scripts/test-orchestration-helpers.sh` 分开。
 
@@ -46,14 +48,14 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 `/orchestrate-tasks` 支持「复用一个**已完成**任务遗留的 tmux session 和/或 git worktree 来创建新任务」，而不是再走一遍标准 spawn（重新 `git worktree add` + 新 session）。新任务在自己的 master entry frontmatter 里声明：
 
 - `reuse-from: <old-task-id>` —— 要复用其容器的旧任务（必须是**同一 list** 内、`state: completed` 的任务）。
-- `reuse-scope: worktree | tmux | both` —— 复用粒度（默认 `both`）。`worktree`=复用旧 worktree + 新 session + 新 claude；`tmux`=复用旧 session（新任务跑在旧 pane 的 worktree 里，cwd 不可变，`worktree:` 字段被忽略）；`both`=复用旧 worktree + 旧 session。
+- `reuse-scope: worktree | tmux | both` —— 复用粒度（默认 `both`）。复用交接的是旧任务的**整个 worktree 集合**（多仓时全部仓，不支持只复用其中某一仓）。`worktree`=复用旧 worktree 集合 + 新 session + 新 claude；`tmux`=复用旧 session（新任务跑在旧 pane 的主仓 worktree 里，cwd 不可变，`worktree:` 字段被忽略，其余仓随集合整体交接）；`both`=复用旧 worktree 集合 + 旧 session。多仓复用时通过带内运行时配置块的可选 `worktrees:` 行（冒号分隔、主仓在前）把整套 worktree 交给 claude。
 - `reuse-claude: true | false` —— 仅在复用 tmux 时有意义。`true`（默认）=复用同一个正在运行的 claude 进程（不重启，新任务运行时通过 *带内运行时配置块* 交给它）；`false`=在复用的 session 里重启 claude。`worktree` scope 下被忽略（一定是新 claude）。
 
-落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## Container Reuse`。
+落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree（多仓时为整套 worktree）——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## Container Reuse`。
 
 ## Go 构建 I/O 优化注入（Go build I/O optimization）
 
-多个 worker 并行在各自 worktree 里跑 `go build ./...` 时，**总编译并行 ≈ worker 数 × 每个 build 的 `-p`**（`-p` 默认 = NumCPU，常为 16）。worker 不限本身没问题，真正会把单块磁盘 I/O 打满的是「每个 build 又各自十几路链接、且中间产物全写同一块盘」这个二次放大。
+多个 worker 并行在各自 worktree（多仓 worker 则是名下多个 worktree）里跑 `go build ./...` 时，**总编译并行 ≈ worker 数 × 每个 build 的 `-p`**（`-p` 默认 = NumCPU，常为 16）。worker 不限本身没问题，真正会把单块磁盘 I/O 打满的是「每个 build 又各自十几路链接、且中间产物全写同一块盘」这个二次放大。
 
 为消除这个雪崩，orchestrator **默认**在派发每个 worker 时，向其 tmux pane 注入两项 Go 构建 env（注入发生在 L2 启动 claude **之前**，故 claude 派生的 `go build` 子进程继承之）：
 

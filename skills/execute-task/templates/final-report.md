@@ -10,6 +10,8 @@
 
 ## Changes
 
+<!-- Multi-repo tasks: split this section by repo — one subsection per repo listing repo / branch / commits / push result. Single-repo tasks: a flat list is fine. -->
+
 ## Tests
 
 <!-- Enumerate every aggregate category actually executed; each ran-with-result or skipped-with-reason (matches status ## Final Aggregate Testing). -->

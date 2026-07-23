@@ -5465,6 +5465,1540 @@ t12_wiring_guard() {
     fi
 }
 
+# ===========================================================================
+# MULTI-REPO GROUPS (task zyz-multi-repo-single-session, design 01/02/04).
+#
+# These groups cover the single-session / N-worktree feature: spawn builds N
+# worktrees + 1 tmux session; dispatch.md carries the RESOLVED numbered field
+# group (worktree-N / source-repo-N / branch-N / base-N); merge / cleanup /
+# reuse read that group from dispatch.md (the authoritative repo set, design
+# 02-D0), never re-discovering it from the master entry.
+#
+# CONVENTION NOTE — no EXIT trap.  Like T11b / T8-reuse-rewrite / TR-pos (all of
+# which run AFTER T8), these groups deliberately do NOT install a `trap … EXIT`.
+# T8 chained T6's EXIT trap; a fresh EXIT trap here would CLOBBER that chain and
+# T6/T8 teardown (their F8 residue checks + tmproot removal) would silently never
+# run.  Instead every group defines a synchronous teardown (kill any tmux
+# sessions it created + rm -rf its mktemp -d root) and calls it on EVERY return
+# path, so no scratch dir is ever leaked.
+# ===========================================================================
+
+# zyzm_init_git_repo <dir> — init a git repo at <dir> with a `main` branch and
+# one initial commit.  Returns non-zero on any git failure so callers can SKIP.
+zyzm_init_git_repo() {
+    local dir="$1"
+    mkdir -p "$dir" || return 1
+    (
+        cd "$dir" || exit 1
+        git init -q . >/dev/null 2>&1 || exit 1
+        git config user.email "multirepo@example.com"
+        git config user.name "MultiRepo Test"
+        git checkout -q -b main 2>/dev/null || git checkout -q main || exit 1
+        echo "multi-repo fixture ($dir)" >README.md
+        git add README.md
+        git commit -q -m "initial" || exit 1
+    ) || return 1
+    return 0
+}
+
+# zyzm_write_master_entry <list-dir> <task-id> <primary-source-repo> [extra-fm-line ...]
+# Writes a master entry whose ONLY repo-set frontmatter is the unnumbered
+# `source-repo:` PLUS whatever literal extra frontmatter lines the caller passes
+# (e.g. "source-repo-2: /path", "base-2: nope", "worktree-2: /has:colon").  The
+# primary `worktree:`/`branch:`/`base:` numbered fields are deliberately NOT
+# emitted here so the positive multi-repo cases exercise spawn's default
+# sibling-layout + default-inheritance (finding-1 guard: the numbered group must
+# be MATERIALIZED by spawn into dispatch.md, never copied from the entry).
+zyzm_write_master_entry() {
+    local list_dir="$1" task_id="$2" primary_repo="$3"
+    shift 3
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $task_id"
+        echo "project: $(basename "$primary_repo")"
+        echo "source-repo: $primary_repo"
+        local extra
+        for extra in "$@"; do
+            echo "$extra"
+        done
+        echo "state: ready"
+        echo "priority: normal"
+        echo "branch: task/$task_id"
+        echo "base: main"
+        echo "tmux-session: zyz-task-$task_id"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-07-22"
+        echo "updated-at: 2026-07-22"
+        echo "---"
+        echo ""
+        echo "# $task_id"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "Multi-repo spawn fixture (design 01/04). Finding-1 guard: numbered"
+        echo "fields intentionally omitted so spawn must materialize them."
+    } >"$list_dir/tasks/$task_id.md"
+}
+
+# ---------------------------------------------------------------------------
+# T4-multi.  orch-spawn-worker.sh multi-repo spawn (design 01-D1..D4, 04 §T4-multi).
+#
+# Positive: a 2-repo entry (source-repo + source-repo-2, numbered worktree/branch/
+# base OMITTED — finding-1 guard) spawns 2 sibling worktrees + 1 tmux session,
+# materializes the RESOLVED numbered field group into dispatch.md, and prints
+# worktree-2= / repo-count=2.  We run spawn with HOME pointed at a per-test dir so
+# the DEFAULT sibling layout ($HOME/.zyz-worker/worktrees/<proj>/task/<id>/<repo>)
+# lands under our mktemp -d root and is torn down with it.
+#
+# Negatives (exit 5, NOT 7): numbering gap (source-repo-3 w/o -2), a repo-2 that
+# does not exist, two repos with the SAME basename + default layout (pairwise-
+# distinct check must fire as exit 5 BEFORE any worktree is created — never let
+# the 2nd `git worktree add` fail as exit 7), and a worktree-N override with ':'.
+# Rollback (exit 7): repo 2's `git worktree add` fails (bad base-2) => repo 1's
+# already-created worktree is rolled back.
+#
+# tmux-free vs gated: the numbering-gap + repo-2-nonexistent checks run BEFORE
+# spawn's tmux/git dependency gate (like T4'), so they fire on a tmux-less host
+# (git still required to build the primary fixture repo).  The positive spawn,
+# same-basename, colon, and rollback cases all reach logic AFTER the dep gate (or
+# need a real session/worktree), so they are gated on tmux+git.
+# ---------------------------------------------------------------------------
+run_T4_multi() {
+    say_header "T4-multi orch-spawn-worker.sh multi-repo spawn"
+
+    local spawn="$REPO_ROOT/scripts/orch-spawn-worker.sh"
+    if [ ! -x "$spawn" ]; then
+        skip "T4-multi (all) orch-spawn-worker.sh missing or not executable"
+        return
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        skip "T4-multi (all) git not available (cannot build fixture repos)"
+        return
+    fi
+
+    local T4M_ROOT
+    T4M_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t4m.XXXXXX")"
+    local FAKE_HOME="$T4M_ROOT/home"
+    mkdir -p "$FAKE_HOME"
+    # Session created by the positive spawn (torn down synchronously — NO EXIT
+    # trap; see the group-header note).
+    local T4M_POS_SESSION=""
+    zyzm_t4_teardown() {
+        [ -n "$T4M_POS_SESSION" ] && tmux kill-session -t "$T4M_POS_SESSION" 2>/dev/null
+        sleep 1
+        rm -rf "$T4M_ROOT"
+    }
+
+    # Two independent primary/secondary repos with DISTINCT basenames.
+    local REPO1="$T4M_ROOT/repo-alpha"
+    local REPO2="$T4M_ROOT/repo-beta"
+    if ! zyzm_init_git_repo "$REPO1" || ! zyzm_init_git_repo "$REPO2"; then
+        skip "T4-multi (all) git fixture init failed"
+        zyzm_t4_teardown
+        return
+    fi
+
+    # ===================================================================
+    # NEGATIVE (tmux-free): numbering gap — source-repo-3 present, -2 absent.
+    # ===================================================================
+    local list_gap="$T4M_ROOT/list-gap"
+    zyzm_write_master_entry "$list_gap" "zyzm4gap" "$REPO1" "source-repo-3: $REPO2"
+    run_and_check_exit_stderr_regex 5 \
+        'error: source-repo numbering gap: source-repo-2 is missing but source-repo-3 is present' \
+        "T4-multi (neg) numbering gap (source-repo-3 w/o -2) -> exit 5 + gap diagnostic" \
+        env HOME="$FAKE_HOME" bash "$spawn" zyzm4gap "$list_gap"
+
+    # ===================================================================
+    # NEGATIVE (tmux-free): source-repo-2 points at a non-existent path.
+    #   Per-repo validation runs BEFORE the dep gate, so this fires tmux-free
+    #   and carries the multi-repo `repo 2 (<path>)` diagnostic prefix.
+    # ===================================================================
+    local list_r2ne="$T4M_ROOT/list-r2ne"
+    local nonexistent="/nonexistent/zyz-orch-t4m-$$-repo2"
+    zyzm_write_master_entry "$list_r2ne" "zyzm4r2ne" "$REPO1" "source-repo-2: $nonexistent"
+    run_and_check_exit_stderr_regex 5 \
+        "error: repo 2 \\($nonexistent\\): source-repo path does not exist" \
+        "T4-multi (neg) source-repo-2 nonexistent -> exit 5 + 'repo 2' prefix" \
+        env HOME="$FAKE_HOME" bash "$spawn" zyzm4r2ne "$list_r2ne"
+
+    # ===================================================================
+    # The remaining cases need tmux (positive spawn creates a real session;
+    # same-basename / colon / rollback all reach post-dep-gate logic).  Gate
+    # them; SKIP with a reason on a tmux-less host.
+    # ===================================================================
+    if ! command -v tmux >/dev/null 2>&1; then
+        skip "T4-multi (pos) 2-repo spawn creates 2 sibling worktrees + 1 session (tmux not available)"
+        skip "T4-multi (pos) stdout has worktree-2= and repo-count=2 (tmux not available)"
+        skip "T4-multi (pos) dispatch.md carries resolved numbered field group (tmux not available)"
+        skip "T4-multi (neg) same-basename default collision -> exit 5 pairwise-distinct (NOT exit 7) (tmux not available)"
+        skip "T4-multi (neg) worktree-2 override containing ':' -> exit 5 (tmux not available)"
+        skip "T4-multi (rollback) repo 2 worktree add fails -> exit 7 + repo 1 rolled back (tmux not available)"
+        zyzm_t4_teardown
+        return
+    fi
+
+    # ---- POSITIVE: 2-repo spawn, numbered fields OMITTED (finding-1 guard) ----
+    local list_pos="$T4M_ROOT/list-pos"
+    local POS_ID="zyzm4pos"
+    T4M_POS_SESSION="zyz-task-$POS_ID"
+    zyzm_write_master_entry "$list_pos" "$POS_ID" "$REPO1" "source-repo-2: $REPO2"
+    local pos_out pos_rc
+    pos_out="$(
+        cd "$T4M_ROOT" \
+        && env HOME="$FAKE_HOME" bash "$spawn" "$POS_ID" "$list_pos" </dev/null 2>&1
+    )"
+    pos_rc=$?
+
+    if [ "$pos_rc" -ne 0 ]; then
+        fail "T4-multi (pos) 2-repo spawn exited $pos_rc (expected 0).  Output:
+$(printf '%s\n' "$pos_out" | sed 's/^/      | /')"
+        skip "T4-multi (pos) stdout has worktree-2= and repo-count=2 (spawn failed)"
+        skip "T4-multi (pos) dispatch.md carries resolved numbered field group (spawn failed)"
+    else
+        # Resolve the two DEFAULT sibling worktree paths under FAKE_HOME.
+        local proj="$(basename "$REPO1")"
+        local wt1="$FAKE_HOME/.zyz-worker/worktrees/$proj/task/$POS_ID/$(basename "$REPO1")"
+        local wt2="$FAKE_HOME/.zyz-worker/worktrees/$proj/task/$POS_ID/$(basename "$REPO2")"
+        local ok_sib="true"
+        [ -d "$wt1" ] || ok_sib="false"
+        [ -d "$wt2" ] || ok_sib="false"
+        # Sibling layout: both under the SAME parent dir, dir name = repo basename.
+        if [ "$ok_sib" = "true" ] \
+            && [ "$(dirname "$wt1")" = "$(dirname "$wt2")" ] \
+            && tmux has-session -t "$T4M_POS_SESSION" 2>/dev/null; then
+            pass "T4-multi (pos) 2-repo spawn creates 2 sibling worktrees + 1 session"
+        else
+            fail "T4-multi (pos) sibling-layout/session check failed (wt1='$wt1' exists=$([ -d "$wt1" ] && echo y || echo n), wt2='$wt2' exists=$([ -d "$wt2" ] && echo y || echo n), same-parent=$([ "$(dirname "$wt1")" = "$(dirname "$wt2")" ] && echo y || echo n)).  Output:
+$(printf '%s\n' "$pos_out" | sed 's/^/      | /')"
+        fi
+
+        # stdout: worktree-2=<non-empty> and repo-count=2.
+        if printf '%s\n' "$pos_out" | grep -qE '^worktree-2=.+' \
+            && printf '%s\n' "$pos_out" | grep -qxF 'repo-count=2'; then
+            pass "T4-multi (pos) stdout has worktree-2= and repo-count=2"
+        else
+            fail "T4-multi (pos) stdout missing 'worktree-2=<val>' or 'repo-count=2'.  Output:
+$(printf '%s\n' "$pos_out" | sed 's/^/      | /')"
+        fi
+
+        # dispatch.md carries the RESOLVED numbered group with NON-EMPTY values.
+        local disp="$list_pos/runtime/$POS_ID/dispatch.md"
+        local d_wt2 d_sr2 d_br2 d_ba2
+        d_wt2="$(tr_fm "$disp" worktree-2)"
+        d_sr2="$(tr_fm "$disp" source-repo-2)"
+        d_br2="$(tr_fm "$disp" branch-2)"
+        d_ba2="$(tr_fm "$disp" base-2)"
+        if [ -n "$d_wt2" ] && [ -n "$d_sr2" ] && [ -n "$d_br2" ] && [ -n "$d_ba2" ]; then
+            pass "T4-multi (pos) dispatch.md carries resolved numbered field group (worktree-2/source-repo-2/branch-2/base-2 all non-empty)"
+        else
+            fail "T4-multi (pos) dispatch.md numbered group incomplete: worktree-2='$d_wt2' source-repo-2='$d_sr2' branch-2='$d_br2' base-2='$d_ba2' (finding-1: spawn must materialize resolved values)"
+        fi
+        # Clean the positive session before the destructive negatives reuse HOME.
+        tmux kill-session -t "$T4M_POS_SESSION" 2>/dev/null || true
+        T4M_POS_SESSION=""
+    fi
+
+    # ---- NEGATIVE: two repos with the SAME basename + default layout ----
+    # Both default worktree paths resolve identically; the pairwise-distinct
+    # check (design D4-3b, finding 6) MUST fire as exit 5 BEFORE any worktree is
+    # created — NOT let the 2nd `git worktree add` fail as exit 7.
+    local dup_parent="$T4M_ROOT/dupdir"
+    local dupA="$dup_parent/a/samebase"
+    local dupB="$dup_parent/b/samebase"
+    if zyzm_init_git_repo "$dupA" && zyzm_init_git_repo "$dupB"; then
+        local list_dup="$T4M_ROOT/list-dup"
+        zyzm_write_master_entry "$list_dup" "zyzm4dup" "$dupA" "source-repo-2: $dupB"
+        run_and_check_exit_stderr_regex 5 \
+            'error: worktree path collision between repo 1 and repo 2' \
+            "T4-multi (neg) same-basename default collision -> exit 5 pairwise-distinct (NOT exit 7)" \
+            env HOME="$FAKE_HOME" bash "$spawn" zyzm4dup "$list_dup"
+    else
+        skip "T4-multi (neg) same-basename default collision -> exit 5 pairwise-distinct (NOT exit 7) (fixture init failed)"
+    fi
+
+    # ---- NEGATIVE: worktree-2 override containing ':' (separator constraint) --
+    local list_colon="$T4M_ROOT/list-colon"
+    zyzm_write_master_entry "$list_colon" "zyzm4colon" "$REPO1" \
+        "source-repo-2: $REPO2" "worktree-2: $T4M_ROOT/has:colon"
+    run_and_check_exit_stderr_regex 5 \
+        "error: repo 2 worktree path must not contain ':'" \
+        "T4-multi (neg) worktree-2 override containing ':' -> exit 5" \
+        env HOME="$FAKE_HOME" bash "$spawn" zyzm4colon "$list_colon"
+
+    # ---- ROLLBACK: repo 2 worktree add fails -> repo 1 rolled back (exit 7) ---
+    # Force repo 2's `git worktree add` to fail by giving it a base-2 that does
+    # not exist as a ref (and no such local branch, so the `-b`/fallback both
+    # fail).  Repo 1 succeeds first, so the failure must reverse-roll it back.
+    # We give explicit worktree-N overrides inside T4M_ROOT so the created paths
+    # are torn down with the root regardless of HOME.
+    local list_rb="$T4M_ROOT/list-rb"
+    local rb_wt1="$T4M_ROOT/rb-wt/repo1"
+    local rb_wt2="$T4M_ROOT/rb-wt/repo2"
+    zyzm_write_master_entry "$list_rb" "zyzm4rb" "$REPO1" \
+        "worktree: $rb_wt1" \
+        "source-repo-2: $REPO2" "worktree-2: $rb_wt2" "base-2: no-such-base-ref"
+    local rb_out rb_rc
+    rb_out="$(
+        cd "$T4M_ROOT" \
+        && env HOME="$FAKE_HOME" bash "$spawn" zyzm4rb "$list_rb" </dev/null 2>&1
+    )"
+    rb_rc=$?
+    if [ "$rb_rc" -eq 7 ] && [ ! -e "$rb_wt1" ]; then
+        pass "T4-multi (rollback) repo 2 worktree add fails -> exit 7 + repo 1 rolled back"
+    else
+        fail "T4-multi (rollback) expected exit 7 + repo 1 worktree '$rb_wt1' removed, got exit=$rb_rc, repo1-present=$([ -e "$rb_wt1" ] && echo y || echo n).  Output:
+$(printf '%s\n' "$rb_out" | sed 's/^/      | /')"
+    fi
+    # Clean any tmux session the rollback attempt might have created (spawn
+    # creates the session only AFTER worktrees; rollback exits at worktree step
+    # so none should exist, but be defensive).
+    tmux kill-session -t "zyz-task-zyzm4rb" 2>/dev/null || true
+
+    zyzm_t4_teardown
+}
+
+# ---------------------------------------------------------------------------
+# T5-multi.  orch-check-worker.sh rewrite_dispatch_atomic preserves the multi-repo
+#            numbered field group across a Phase-2 rewrite (design 01-D5, 02-D0,
+#            04 §T5-multi).  This is the finding-1 companion at the check layer:
+#            the fixed-field-list rewriter must read back + re-emit worktree-N /
+#            source-repo-N / branch-N / base-N, or a later poll would SILENTLY
+#            DROP them and merge/cleanup would then only see repo 1.
+#
+# UNIT test — needs `tmux` on PATH (check hard-exits 3 otherwise) but NO real
+# session/worktree/git.  We hand-build a dispatch.md carrying a resolved numbered
+# group (repo 2) with the Phase-2 trio populated (claude-pid/sid/transcript) but
+# first-seen-iso EMPTY, so Step D stamps first-seen -> NEEDS_REWRITE=true ->
+# rewrite_dispatch_atomic fires.  Mirrors T8-reuse-rewrite exactly.
+# ---------------------------------------------------------------------------
+run_T5_multi() {
+    say_header "T5-multi orch-check-worker.sh preserves numbered field group across rewrite"
+
+    local check="$REPO_ROOT/scripts/orch-check-worker.sh"
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        skip "T5-multi check exits 0 on a multi-repo dispatch.md (tmux not available)"
+        skip "T5-multi numbered field 'worktree-2' survives rewrite (tmux not available)"
+        skip "T5-multi numbered field 'source-repo-2' survives rewrite (tmux not available)"
+        skip "T5-multi numbered field 'branch-2' survives rewrite (tmux not available)"
+        skip "T5-multi numbered field 'base-2' survives rewrite (tmux not available)"
+        return
+    fi
+    if [ ! -x "$check" ]; then
+        skip "T5-multi check exits 0 on a multi-repo dispatch.md (orch-check-worker.sh missing or not executable)"
+        skip "T5-multi numbered field 'worktree-2' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T5-multi numbered field 'source-repo-2' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T5-multi numbered field 'branch-2' survives rewrite (orch-check-worker.sh missing or not executable)"
+        skip "T5-multi numbered field 'base-2' survives rewrite (orch-check-worker.sh missing or not executable)"
+        return
+    fi
+
+    local T5M_ROOT
+    T5M_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t5m.XXXXXX")"
+    # No EXIT trap (see group-header note) — explicit rm on every path.
+
+    local LIST_DIR="$T5M_ROOT/list"
+    local TASK_ID="zyzm5"
+    local SESSION="zyz-task-$TASK_ID"
+    local RUNTIME="$LIST_DIR/runtime/$TASK_ID"
+    local DISPATCH="$RUNTIME/dispatch.md"
+    mkdir -p "$RUNTIME"
+
+    # Minimal master entry (check reads heartbeat-stale-sec / tmux-session).
+    zyzm_write_master_entry "$LIST_DIR" "$TASK_ID" "/tmp/zyz-orch-t5m-srcrepo" \
+        "source-repo-2: /tmp/zyz-orch-t5m-srcrepo2"
+
+    # Phase-2 trio pre-populated; first-seen EMPTY (forces Step D rewrite).
+    local FAKE_PID="525252"
+    local FAKE_SID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    local FAKE_TRANSCRIPT="$T5M_ROOT/$FAKE_SID.jsonl"
+    printf '%s\n' '{"type":"user"}' >"$FAKE_TRANSCRIPT"
+
+    # Hand-built multi-repo dispatch.md: the RESOLVED numbered group (repo 2)
+    # sits right after the unnumbered `base:` line, exactly as spawn writes it.
+    {
+        echo "---"
+        echo "task-id: $TASK_ID"
+        echo "spawn-iso: 2026-07-22T00:00:00+0000"
+        echo "tmux-session: $SESSION"
+        echo "tmux-window-id: @3"
+        echo "tmux-pane-id: %3"
+        echo "shell-pid: 333333"
+        echo "worktree: /tmp/zyz-orch-t5m-worktrees/$TASK_ID/repo1"
+        echo "source-repo: /tmp/zyz-orch-t5m-srcrepo"
+        echo "branch: task/$TASK_ID"
+        echo "base: main"
+        echo "worktree-2: /tmp/zyz-orch-t5m-worktrees/$TASK_ID/repo2"
+        echo "source-repo-2: /tmp/zyz-orch-t5m-srcrepo2"
+        echo "branch-2: task/$TASK_ID"
+        echo "base-2: main"
+        echo "plugin-root: $REPO_ROOT"
+        echo "encoded-cwd: -tmp-zyz-orch-t5m-worktrees-$TASK_ID-repo1"
+        echo "reuse-from:"
+        echo "reuse-scope:"
+        echo "reuse-claude-effective:"
+        echo "heartbeat-window-id:"
+        echo "claude-pid: $FAKE_PID"
+        echo "claude-session-id: $FAKE_SID"
+        echo "transcript-path: $FAKE_TRANSCRIPT"
+        echo "first-seen-iso:"
+        echo "---"
+        echo ""
+        echo "# Dispatch Info"
+        echo ""
+        echo "## Recovery"
+        echo ""
+        echo "(awaiting claude startup ...)"
+    } >"$DISPATCH"
+
+    local m_out m_rc
+    m_out="$(
+        cd "$T5M_ROOT" && bash "$check" "$TASK_ID" "$LIST_DIR" </dev/null 2>&1
+    )"
+    m_rc=$?
+
+    if [ "$m_rc" -eq 0 ]; then
+        pass "T5-multi check exits 0 on a multi-repo dispatch.md"
+    else
+        fail "T5-multi check exited $m_rc (expected 0).  Output:
+$(printf '%s\n' "$m_out" | sed 's/^/      | /')"
+    fi
+
+    # Re-read the numbered group; each must SURVIVE the fixed-field rewrite.
+    local g_wt2 g_sr2 g_br2 g_ba2
+    g_wt2="$(tr_fm "$DISPATCH" worktree-2)"
+    g_sr2="$(tr_fm "$DISPATCH" source-repo-2)"
+    g_br2="$(tr_fm "$DISPATCH" branch-2)"
+    g_ba2="$(tr_fm "$DISPATCH" base-2)"
+
+    if [ "$g_wt2" = "/tmp/zyz-orch-t5m-worktrees/$TASK_ID/repo2" ]; then
+        pass "T5-multi numbered field 'worktree-2' survives rewrite"
+    else
+        fail "T5-multi 'worktree-2'='$g_wt2' (expected '/tmp/zyz-orch-t5m-worktrees/$TASK_ID/repo2') — DROPPED by the fixed-field-list rewrite"
+    fi
+    if [ "$g_sr2" = "/tmp/zyz-orch-t5m-srcrepo2" ]; then
+        pass "T5-multi numbered field 'source-repo-2' survives rewrite"
+    else
+        fail "T5-multi 'source-repo-2'='$g_sr2' (expected '/tmp/zyz-orch-t5m-srcrepo2') — DROPPED by the rewrite"
+    fi
+    if [ "$g_br2" = "task/$TASK_ID" ]; then
+        pass "T5-multi numbered field 'branch-2' survives rewrite"
+    else
+        fail "T5-multi 'branch-2'='$g_br2' (expected 'task/$TASK_ID') — DROPPED by the rewrite"
+    fi
+    if [ "$g_ba2" = "main" ]; then
+        pass "T5-multi numbered field 'base-2' survives rewrite"
+    else
+        fail "T5-multi 'base-2'='$g_ba2' (expected 'main') — DROPPED by the rewrite"
+    fi
+
+    rm -rf "$T5M_ROOT"
+}
+
+# ---------------------------------------------------------------------------
+# T6-multi.  End-to-end 1-task-2-repos (design 04 §T6-multi, the T6 mirror
+#            reversed: T6 = 2 tasks × 1 repo; this = 1 task × 2 repos).
+#
+# finding-1 guard fixture: the master entry declares ONLY source-repo +
+# source-repo-2 (numbered worktree/branch/base OMITTED).  spawn -> 2 sibling
+# worktrees + 1 session -> a unique commit in EACH worktree -> `approved` token ->
+# merge-and-cleanup -> assert BOTH repos' base contain their own commit, BOTH
+# worktrees removed, state=completed.  If the impl regressed to discovering the
+# repo set from the master entry (finding 1), repo 2 would be silently skipped and
+# the "repo 2 base contains its commit" / "repo 2 worktree removed" assertions
+# would FAIL, surfacing the defect.
+#
+# Idempotency scoping (design 04-R2): the NAIVE second full merge-and-cleanup run
+# returns exit 11 (dispatch.md was archived by cleanup -> single-repo fallback ->
+# the fixture master entry has NO `worktree:` field -> worktree missing) — NOT a
+# no-op exit 0.  The "already-merged no-op" idempotency belongs to the pre-cleanup
+# partial-failure case, tested in T11b-multi.
+#
+# No origin remote is configured, so the gh path is skipped (HAS_ORIGIN=false) and
+# the merge runs via local `git merge --no-ff` — deterministic, no network/gh.
+# ---------------------------------------------------------------------------
+T6M_FAIL() { fail "T6-multi $1"; }
+T6M_PASS() { pass "T6-multi $1"; }
+
+T6M_SKIP_ALL() {
+    local reason="$1" i
+    for i in \
+        "spawn 1-task-2-repos exits 0" \
+        "2 sibling worktrees + 1 tmux session created" \
+        "dispatch.md carries resolved numbered group (finding-1 guard)" \
+        "merge-and-cleanup exits 0" \
+        "repo 1 base contains repo 1's task commit" \
+        "repo 2 base contains repo 2's task commit (finding-1 guard)" \
+        "master entry state: completed after merge-and-cleanup" \
+        "repo 1 worktree removed after cleanup" \
+        "repo 2 worktree removed after cleanup (finding-1 guard)" \
+        "tmux session absent after cleanup" \
+        "naive second merge-and-cleanup run -> exit 11 (dispatch.md archived, not no-op 0)"
+    do
+        skip "T6-multi $i (skipped: $reason)"
+    done
+}
+
+run_T6_multi() {
+    say_header "T6-multi end-to-end 1-task-2-repos (spawn -> merge-and-cleanup)"
+
+    if ! command -v tmux >/dev/null 2>&1; then T6M_SKIP_ALL "tmux not available"; return; fi
+    if ! command -v git  >/dev/null 2>&1; then T6M_SKIP_ALL "git not available";  return; fi
+
+    local spawn="$REPO_ROOT/scripts/orch-spawn-worker.sh"
+    local merge="$REPO_ROOT/scripts/orch-merge-and-cleanup.sh"
+    if [ ! -x "$spawn" ] || [ ! -x "$merge" ]; then
+        T6M_SKIP_ALL "spawn/merge-and-cleanup helper missing or not executable"
+        return
+    fi
+
+    local T6M_ROOT
+    T6M_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t6m.XXXXXX")"
+    local FAKE_HOME="$T6M_ROOT/home"
+    mkdir -p "$FAKE_HOME"
+    local TASK_ID="zyzm6"
+    local SESSION="zyz-task-$TASK_ID"
+    local LIST_DIR="$T6M_ROOT/list"
+    local REPO1="$T6M_ROOT/work-main"
+    local REPO2="$T6M_ROOT/work-lib"
+
+    # Synchronous teardown (NO EXIT trap — see group-header note).
+    t6m_teardown() {
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        sleep 1
+        rm -rf "$T6M_ROOT"
+    }
+
+    if ! zyzm_init_git_repo "$REPO1" || ! zyzm_init_git_repo "$REPO2"; then
+        T6M_SKIP_ALL "git fixture init failed"
+        t6m_teardown
+        return
+    fi
+
+    # finding-1 guard master entry: source-repo + source-repo-2 ONLY.
+    zyzm_write_master_entry "$LIST_DIR" "$TASK_ID" "$REPO1" "source-repo-2: $REPO2"
+
+    # ---- Shadow gh with a fake that always fails "not logged in" so the merge
+    #      takes the local `git merge --no-ff` path deterministically (mirrors
+    #      T6's approach: a real gh in PATH could otherwise try the network). ----
+    local SHADOW_DIR="$T6M_ROOT/shadow-bin"
+    mkdir -p "$SHADOW_DIR"
+    cat >"$SHADOW_DIR/gh" <<'FAKEGHEOF'
+#!/bin/sh
+echo "gh: not logged in" >&2
+exit 1
+FAKEGHEOF
+    chmod +x "$SHADOW_DIR/gh"
+    local RUN_PATH="$SHADOW_DIR:$PATH"
+
+    # ---- spawn (invoked from a non-git cwd; HOME steered so default sibling
+    #      layout lands under our root) ----
+    local spawn_out spawn_rc
+    spawn_out="$(
+        cd "$T6M_ROOT" \
+        && env HOME="$FAKE_HOME" PATH="$RUN_PATH" bash "$spawn" "$TASK_ID" "$LIST_DIR" </dev/null 2>&1
+    )"
+    spawn_rc=$?
+    if [ "$spawn_rc" -ne 0 ]; then
+        T6M_FAIL "spawn 1-task-2-repos exited $spawn_rc (expected 0).  Output:
+$(printf '%s\n' "$spawn_out" | sed 's/^/      | /')"
+        local i
+        for i in \
+            "2 sibling worktrees + 1 tmux session created" \
+            "dispatch.md carries resolved numbered group (finding-1 guard)" \
+            "merge-and-cleanup exits 0" \
+            "repo 1 base contains repo 1's task commit" \
+            "repo 2 base contains repo 2's task commit (finding-1 guard)" \
+            "master entry state: completed after merge-and-cleanup" \
+            "repo 1 worktree removed after cleanup" \
+            "repo 2 worktree removed after cleanup (finding-1 guard)" \
+            "tmux session absent after cleanup" \
+            "naive second merge-and-cleanup run -> exit 11 (dispatch.md archived, not no-op 0)"
+        do
+            skip "T6-multi $i (skipped: spawn failed)"
+        done
+        t6m_teardown
+        return
+    fi
+    T6M_PASS "spawn 1-task-2-repos exits 0"
+
+    # Resolve the two worktree paths from dispatch.md (authoritative).
+    local disp="$LIST_DIR/runtime/$TASK_ID/dispatch.md"
+    local wt1 wt2 br1 br2
+    wt1="$(tr_fm "$disp" worktree)"
+    wt2="$(tr_fm "$disp" worktree-2)"
+    br1="$(tr_fm "$disp" branch)"
+    br2="$(tr_fm "$disp" branch-2)"
+
+    sleep 1
+    if [ -d "$wt1" ] && [ -d "$wt2" ] \
+        && [ "$(dirname "$wt1")" = "$(dirname "$wt2")" ] \
+        && tmux has-session -t "$SESSION" 2>/dev/null; then
+        T6M_PASS "2 sibling worktrees + 1 tmux session created"
+    else
+        T6M_FAIL "expected 2 sibling worktrees + 1 session (wt1='$wt1' d=$([ -d "$wt1" ] && echo y||echo n), wt2='$wt2' d=$([ -d "$wt2" ] && echo y||echo n), same-parent=$([ "$(dirname "$wt1")" = "$(dirname "$wt2")" ] && echo y||echo n), session=$(tmux has-session -t "$SESSION" 2>/dev/null && echo y||echo n))"
+    fi
+
+    if [ -n "$wt2" ] && [ -n "$(tr_fm "$disp" source-repo-2)" ] \
+        && [ -n "$br2" ] && [ -n "$(tr_fm "$disp" base-2)" ]; then
+        T6M_PASS "dispatch.md carries resolved numbered group (finding-1 guard)"
+    else
+        T6M_FAIL "dispatch.md numbered group not fully materialized (finding-1): worktree-2='$wt2' source-repo-2='$(tr_fm "$disp" source-repo-2)' branch-2='$br2' base-2='$(tr_fm "$disp" base-2)'"
+    fi
+
+    # ---- Mock worker: a UNIQUE commit in EACH worktree (repo 1 + repo 2). ----
+    local uniq1="repo1-only-$TASK_ID.txt"
+    local uniq2="repo2-only-$TASK_ID.txt"
+    local sha1="" sha2=""
+    if [ -d "$wt1" ]; then
+        (
+            cd "$wt1" || exit 1
+            echo "repo 1 task work" >"$uniq1"
+            git add "$uniq1"
+            git commit -q -m "T6-multi repo1 task commit"
+        ) && sha1="$(git -C "$wt1" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    if [ -d "$wt2" ]; then
+        (
+            cd "$wt2" || exit 1
+            echo "repo 2 task work" >"$uniq2"
+            git add "$uniq2"
+            git commit -q -m "T6-multi repo2 task commit"
+        ) && sha2="$(git -C "$wt2" rev-parse HEAD 2>/dev/null || true)"
+    fi
+
+    # ---- approve + merge-and-cleanup ----
+    {
+        echo ""
+        echo "## Pending Merge Approval"
+        echo ""
+        echo "approved by T6-multi-test"
+    } >>"$LIST_DIR/tasks/$TASK_ID.md"
+
+    local mc_out mc_rc
+    mc_out="$(
+        cd "$T6M_ROOT" \
+        && env HOME="$FAKE_HOME" PATH="$RUN_PATH" bash "$merge" "$TASK_ID" "$LIST_DIR" main </dev/null 2>&1
+    )"
+    mc_rc=$?
+    if [ "$mc_rc" -eq 0 ]; then
+        T6M_PASS "merge-and-cleanup exits 0"
+    else
+        T6M_FAIL "merge-and-cleanup exited $mc_rc (expected 0).  Output:
+$(printf '%s\n' "$mc_out" | sed 's/^/      | /')"
+    fi
+
+    # ---- Both repos' base (main) must now contain their own task commit. ----
+    if [ -n "$sha1" ] && git -C "$REPO1" merge-base --is-ancestor "$sha1" main >/dev/null 2>&1; then
+        T6M_PASS "repo 1 base contains repo 1's task commit"
+    else
+        T6M_FAIL "repo 1 task commit '$sha1' NOT reachable from main in $REPO1.  merge output:
+$(printf '%s\n' "$mc_out" | sed 's/^/      | /')"
+    fi
+    if [ -n "$sha2" ] && git -C "$REPO2" merge-base --is-ancestor "$sha2" main >/dev/null 2>&1; then
+        T6M_PASS "repo 2 base contains repo 2's task commit (finding-1 guard)"
+    else
+        T6M_FAIL "repo 2 task commit '$sha2' NOT reachable from main in $REPO2 — repo 2 was silently skipped (finding 1: repo set must come from dispatch.md, not the master entry).  merge output:
+$(printf '%s\n' "$mc_out" | sed 's/^/      | /')"
+    fi
+
+    # ---- state=completed ----
+    if grep -qE '^state:[[:space:]]*completed' "$LIST_DIR/tasks/$TASK_ID.md"; then
+        T6M_PASS "master entry state: completed after merge-and-cleanup"
+    else
+        T6M_FAIL "master entry state is NOT 'completed' after merge-and-cleanup"
+    fi
+
+    # ---- both worktrees removed ----
+    if [ ! -d "$wt1" ]; then
+        T6M_PASS "repo 1 worktree removed after cleanup"
+    else
+        T6M_FAIL "repo 1 worktree '$wt1' still present after cleanup"
+    fi
+    if [ ! -d "$wt2" ]; then
+        T6M_PASS "repo 2 worktree removed after cleanup (finding-1 guard)"
+    else
+        T6M_FAIL "repo 2 worktree '$wt2' still present after cleanup — repo 2 skipped (finding 1)"
+    fi
+
+    # ---- tmux session gone ----
+    sleep 1
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        T6M_FAIL "tmux session $SESSION still alive after cleanup"
+    else
+        T6M_PASS "tmux session absent after cleanup"
+    fi
+
+    # ---- Idempotency scoping (04-R2): naive SECOND full run -> exit 11. ----
+    # cleanup archived dispatch.md, so merge-and-cleanup falls back to the
+    # single-repo master-entry path; the finding-1 fixture entry has NO
+    # `worktree:` field, so the worktree resolves empty -> exit 11.  This is the
+    # CORRECT behavior (matches today's single-repo), NOT a no-op exit 0.
+    local mc2_out mc2_rc
+    mc2_out="$(
+        cd "$T6M_ROOT" \
+        && env HOME="$FAKE_HOME" PATH="$RUN_PATH" bash "$merge" "$TASK_ID" "$LIST_DIR" main </dev/null 2>&1
+    )"
+    mc2_rc=$?
+    if [ "$mc2_rc" -eq 11 ]; then
+        T6M_PASS "naive second merge-and-cleanup run -> exit 11 (dispatch.md archived, not no-op 0)"
+    else
+        T6M_FAIL "naive second merge-and-cleanup run expected exit 11 (dispatch.md archived -> single-repo fallback -> worktree missing), got exit=$mc2_rc.  Output:
+$(printf '%s\n' "$mc2_out" | sed 's/^/      | /')"
+    fi
+
+    t6m_teardown
+}
+
+# zyzm_build_repo_worktree <repo-dir> <worktree-dir> <branch> <unique-file> <conflict>
+# Init a git repo with main, add a linked worktree on <branch> carrying a UNIQUE
+# commit.  When <conflict>=true, also make main and the task branch edit the SAME
+# line so a later `git merge --no-ff` conflicts.  Prints nothing; caller reads the
+# task-branch HEAD via `git -C <worktree-dir> rev-parse HEAD`.  Returns non-zero
+# on any git failure.
+zyzm_build_repo_worktree() {
+    local repo="$1" wt="$2" branch="$3" uniq="$4" conflict="$5"
+    mkdir -p "$repo" || return 1
+    (
+        cd "$repo" || exit 1
+        git init -q . >/dev/null 2>&1 || exit 1
+        git config user.email "multirepo@example.com"
+        git config user.name "MultiRepo Test"
+        git checkout -q -b main 2>/dev/null || git checkout -q main || exit 1
+        echo "initial" >README.md
+        git add README.md
+        if [ "$conflict" = "true" ]; then
+            echo "base line" >conflict.txt
+            git add conflict.txt
+        fi
+        git commit -q -m "initial" || exit 1
+        git worktree add -q -b "$branch" "$wt" main >/dev/null 2>&1 || exit 1
+    ) || return 1
+    (
+        cd "$wt" || exit 1
+        echo "task work" >"$uniq"
+        git add "$uniq"
+        if [ "$conflict" = "true" ]; then
+            echo "task line" >conflict.txt
+            git add conflict.txt
+        fi
+        git commit -q -m "task-branch commit ($branch)" || exit 1
+    ) || return 1
+    if [ "$conflict" = "true" ]; then
+        (
+            cd "$repo" || exit 1
+            git checkout -q main || exit 1
+            echo "main line" >conflict.txt
+            git add conflict.txt
+            git commit -q -m "diverging main commit" || exit 1
+        ) || return 1
+    fi
+    return 0
+}
+
+# zyzm_write_dispatch_2repo <dispatch-file> <task-id> <wt1> <br1> <wt2> <br2>
+# Write a spawn-shaped multi-repo dispatch.md (repo 2 numbered group after the
+# unnumbered `base:` line).  base/base-2 are both `main`.  Phase-2 fields empty.
+zyzm_write_dispatch_2repo() {
+    local dfile="$1" tid="$2" wt1="$3" br1="$4" wt2="$5" br2="$6"
+    mkdir -p "$(dirname "$dfile")"
+    {
+        echo "---"
+        echo "task-id: $tid"
+        echo "spawn-iso: 2026-07-22T00:00:00+0000"
+        echo "tmux-session: zyz-task-$tid"
+        echo "tmux-window-id: @1"
+        echo "tmux-pane-id: %1"
+        echo "shell-pid: 111111"
+        echo "worktree: $wt1"
+        echo "source-repo: $wt1"
+        echo "branch: $br1"
+        echo "base: main"
+        echo "worktree-2: $wt2"
+        echo "source-repo-2: $wt2"
+        echo "branch-2: $br2"
+        echo "base-2: main"
+        echo "plugin-root: $REPO_ROOT"
+        echo "encoded-cwd: -x"
+        echo "reuse-from:"
+        echo "reuse-scope:"
+        echo "reuse-claude-effective:"
+        echo "heartbeat-window-id:"
+        echo "claude-pid:"
+        echo "claude-session-id:"
+        echo "transcript-path:"
+        echo "first-seen-iso:"
+        echo "---"
+        echo ""
+        echo "# Dispatch Info"
+        echo ""
+        echo "## Recovery"
+        echo ""
+        echo "(x)"
+    } >"$dfile"
+}
+
+# zyzm_write_merge_entry <list-dir> <task-id> <primary-repo> <token>
+# Master entry for the merge family with a `## Pending Merge Approval` <token>
+# line (e.g. `merge` or `approved`).  state stays in-progress.
+zyzm_write_merge_entry() {
+    local list_dir="$1" tid="$2" primary="$3" token="$4"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $tid"
+        echo "project: $(basename "$primary")"
+        echo "source-repo: $primary"
+        echo "state: in-progress"
+        echo "priority: normal"
+        echo "branch: task/$tid"
+        echo "base: main"
+        echo "worktree: $primary"
+        echo "tmux-session: zyz-task-$tid"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-07-22"
+        echo "updated-at: 2026-07-22"
+        echo "---"
+        echo ""
+        echo "# $tid"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "Multi-repo merge-only fixture."
+        echo ""
+        echo "## Pending Merge Approval"
+        echo ""
+        echo "$token by test"
+    } >"$list_dir/tasks/$tid.md"
+}
+
+# ---------------------------------------------------------------------------
+# T11b-multi.  orch-merge.sh `merge`-only path, multi-repo (design 02-D2, 04
+#              §T11b-multi).  Three sub-scenarios:
+#
+#  (A) happy path: 2 repos, both merged + (no origin -> no push), worktrees KEPT,
+#      master entry state UNCHANGED (merge never writes state), per-repo stdout
+#      (merge-status= + merge-status-2=).
+#  (B) partial failure: repo 2 conflicts -> exit 12, repo 1 already merged (its
+#      commit reachable from main), per-repo stdout carries merge-status=success.
+#  (C) local-path idempotent re-run (single-repo, gh shadowed to fail): a repo
+#      whose branch is ALREADY an ancestor of base re-runs as already-merged +
+#      exit 0, NOT a false exit 12.
+#
+# Gated on tmux+git (orch-merge.sh hard-requires both at entry, like T11b).  gh is
+# shadowed with a failing fake so the deterministic LOCAL merge path is taken (no
+# network); the design's real-gh PR-state probe is a manual/skipped point noted in
+# the delivery report.
+# ---------------------------------------------------------------------------
+run_T11b_multi() {
+    say_header "T11b-multi orch-merge.sh merge-only path multi-repo"
+
+    local merge="$REPO_ROOT/scripts/orch-merge.sh"
+
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || [ ! -x "$merge" ]; then
+        local why="tmux/git not available"
+        [ ! -x "$merge" ] && why="orch-merge.sh missing or not executable"
+        skip "T11b-multi (A) 2 repos merged, worktrees kept, state unchanged, per-repo stdout ($why)"
+        skip "T11b-multi (B) repo 2 conflict -> exit 12, repo 1 merged, per-repo stdout ($why)"
+        skip "T11b-multi (C) local-path idempotent re-run -> repo 1 already-merged, no false exit 12 ($why)"
+        return
+    fi
+
+    local T11M_ROOT
+    T11M_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-t11m.XXXXXX")"
+    # gh shadow (fail "not logged in" -> local merge path).
+    local SHADOW_DIR="$T11M_ROOT/shadow-bin"
+    mkdir -p "$SHADOW_DIR"
+    cat >"$SHADOW_DIR/gh" <<'FAKEGHEOF'
+#!/bin/sh
+echo "gh: not logged in" >&2
+exit 1
+FAKEGHEOF
+    chmod +x "$SHADOW_DIR/gh"
+    local RUN_PATH="$SHADOW_DIR:$PATH"
+
+    # =====================================================================
+    # (A) HAPPY PATH — 2 clean repos, both merge, worktrees kept, state same.
+    # =====================================================================
+    local A_ROOT="$T11M_ROOT/A"
+    local A_LIST="$A_ROOT/list"
+    local A_TID="zyzm11a"
+    local A_R1="$A_ROOT/repo1" A_R2="$A_ROOT/repo2"
+    local A_WT1="$A_ROOT/wt1"  A_WT2="$A_ROOT/wt2"
+    local A_BR="task/$A_TID"
+    local a_ok="true"
+    zyzm_build_repo_worktree "$A_R1" "$A_WT1" "$A_BR" "r1.txt" false || a_ok="false"
+    zyzm_build_repo_worktree "$A_R2" "$A_WT2" "$A_BR" "r2.txt" false || a_ok="false"
+    if [ "$a_ok" != "true" ]; then
+        skip "T11b-multi (A) 2 repos merged, worktrees kept, state unchanged, per-repo stdout (git fixture init failed)"
+    else
+        local a_sha1 a_sha2
+        a_sha1="$(git -C "$A_WT1" rev-parse HEAD 2>/dev/null || true)"
+        a_sha2="$(git -C "$A_WT2" rev-parse HEAD 2>/dev/null || true)"
+        zyzm_write_merge_entry "$A_LIST" "$A_TID" "$A_R1" "merge"
+        zyzm_write_dispatch_2repo "$A_LIST/runtime/$A_TID/dispatch.md" "$A_TID" \
+            "$A_WT1" "$A_BR" "$A_WT2" "$A_BR"
+        local a_out a_rc
+        a_out="$(env PATH="$RUN_PATH" bash "$merge" "$A_TID" "$A_LIST" main </dev/null 2>&1)"
+        a_rc=$?
+        local a_entry="$A_LIST/tasks/$A_TID.md"
+        local a_pass="true" a_why=""
+        [ "$a_rc" -eq 0 ] || { a_pass="false"; a_why="$a_why exit=$a_rc(≠0);"; }
+        git -C "$A_R1" merge-base --is-ancestor "$a_sha1" main >/dev/null 2>&1 \
+            || { a_pass="false"; a_why="$a_why repo1-not-merged;"; }
+        git -C "$A_R2" merge-base --is-ancestor "$a_sha2" main >/dev/null 2>&1 \
+            || { a_pass="false"; a_why="$a_why repo2-not-merged;"; }
+        [ -d "$A_WT1" ] || { a_pass="false"; a_why="$a_why wt1-removed;"; }
+        [ -d "$A_WT2" ] || { a_pass="false"; a_why="$a_why wt2-removed;"; }
+        grep -qE '^state:[[:space:]]*in-progress' "$a_entry" \
+            || { a_pass="false"; a_why="$a_why state-changed;"; }
+        printf '%s\n' "$a_out" | grep -qE '^merge-status=(success|already-merged)$' \
+            || { a_pass="false"; a_why="$a_why no-repo1-status;"; }
+        printf '%s\n' "$a_out" | grep -qE '^merge-status-2=(success|already-merged)$' \
+            || { a_pass="false"; a_why="$a_why no-repo2-status;"; }
+        if [ "$a_pass" = "true" ]; then
+            pass "T11b-multi (A) 2 repos merged, worktrees kept, state unchanged, per-repo stdout"
+        else
+            fail "T11b-multi (A) failed:$a_why  Output:
+$(printf '%s\n' "$a_out" | sed 's/^/      | /')"
+        fi
+    fi
+
+    # =====================================================================
+    # (B) PARTIAL FAILURE — repo 1 clean (merges), repo 2 conflicts -> exit 12.
+    #     Merged repo 1 is NOT rolled back (design 02-D2-3); stdout reports
+    #     merge-status=success for repo 1 before the exit-12 abort on repo 2.
+    # =====================================================================
+    local B_ROOT="$T11M_ROOT/B"
+    local B_LIST="$B_ROOT/list"
+    local B_TID="zyzm11b"
+    local B_R1="$B_ROOT/repo1" B_R2="$B_ROOT/repo2"
+    local B_WT1="$B_ROOT/wt1"  B_WT2="$B_ROOT/wt2"
+    local B_BR="task/$B_TID"
+    local b_ok="true"
+    zyzm_build_repo_worktree "$B_R1" "$B_WT1" "$B_BR" "r1.txt" false || b_ok="false"
+    zyzm_build_repo_worktree "$B_R2" "$B_WT2" "$B_BR" "r2.txt" true  || b_ok="false"
+    if [ "$b_ok" != "true" ]; then
+        skip "T11b-multi (B) repo 2 conflict -> exit 12, repo 1 merged, per-repo stdout (git fixture init failed)"
+    else
+        local b_sha1
+        b_sha1="$(git -C "$B_WT1" rev-parse HEAD 2>/dev/null || true)"
+        zyzm_write_merge_entry "$B_LIST" "$B_TID" "$B_R1" "merge"
+        zyzm_write_dispatch_2repo "$B_LIST/runtime/$B_TID/dispatch.md" "$B_TID" \
+            "$B_WT1" "$B_BR" "$B_WT2" "$B_BR"
+        local b_out b_rc
+        b_out="$(env PATH="$RUN_PATH" bash "$merge" "$B_TID" "$B_LIST" main </dev/null 2>&1)"
+        b_rc=$?
+        local b_pass="true" b_why=""
+        [ "$b_rc" -eq 12 ] || { b_pass="false"; b_why="$b_why exit=$b_rc(≠12);"; }
+        git -C "$B_R1" merge-base --is-ancestor "$b_sha1" main >/dev/null 2>&1 \
+            || { b_pass="false"; b_why="$b_why repo1-not-merged;"; }
+        printf '%s\n' "$b_out" | grep -qE '^merge-status=(success|already-merged)$' \
+            || { b_pass="false"; b_why="$b_why no-repo1-status-on-stdout;"; }
+        if [ "$b_pass" = "true" ]; then
+            pass "T11b-multi (B) repo 2 conflict -> exit 12, repo 1 merged, per-repo stdout"
+        else
+            fail "T11b-multi (B) failed:$b_why  Output:
+$(printf '%s\n' "$b_out" | sed 's/^/      | /')"
+        fi
+    fi
+
+    # =====================================================================
+    # (C) LOCAL-PATH IDEMPOTENT RE-RUN — single-repo, gh shadowed to fail.
+    #     Run merge once (branch merges into main), then re-run: the second run
+    #     must detect the branch is already an ancestor of base and report
+    #     already-merged + exit 0, NOT falsely treat it as a conflict (exit 12).
+    # =====================================================================
+    local C_ROOT="$T11M_ROOT/C"
+    local C_LIST="$C_ROOT/list"
+    local C_TID="zyzm11c"
+    local C_R1="$C_ROOT/repo1"
+    local C_WT1="$C_ROOT/wt1"
+    local C_BR="task/$C_TID"
+    if ! zyzm_build_repo_worktree "$C_R1" "$C_WT1" "$C_BR" "c1.txt" false; then
+        skip "T11b-multi (C) local-path idempotent re-run -> repo 1 already-merged, no false exit 12 (git fixture init failed)"
+    else
+        zyzm_write_merge_entry "$C_LIST" "$C_TID" "$C_R1" "merge"
+        # Single-repo dispatch.md (no numbered group) so the merge uses repo 1's
+        # worktree from dispatch.md; base=main.
+        mkdir -p "$C_LIST/runtime/$C_TID"
+        {
+            echo "---"
+            echo "task-id: $C_TID"
+            echo "spawn-iso: 2026-07-22T00:00:00+0000"
+            echo "tmux-session: zyz-task-$C_TID"
+            echo "tmux-window-id: @1"
+            echo "tmux-pane-id: %1"
+            echo "shell-pid: 111111"
+            echo "worktree: $C_WT1"
+            echo "source-repo: $C_R1"
+            echo "branch: $C_BR"
+            echo "base: main"
+            echo "plugin-root: $REPO_ROOT"
+            echo "encoded-cwd: -x"
+            echo "reuse-from:"
+            echo "reuse-scope:"
+            echo "reuse-claude-effective:"
+            echo "heartbeat-window-id:"
+            echo "claude-pid:"
+            echo "claude-session-id:"
+            echo "transcript-path:"
+            echo "first-seen-iso:"
+            echo "---"
+            echo ""
+            echo "# Dispatch Info"
+            echo ""
+            echo "## Recovery"
+            echo ""
+            echo "(x)"
+        } >"$C_LIST/runtime/$C_TID/dispatch.md"
+
+        local c_out1 c_rc1
+        c_out1="$(env PATH="$RUN_PATH" bash "$merge" "$C_TID" "$C_LIST" main </dev/null 2>&1)"
+        c_rc1=$?
+        # Re-run: expect already-merged + exit 0, NO false exit 12.
+        local c_out2 c_rc2
+        c_out2="$(env PATH="$RUN_PATH" bash "$merge" "$C_TID" "$C_LIST" main </dev/null 2>&1)"
+        c_rc2=$?
+        if [ "$c_rc1" -eq 0 ] && [ "$c_rc2" -eq 0 ] \
+            && printf '%s\n' "$c_out2" | grep -qxF 'merge-status=already-merged'; then
+            pass "T11b-multi (C) local-path idempotent re-run -> repo 1 already-merged, no false exit 12"
+        else
+            fail "T11b-multi (C) idempotent re-run failed: run1 exit=$c_rc1, run2 exit=$c_rc2 (expected 0/0 + 'merge-status=already-merged' on re-run).  Re-run output:
+$(printf '%s\n' "$c_out2" | sed 's/^/      | /')"
+        fi
+    fi
+
+    rm -rf "$T11M_ROOT"
+}
+
+# ---------------------------------------------------------------------------
+# cleanup-multi.  orch-cleanup-worker.sh multi-repo (design 02-D3, 04 §cleanup).
+#
+#  (A) dry-run: per-repo would-remove lines — worktree-removed=false (repo 1) AND
+#      worktree-removed-2=false (repo 2); nothing is actually removed.
+#  (B) --force: both worktrees removed (worktree-removed=true + worktree-removed-2=
+#      true), runtime archived; no read-after-archive (the repo set is resolved
+#      from dispatch.md BEFORE the archive move).
+#  (C) removal failure -> exit 8 + per-repo stdout: repo 2's worktree is LOCKED
+#      (single `--force` refuses a locked worktree), so repo 1 removes cleanly
+#      (worktree-removed=true) while repo 2 fails (worktree-removed-2=false) and
+#      the script exits 8 (design D3-2). See the in-body NOTE for why the raw
+#      "dirty removes nothing" phrasing is not black-box reproducible.
+#
+# Gated on tmux+git.  No tmux session is actually created (cleanup's kill step is a
+# no-op when the session is absent), so this needs only `tmux` on PATH + git.
+# ---------------------------------------------------------------------------
+run_cleanup_multi() {
+    say_header "cleanup-multi orch-cleanup-worker.sh multi-repo"
+
+    local cleanup="$REPO_ROOT/scripts/orch-cleanup-worker.sh"
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || [ ! -x "$cleanup" ]; then
+        local why="tmux/git not available"
+        [ ! -x "$cleanup" ] && why="orch-cleanup-worker.sh missing or not executable"
+        skip "cleanup-multi (A) dry-run per-repo would-remove lines ($why)"
+        skip "cleanup-multi (B) --force removes both worktrees + archives runtime ($why)"
+        skip "cleanup-multi (C) removal failure -> exit 8 + per-repo stdout ($why)"
+        return
+    fi
+
+    local CLM_ROOT
+    CLM_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-clm.XXXXXX")"
+
+    # =====================================================================
+    # (A) DRY-RUN — per-repo would-remove lines.
+    # =====================================================================
+    local A_ROOT="$CLM_ROOT/A"
+    local A_LIST="$A_ROOT/list"
+    local A_TID="zyzmcl_a"
+    local A_R1="$A_ROOT/repo1" A_R2="$A_ROOT/repo2"
+    local A_WT1="$A_ROOT/wt1"  A_WT2="$A_ROOT/wt2"
+    local a_ok="true"
+    zyzm_build_repo_worktree "$A_R1" "$A_WT1" "task/$A_TID" "r1.txt" false || a_ok="false"
+    zyzm_build_repo_worktree "$A_R2" "$A_WT2" "task/$A_TID" "r2.txt" false || a_ok="false"
+    if [ "$a_ok" != "true" ]; then
+        skip "cleanup-multi (A) dry-run per-repo would-remove lines (git fixture init failed)"
+    else
+        zyzm_write_merge_entry "$A_LIST" "$A_TID" "$A_R1" "n/a"
+        zyzm_write_dispatch_2repo "$A_LIST/runtime/$A_TID/dispatch.md" "$A_TID" \
+            "$A_WT1" "task/$A_TID" "$A_WT2" "task/$A_TID"
+        local a_out a_rc
+        a_out="$(bash "$cleanup" "$A_TID" "$A_LIST" </dev/null 2>&1)"
+        a_rc=$?
+        if [ "$a_rc" -eq 0 ] \
+            && printf '%s\n' "$a_out" | grep -qxF 'worktree-removed=false' \
+            && printf '%s\n' "$a_out" | grep -qxF 'worktree-removed-2=false' \
+            && [ -d "$A_WT1" ] && [ -d "$A_WT2" ]; then
+            pass "cleanup-multi (A) dry-run per-repo would-remove lines"
+        else
+            fail "cleanup-multi (A) dry-run: expected exit 0 + 'worktree-removed=false' + 'worktree-removed-2=false' + both worktrees still present (exit=$a_rc).  Output:
+$(printf '%s\n' "$a_out" | sed 's/^/      | /')"
+        fi
+    fi
+
+    # =====================================================================
+    # (B) --force — both worktrees removed + runtime archived.
+    # =====================================================================
+    local B_ROOT="$CLM_ROOT/B"
+    local B_LIST="$B_ROOT/list"
+    local B_TID="zyzmcl_b"
+    local B_R1="$B_ROOT/repo1" B_R2="$B_ROOT/repo2"
+    local B_WT1="$B_ROOT/wt1"  B_WT2="$B_ROOT/wt2"
+    local b_ok="true"
+    zyzm_build_repo_worktree "$B_R1" "$B_WT1" "task/$B_TID" "r1.txt" false || b_ok="false"
+    zyzm_build_repo_worktree "$B_R2" "$B_WT2" "task/$B_TID" "r2.txt" false || b_ok="false"
+    if [ "$b_ok" != "true" ]; then
+        skip "cleanup-multi (B) --force removes both worktrees + archives runtime (git fixture init failed)"
+    else
+        zyzm_write_merge_entry "$B_LIST" "$B_TID" "$B_R1" "n/a"
+        zyzm_write_dispatch_2repo "$B_LIST/runtime/$B_TID/dispatch.md" "$B_TID" \
+            "$B_WT1" "task/$B_TID" "$B_WT2" "task/$B_TID"
+        local b_out b_rc
+        b_out="$(bash "$cleanup" "$B_TID" "$B_LIST" --force </dev/null 2>&1)"
+        b_rc=$?
+        if [ "$b_rc" -eq 0 ] \
+            && printf '%s\n' "$b_out" | grep -qxF 'worktree-removed=true' \
+            && printf '%s\n' "$b_out" | grep -qxF 'worktree-removed-2=true' \
+            && [ ! -d "$B_WT1" ] && [ ! -d "$B_WT2" ] \
+            && printf '%s\n' "$b_out" | grep -qxF 'runtime-archived=true' \
+            && [ ! -d "$B_LIST/runtime/$B_TID" ] && [ -d "$B_LIST/runtime/.archive" ]; then
+            pass "cleanup-multi (B) --force removes both worktrees + archives runtime"
+        else
+            fail "cleanup-multi (B) --force: expected exit 0 + worktree-removed=true + worktree-removed-2=true + both worktrees gone + runtime archived (exit=$b_rc, wt1-present=$([ -d "$B_WT1" ] && echo y||echo n), wt2-present=$([ -d "$B_WT2" ] && echo y||echo n)).  Output:
+$(printf '%s\n' "$b_out" | sed 's/^/      | /')"
+        fi
+    fi
+
+    # =====================================================================
+    # (C) REMOVAL FAILURE -> exit 8 + per-repo stdout (design D3-2: a mid-set
+    #     removal failure does NOT abort the remaining repos; exit 8 at the end
+    #     with per-repo worktree-removed[-N]= lines).
+    #
+    # We LOCK repo 2's worktree: `git worktree remove --force` (SINGLE --force,
+    # which is what cleanup runs) refuses to remove a LOCKED worktree — that
+    # needs --force twice.  So repo 1 removes cleanly (worktree-removed=true)
+    # while repo 2 fails (worktree-removed-2=false), the script exits 8, and
+    # repo 2's worktree survives.  This is deterministic and cross-version-safe
+    # (worktree lock + double-force semantics predate all supported git).
+    #
+    # NOTE (reported to main agent): the discovered-test-point phrasing "一仓脏
+    # -> exit 8 全不删 (dirty precheck removes nothing)" is NOT black-box
+    # reproducible against the landed impl: in --force mode a DIRTY worktree is
+    # force-REMOVED (orch-cleanup-worker.sh:298-305), never an exit-8 trigger; the
+    # only "removes nothing" exit-8 is the precheck's unlocatable-main-repo abort,
+    # which `dirname` masks for a merely-deleted checkout.  This test asserts the
+    # deterministic removal-failure exit-8 path instead.
+    # =====================================================================
+    local C_ROOT="$CLM_ROOT/C"
+    local C_LIST="$C_ROOT/list"
+    local C_TID="zyzmcl_c"
+    local C_R1="$C_ROOT/repo1" C_R2="$C_ROOT/repo2"
+    local C_WT1="$C_ROOT/wt1"  C_WT2="$C_ROOT/wt2"
+    local c_ok="true"
+    zyzm_build_repo_worktree "$C_R1" "$C_WT1" "task/$C_TID" "r1.txt" false || c_ok="false"
+    zyzm_build_repo_worktree "$C_R2" "$C_WT2" "task/$C_TID" "r2.txt" false || c_ok="false"
+    if [ "$c_ok" != "true" ]; then
+        skip "cleanup-multi (C) removal failure -> exit 8 + per-repo stdout (git fixture init failed)"
+    elif ! git -C "$C_R2" worktree lock "$C_WT2" >/dev/null 2>&1; then
+        skip "cleanup-multi (C) removal failure -> exit 8 + per-repo stdout (git worktree lock unsupported on this host)"
+    else
+        zyzm_write_merge_entry "$C_LIST" "$C_TID" "$C_R1" "n/a"
+        zyzm_write_dispatch_2repo "$C_LIST/runtime/$C_TID/dispatch.md" "$C_TID" \
+            "$C_WT1" "task/$C_TID" "$C_WT2" "task/$C_TID"
+        local c_out c_rc
+        c_out="$(bash "$cleanup" "$C_TID" "$C_LIST" --force </dev/null 2>&1)"
+        c_rc=$?
+        if [ "$c_rc" -eq 8 ] \
+            && printf '%s\n' "$c_out" | grep -qxF 'worktree-removed=true' \
+            && printf '%s\n' "$c_out" | grep -qxF 'worktree-removed-2=false' \
+            && [ -d "$C_WT2" ]; then
+            pass "cleanup-multi (C) removal failure -> exit 8 + per-repo stdout (repo 1 removed, repo 2 failed+present)"
+        else
+            fail "cleanup-multi (C) expected exit 8 + 'worktree-removed=true' + 'worktree-removed-2=false' + repo 2 worktree present (exit=$c_rc, wt2-present=$([ -d "$C_WT2" ] && echo y||echo n)).  Output:
+$(printf '%s\n' "$c_out" | sed 's/^/      | /')"
+        fi
+        # Unlock so teardown's rm -rf is unobstructed.
+        git -C "$C_R2" worktree unlock "$C_WT2" >/dev/null 2>&1 || true
+    fi
+
+    rm -rf "$CLM_ROOT"
+}
+
+# zyzm_write_old_completed_entry <list-dir> <old-id> <primary-repo> <primary-wt>
+# Write a COMPLETED old master entry (the reuse source).  Its resolved multi-repo
+# worktree set lives in the old dispatch.md (written separately), not here.
+zyzm_write_old_completed_entry() {
+    local list_dir="$1" oid="$2" primary="$3" pwt="$4"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $oid"
+        echo "project: $(basename "$primary")"
+        echo "source-repo: $primary"
+        echo "state: completed"
+        echo "priority: normal"
+        echo "branch: task/$oid"
+        echo "base: main"
+        echo "worktree: $pwt"
+        echo "tmux-session: zyz-task-$oid"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-07-22"
+        echo "updated-at: 2026-07-22"
+        echo "---"
+        echo ""
+        echo "# $oid"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "Old completed multi-repo task (reuse source)."
+    } >"$list_dir/tasks/$oid.md"
+}
+
+# zyzm_write_reuse_entry <list-dir> <new-id> <old-id> <scope> <primary-repo>
+# Write a NEW task master entry declaring reuse-from/reuse-scope.
+zyzm_write_reuse_entry() {
+    local list_dir="$1" nid="$2" oid="$3" scope="$4" primary="$5"
+    mkdir -p "$list_dir/tasks"
+    {
+        echo "---"
+        echo "task-id: $nid"
+        echo "project: $(basename "$primary")"
+        echo "source-repo: $primary"
+        echo "state: ready"
+        echo "priority: normal"
+        echo "branch: task/$nid"
+        echo "base: main"
+        echo "worktree: /tmp/zyz-orch-rum-ignored/$nid"
+        echo "tmux-session: zyz-task-$nid"
+        echo "reuse-from: $oid"
+        echo "reuse-scope: $scope"
+        echo "reuse-claude: false"
+        echo "blocked-by: []"
+        echo "merged-with: []"
+        echo "deps-tentative: false"
+        echo "last-seen:"
+        echo "heartbeat-stale-sec: 300"
+        echo "created-at: 2026-07-22"
+        echo "updated-at: 2026-07-22"
+        echo "---"
+        echo ""
+        echo "# $nid"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "New task reusing a multi-repo container."
+    } >"$list_dir/tasks/$nid.md"
+}
+
+# ---------------------------------------------------------------------------
+# reuse-multi.  orch-reuse-worker.sh multi-repo (design 02-D4/D5, 04 §reuse).
+#
+#  (A) NEGATIVE (tmux-free): an old completed task whose old dispatch.md numbered
+#      group points at a repo-2 worktree that no longer exists -> a worktree-scope
+#      reuse aborts with exit 5 naming repo 2.  The worktree-existence precheck
+#      runs BEFORE the tmux/git dependency gate, so this fires on a tmux-less host.
+#  (B) POSITIVE (tmux-gated): worktree-scope reuse of a 2-worktree old set ->
+#      (b1) the NEW dispatch.md inherits the resolved numbered group (worktree-2 /
+#           source-repo-2 / branch-2 / base-2 == old values), and
+#      (b2) ZYZ_WORKTREES ("<wt1>:<wt2>") is exported into the new session's pane.
+# ---------------------------------------------------------------------------
+run_reuse_multi() {
+    say_header "reuse-multi orch-reuse-worker.sh multi-repo"
+
+    local reuse="$REPO_ROOT/scripts/orch-reuse-worker.sh"
+    if [ ! -x "$reuse" ]; then
+        skip "reuse-multi (A) missing repo in old set -> exit 5 (orch-reuse-worker.sh missing or not executable)"
+        skip "reuse-multi (B1) new dispatch.md inherits numbered group (orch-reuse-worker.sh missing or not executable)"
+        skip "reuse-multi (B2) ZYZ_WORKTREES exported into new pane for worktree scope >=2 (orch-reuse-worker.sh missing or not executable)"
+        return
+    fi
+
+    local RUM_ROOT
+    RUM_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-rum.XXXXXX")"
+    local RUM_NEW_SESSION=""
+    rum_teardown() {
+        [ -n "$RUM_NEW_SESSION" ] && tmux kill-session -t "$RUM_NEW_SESSION" 2>/dev/null
+        sleep 1
+        rm -rf "$RUM_ROOT"
+    }
+
+    # =====================================================================
+    # (A) NEGATIVE (tmux-free): old set's repo-2 worktree gone -> exit 5.
+    # =====================================================================
+    local A_LIST="$RUM_ROOT/list-a"
+    local A_OLD="rumolda" A_NEW="rumnewa"
+    local A_PWT="$RUM_ROOT/a-owt1"
+    mkdir -p "$A_PWT"   # primary worktree EXISTS (index 0 passes)
+    zyzm_write_old_completed_entry "$A_LIST" "$A_OLD" "$RUM_ROOT/a-repo1" "$A_PWT"
+    # Old dispatch.md numbered group points repo-2 worktree at a NONEXISTENT path.
+    zyzm_write_dispatch_2repo "$A_LIST/runtime/$A_OLD/dispatch.md" "$A_OLD" \
+        "$A_PWT" "task/$A_OLD" "/nonexistent/zyz-rum-$$-repo2" "task/$A_OLD"
+    zyzm_write_reuse_entry "$A_LIST" "$A_NEW" "$A_OLD" "worktree" "$RUM_ROOT/a-repo1"
+    run_and_check_exit_stderr_regex 5 \
+        'reuse-from old worktree path \(repo 2\) no longer exists' \
+        "reuse-multi (A) missing repo 2 in old set -> exit 5 naming repo 2" \
+        bash "$reuse" "$A_NEW" "$A_LIST"
+
+    # =====================================================================
+    # (B) POSITIVE (tmux+git gated): worktree-scope reuse of a 2-worktree old
+    #     set inherits the numbered group + exports ZYZ_WORKTREES.
+    # =====================================================================
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+        skip "reuse-multi (B1) new dispatch.md inherits numbered group (tmux/git not available)"
+        skip "reuse-multi (B2) ZYZ_WORKTREES exported into new pane for worktree scope >=2 (tmux/git not available)"
+        rum_teardown
+        return
+    fi
+
+    local B_LIST="$RUM_ROOT/list-b"
+    local B_OLD="rumoldb" B_NEW="rumnewb"
+    local B_R1="$RUM_ROOT/b-repo1" B_R2="$RUM_ROOT/b-repo2"
+    local B_WT1="$RUM_ROOT/b-owt1"  B_WT2="$RUM_ROOT/b-owt2"
+    RUM_NEW_SESSION="zyz-task-$B_NEW"
+    local b_ok="true"
+    zyzm_build_repo_worktree "$B_R1" "$B_WT1" "task/$B_OLD" "r1.txt" false || b_ok="false"
+    zyzm_build_repo_worktree "$B_R2" "$B_WT2" "task/$B_OLD" "r2.txt" false || b_ok="false"
+    if [ "$b_ok" != "true" ]; then
+        skip "reuse-multi (B1) new dispatch.md inherits numbered group (git fixture init failed)"
+        skip "reuse-multi (B2) ZYZ_WORKTREES exported into new pane for worktree scope >=2 (git fixture init failed)"
+        rum_teardown
+        return
+    fi
+
+    zyzm_write_old_completed_entry "$B_LIST" "$B_OLD" "$B_R1" "$B_WT1"
+    # Old dispatch.md numbered group: repo 1 = wt1 (source-repo=B_R1), repo 2 =
+    # wt2 (source-repo=B_R2).  zyzm_write_dispatch_2repo sets source-repo=<wt> for
+    # each, but reuse re-reads source-repo-N from here for the NEW group; the wt
+    # values are the load-bearing ones for the inherit + ZYZ_WORKTREES checks.
+    mkdir -p "$B_LIST/runtime/$B_OLD"
+    {
+        echo "---"
+        echo "task-id: $B_OLD"
+        echo "spawn-iso: 2026-07-22T00:00:00+0000"
+        echo "tmux-session: zyz-task-$B_OLD"
+        echo "tmux-window-id: @1"
+        echo "tmux-pane-id: %1"
+        echo "shell-pid: 111111"
+        echo "worktree: $B_WT1"
+        echo "source-repo: $B_R1"
+        echo "branch: task/$B_OLD"
+        echo "base: main"
+        echo "worktree-2: $B_WT2"
+        echo "source-repo-2: $B_R2"
+        echo "branch-2: task/$B_OLD"
+        echo "base-2: main"
+        echo "plugin-root: $REPO_ROOT"
+        echo "encoded-cwd: -x"
+        echo "reuse-from:"
+        echo "reuse-scope:"
+        echo "reuse-claude-effective:"
+        echo "heartbeat-window-id:"
+        echo "claude-pid:"
+        echo "claude-session-id:"
+        echo "transcript-path:"
+        echo "first-seen-iso:"
+        echo "---"
+        echo ""
+        echo "# Dispatch Info"
+        echo ""
+        echo "## Recovery"
+        echo ""
+        echo "(old)"
+    } >"$B_LIST/runtime/$B_OLD/dispatch.md"
+
+    zyzm_write_reuse_entry "$B_LIST" "$B_NEW" "$B_OLD" "worktree" "$B_R1"
+
+    local b_out b_rc
+    b_out="$(
+        cd "$RUM_ROOT" && bash "$reuse" "$B_NEW" "$B_LIST" </dev/null 2>&1
+    )"
+    b_rc=$?
+    local B_DISPATCH="$B_LIST/runtime/$B_NEW/dispatch.md"
+    if [ "$b_rc" -ne 0 ] || [ ! -f "$B_DISPATCH" ]; then
+        fail "reuse-multi (B) worktree-scope reuse exited $b_rc or wrote no dispatch.md.  Output:
+$(printf '%s\n' "$b_out" | sed 's/^/      | /')"
+        skip "reuse-multi (B1) new dispatch.md inherits numbered group (reuse failed)"
+        skip "reuse-multi (B2) ZYZ_WORKTREES exported into new pane for worktree scope >=2 (reuse failed)"
+        rum_teardown
+        return
+    fi
+
+    # (B1) new dispatch.md inherits the resolved numbered group from the old set.
+    local n_wt2 n_sr2 n_br2 n_ba2
+    n_wt2="$(tr_fm "$B_DISPATCH" worktree-2)"
+    n_sr2="$(tr_fm "$B_DISPATCH" source-repo-2)"
+    n_br2="$(tr_fm "$B_DISPATCH" branch-2)"
+    n_ba2="$(tr_fm "$B_DISPATCH" base-2)"
+    if [ "$n_wt2" = "$B_WT2" ] && [ "$n_sr2" = "$B_R2" ] \
+        && [ "$n_br2" = "task/$B_OLD" ] && [ "$n_ba2" = "main" ]; then
+        pass "reuse-multi (B1) new dispatch.md inherits numbered group (worktree-2/source-repo-2/branch-2/base-2 from old set)"
+    else
+        fail "reuse-multi (B1) numbered group not inherited: worktree-2='$n_wt2' (want '$B_WT2') source-repo-2='$n_sr2' (want '$B_R2') branch-2='$n_br2' base-2='$n_ba2'"
+    fi
+
+    # (B2) ZYZ_WORKTREES exported into the new session's pane.  reuse's
+    # worktree-scope branch send-keys `export ZYZ_WORKTREES='wt1:wt2'` into the
+    # new pane's shell; we send a follow-up command in the SAME shell that writes
+    # $ZYZ_WORKTREES to a probe file, then read it back.
+    if tmux has-session -t "$RUM_NEW_SESSION" 2>/dev/null; then
+        local probe="$RUM_ROOT/zyz_worktrees_probe.txt"
+        tmux send-keys -t "$RUM_NEW_SESSION" \
+            "printf '%s' \"\$ZYZ_WORKTREES\" > '$probe'" Enter 2>/dev/null || true
+        local _t got_wtenv=""
+        for _t in 1 2 3 4 5; do
+            [ -s "$probe" ] && { got_wtenv="$(cat "$probe" 2>/dev/null || true)"; break; }
+            sleep 1
+        done
+        if [ "$got_wtenv" = "$B_WT1:$B_WT2" ]; then
+            pass "reuse-multi (B2) ZYZ_WORKTREES exported into new pane for worktree scope >=2"
+        else
+            fail "reuse-multi (B2) ZYZ_WORKTREES in new pane='$got_wtenv' (expected '$B_WT1:$B_WT2')"
+        fi
+    else
+        fail "reuse-multi (B2) new session '$RUM_NEW_SESSION' not alive; cannot probe ZYZ_WORKTREES"
+    fi
+
+    rum_teardown
+}
+
+# ---------------------------------------------------------------------------
+# gh-scope-multi.  orch-merge.sh gh repo-scoping regression guard (review
+# finding 1: every gh call must run inside `(cd "$MAIN_REPO" && gh …)` so a
+# multi-repo merge hits each repo's OWN main checkout, never the orchestrator's
+# arbitrary cwd).  Black-box; creates NO tmux session (orch-merge.sh only needs
+# the tmux/git BINARIES on PATH for the merge path).
+#
+# A stub `gh` placed FIRST on PATH appends its own $PWD (the dir gh was invoked
+# from) to $GH_PWD_LOG on every pr list|create|merge, prints empty on list + a
+# fake URL on create, exits 0 — so the script believes gh succeeded, no network.
+# We drive orch-merge.sh from a neutral cwd that is NEITHER repo (the mktemp
+# root) to mimic the orchestrator; if the scoping is removed every gh call runs
+# from that launch cwd instead, which the assertion below catches.
+#
+# Gated on tmux+git binaries (orch-merge.sh hard-requires both at entry:
+# `for dep in tmux git`).  No tmux session is created.
+# ---------------------------------------------------------------------------
+run_gh_scope_multi() {
+    say_header "gh-scope-multi orch-merge.sh gh repo-scoping (review finding 1)"
+
+    local merge="$REPO_ROOT/scripts/orch-merge.sh"
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || [ ! -x "$merge" ]; then
+        local why="tmux/git not available"
+        [ ! -x "$merge" ] && why="orch-merge.sh missing or not executable"
+        skip "gh-scope-multi gh invoked from each repo's MAIN_REPO, never the orchestrator cwd ($why)"
+        return
+    fi
+
+    local GS_ROOT
+    GS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/zyz-orch-ghscope.XXXXXX")"
+    local GS_LIST="$GS_ROOT/list"
+    local GS_TID="zyzghsc"
+    local GS_R1="$GS_ROOT/repo1" GS_R2="$GS_ROOT/repo2"
+    local GS_WT1="$GS_ROOT/wt1"  GS_WT2="$GS_ROOT/wt2"
+    local GS_REMOTE1="$GS_ROOT/remote1.git" GS_REMOTE2="$GS_ROOT/remote2.git"
+    local GS_BR="task/$GS_TID"
+    local GS_LOG="$GS_ROOT/gh-pwd.log"
+    local GS_RUNCWD="$GS_ROOT"
+
+    # Build 2 real git repos + linked worktrees on the task branch.
+    local gs_ok="true"
+    zyzm_build_repo_worktree "$GS_R1" "$GS_WT1" "$GS_BR" "r1.txt" false || gs_ok="false"
+    zyzm_build_repo_worktree "$GS_R2" "$GS_WT2" "$GS_BR" "r2.txt" false || gs_ok="false"
+    # Give each MAIN_REPO an `origin` so orch-merge.sh sets HAS_ORIGIN=true and
+    # takes the gh path (bare remotes so the script's real `git push` succeeds).
+    git init -q --bare "$GS_REMOTE1" >/dev/null 2>&1 || gs_ok="false"
+    git init -q --bare "$GS_REMOTE2" >/dev/null 2>&1 || gs_ok="false"
+    git -C "$GS_R1" remote add origin "$GS_REMOTE1" >/dev/null 2>&1 || gs_ok="false"
+    git -C "$GS_R2" remote add origin "$GS_REMOTE2" >/dev/null 2>&1 || gs_ok="false"
+
+    if [ "$gs_ok" != "true" ]; then
+        skip "gh-scope-multi gh invoked from each repo's MAIN_REPO, never the orchestrator cwd (git fixture init failed)"
+        rm -rf "$GS_ROOT"
+        return
+    fi
+
+    # Stub gh FIRST on PATH: log the cwd gh was invoked from (repo-scoped =>
+    # each repo's MAIN_REPO; un-scoped => the orchestrator launch cwd), print
+    # empty on `pr list` (no existing PR), a fake URL on `pr create`, and exit 0
+    # everywhere so orch-merge.sh believes gh succeeded (no network, no auth).
+    local GS_SHADOW="$GS_ROOT/shadow-bin"
+    mkdir -p "$GS_SHADOW"
+    cat >"$GS_SHADOW/gh" <<'STUBGHEOF'
+#!/bin/sh
+# stub gh — record invocation cwd for the repo-scoping regression guard.
+pwd -P >> "$GH_PWD_LOG"
+case "$1 $2" in
+    "pr create") echo "https://example.invalid/pr/1" ;;
+    *) : ;;   # `pr list` -> empty stdout (no PR); `pr merge` -> nothing
+esac
+exit 0
+STUBGHEOF
+    chmod +x "$GS_SHADOW/gh"
+    local GS_RUN_PATH="$GS_SHADOW:$PATH"
+
+    # Master entry (`merge` token) + spawn-shaped 2-repo dispatch.md.
+    zyzm_write_merge_entry "$GS_LIST" "$GS_TID" "$GS_R1" "merge"
+    zyzm_write_dispatch_2repo "$GS_LIST/runtime/$GS_TID/dispatch.md" "$GS_TID" \
+        "$GS_WT1" "$GS_BR" "$GS_WT2" "$GS_BR"
+
+    # Drive orch-merge.sh from a cwd that is NEITHER repo (the mktemp root) to
+    # mimic the orchestrator's arbitrary cwd.  Stub gh first on PATH + a fresh
+    # log; GH_PWD_LOG steers the stub's per-call cwd record.
+    : >"$GS_LOG"
+    local gs_out gs_rc
+    gs_out="$( cd "$GS_RUNCWD" && env PATH="$GS_RUN_PATH" GH_PWD_LOG="$GS_LOG" \
+        bash "$merge" "$GS_TID" "$GS_LIST" main </dev/null 2>&1 )"
+    gs_rc=$?
+
+    # Canonicalize both sides to physical paths so a symlinked TMPDIR (macOS
+    # /tmp -> /private/tmp) can't cause a spurious mismatch; the stub logs
+    # `pwd -P` too.
+    local gs_exp1 gs_exp2 gs_cwd_canon
+    gs_exp1="$(cd "$GS_R1" && pwd -P)"
+    gs_exp2="$(cd "$GS_R2" && pwd -P)"
+    gs_cwd_canon="$(cd "$GS_RUNCWD" && pwd -P)"
+
+    local gs_pass="true" gs_why=""
+    # gh must have actually been invoked (log non-empty) or the gh path wasn't
+    # taken and the guard would silently pass.
+    [ -s "$GS_LOG" ] || { gs_pass="false"; gs_why="$gs_why gh-never-invoked(log-empty);"; }
+    # gh ran from repo 1's MAIN_REPO …
+    grep -qxF "$gs_exp1" "$GS_LOG" \
+        || { gs_pass="false"; gs_why="$gs_why gh-not-scoped-to-repo1;"; }
+    # … and from repo 2's MAIN_REPO (both distinct repo paths present).
+    grep -qxF "$gs_exp2" "$GS_LOG" \
+        || { gs_pass="false"; gs_why="$gs_why gh-not-scoped-to-repo2;"; }
+    # gh must NEVER have run from the orchestrator's launch cwd (exact-line
+    # match so repo1/repo2 subdir lines don't count).
+    if grep -qxF "$gs_cwd_canon" "$GS_LOG"; then
+        gs_pass="false"; gs_why="$gs_why gh-ran-from-orchestrator-cwd;"
+    fi
+
+    if [ "$gs_pass" = "true" ]; then
+        pass "gh-scope-multi gh invoked from each repo's MAIN_REPO, never the orchestrator cwd"
+    else
+        fail "gh-scope-multi failed:$gs_why  merge exit=$gs_rc; gh-pwd-log:
+$(sed 's/^/      | /' "$GS_LOG" 2>/dev/null)
+      merge output:
+$(printf '%s\n' "$gs_out" | sed 's/^/      | /')"
+    fi
+
+    rm -rf "$GS_ROOT"
+}
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -5488,6 +7022,13 @@ run_T10
 run_T11_confirm
 run_T11_merge
 run_T12
+run_T4_multi
+run_T5_multi
+run_T6_multi
+run_T11b_multi
+run_cleanup_multi
+run_reuse_multi
+run_gh_scope_multi
 
 echo
 echo "============================================================"
