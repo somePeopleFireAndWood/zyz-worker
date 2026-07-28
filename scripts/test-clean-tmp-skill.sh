@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# Static + smoke-check suite for the clean-tmp-skill task.
+# Static + smoke-check suite for the clean-tmp skill.
 #
 # Implements T1-T6 from
 #   .zyz-worker/tasks/clean-tmp-skill/design.md  ##  Testing Plan
+# plus the 0.11.0 evolution extensions (T3/T5/T6 updates + new T7-T11) from
+#   .zyz-worker/tasks/clean-tmp-skill-evolution/design.md  ##  Testing Plan
 #
 # Usage:
 #   bash scripts/test-clean-tmp-skill.sh
 #
 # Behavior:
-#   - Runs all six test groups to completion (does NOT bail on first failure).
+#   - Runs all eleven test groups to completion (does NOT bail on first failure).
 #   - Prints PASS / FAIL / SKIP per check with offending paths on FAIL.
 #   - Prints a final summary line:
 #       RESULT: <passed>/<total> checks passed  [(<skipped> skipped)]
@@ -23,7 +25,8 @@
 #
 # Self-scan note (design ## Important Details): this script itself contains the
 # strings "0.9.0", "clean-tmp", "kill -0", "lsof", "ss -lxp", "TMPDIR",
-# "rm -rf /tmp", etc.  To avoid self-scan false positives EVERY grep below is
+# "rm -rf /tmp", "--auto", "docker image prune", "go clean -modcache",
+# "quota -s", etc.  To avoid self-scan false positives EVERY grep below is
 # anchored to a specific named file path (the manifest / skill / doc under
 # test) — there is deliberately NO repo-wide `git ls-files | xargs grep`.
 
@@ -54,7 +57,7 @@ SKIPPED=0
 
 # Single source of truth for the expected release version (design §5).  A
 # future bump is one edit here.
-EXPECTED_VERSION="0.10.0"
+EXPECTED_VERSION="0.11.0"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns.  Derived so a version bump only requires editing EXPECTED_VERSION.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
@@ -62,6 +65,11 @@ EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 # The skill under test.
 SKILL_REL="skills/clean-tmp/SKILL.md"
 SKILL="$REPO_ROOT/$SKILL_REL"
+
+# The two on-demand reference docs split out of SKILL.md (evolution design D1).
+# T11 asserts their filesystem existence; T6 asserts they are in the zip.
+REF_MACOS_REL="skills/clean-tmp/references/macos-tmpdir-trap.md"
+REF_SOCKET_REL="skills/clean-tmp/references/socket-liveness.md"
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -326,7 +334,9 @@ run_T4() {
 #       go stale if only the bullet were updated.
 #     - count of `clean-tmp` occurrences >= 2 confirms BOTH enumerations exist.
 #   CHANGELOG.md (anchored):
-#     - has a `## [0.9.0]` heading.
+#     - has a `## [0.9.0]` heading (historical entry, kept as regression guard).
+#     - has a `## [0.11.0]` heading (evolution design D8).  Both regexes
+#       tolerate a ` — <date>` tail via `([[:space:]]|$)`.
 # ---------------------------------------------------------------------------
 run_T5() {
     say_header "T5  Doc wiring (README + CHANGELOG)"
@@ -369,11 +379,21 @@ run_T5() {
     # ---- CHANGELOG.md -------------------------------------------------------
     local cl="$REPO_ROOT/CHANGELOG.md"
     if [ ! -f "$cl" ]; then
-        fail "T5 CHANGELOG.md missing — cannot check version heading"
-    elif grep -qE '^## \[0\.9\.0\]([[:space:]]|$)' "$cl"; then
+        fail "T5 CHANGELOG.md missing — cannot check version headings"
+        skip "T5 CHANGELOG.md contains '## [0.11.0]' heading (CHANGELOG.md missing)"
+        return
+    fi
+    if grep -qE '^## \[0\.9\.0\]([[:space:]]|$)' "$cl"; then
         pass "T5 CHANGELOG.md contains '## [0.9.0]' heading"
     else
         fail "T5 CHANGELOG.md missing '## [0.9.0]' heading"
+    fi
+    # Evolution entry (design D8).  `([[:space:]]|$)` tolerates the house
+    # `## [0.11.0] — <date>` em-dash date tail.
+    if grep -qE '^## \[0\.11\.0\]([[:space:]]|$)' "$cl"; then
+        pass "T5 CHANGELOG.md contains '## [0.11.0]' heading"
+    else
+        fail "T5 CHANGELOG.md missing '## [0.11.0]' heading"
     fi
 }
 
@@ -382,7 +402,9 @@ run_T5() {
 #
 #   Runs `bash scripts/pack.sh`, asserts exit 0, asserts the versioned zip
 #   exists, and (if `unzip` is available) asserts the zip listing contains
-#   skills/clean-tmp/SKILL.md.  SKIPs the unzip sub-check when unzip is absent.
+#   skills/clean-tmp/SKILL.md plus the two references/ docs (evolution design:
+#   zip-content assertions belong to T6, filesystem existence to T11).  SKIPs
+#   the unzip sub-checks when unzip is absent.
 #
 #   IMPORTANT CAVEAT: pack.sh packs `git ls-files` (the git index), so this
 #   test only passes once the new skill has been `git add`-ed.  The main agent
@@ -402,6 +424,8 @@ run_T6() {
         skip "T6 bash scripts/pack.sh exits 0 (pack.sh not runnable)"
         skip "T6 dist/zyz-worker-${EXPECTED_VERSION}.zip exists (pack.sh not runnable)"
         skip "T6 zip contains $SKILL_REL (pack.sh not runnable)"
+        skip "T6 zip contains $REF_MACOS_REL (pack.sh not runnable)"
+        skip "T6 zip contains $REF_SOCKET_REL (pack.sh not runnable)"
         return
     fi
 
@@ -427,11 +451,15 @@ $(printf '%s\n' "$stderr_content" | sed 's/^/      | /')"
     else
         fail "T6 $zip_path missing after pack.sh run"
         skip "T6 zip contains $SKILL_REL (zip artifact missing)"
+        skip "T6 zip contains $REF_MACOS_REL (zip artifact missing)"
+        skip "T6 zip contains $REF_SOCKET_REL (zip artifact missing)"
         return
     fi
 
     if ! command -v unzip >/dev/null 2>&1; then
         skip "T6 zip contains $SKILL_REL (unzip not available on this host)"
+        skip "T6 zip contains $REF_MACOS_REL (unzip not available on this host)"
+        skip "T6 zip contains $REF_SOCKET_REL (unzip not available on this host)"
         return
     fi
 
@@ -443,11 +471,325 @@ $(printf '%s\n' "$stderr_content" | sed 's/^/      | /')"
 $(printf '%s\n' "$zip_listing" | sed 's/^/      | /')"
         return
     fi
-    if printf '%s\n' "$zip_listing" | grep -qF "$SKILL_REL"; then
-        pass "T6 zip contains $SKILL_REL"
-    else
-        fail "T6 zip does NOT contain $SKILL_REL (was the new skill 'git add'-ed before pack?).  Listing tail:
+    local rel
+    for rel in "$SKILL_REL" "$REF_MACOS_REL" "$REF_SOCKET_REL"; do
+        if printf '%s\n' "$zip_listing" | grep -qF "$rel"; then
+            pass "T6 zip contains $rel"
+        else
+            fail "T6 zip does NOT contain $rel (was it 'git add'-ed before pack?).  Listing tail:
 $(printf '%s\n' "$zip_listing" | tail -n 20 | sed 's/^/      | /')"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# T7.  Dual mode + auto-mode DELETE criteria (evolution design D2/D3, AC#1/2).
+#
+#   All checks target the named SKILL.md only.  Markers:
+#     - --auto / 交互模式 / 自动模式 / 事后报告   (mode split + post-hoc report)
+#     - five-condition criteria: -mmin -2880 (48h probe), 48 小时 (threshold
+#       prose), lsof (open-handle probe), id -un (owner condition),
+#       local-review- (one-shot-artifact allowlist literal)
+#     - -maxdepth 0 AND -print -quit — BOTH must be present: the file probe
+#       uses `-maxdepth 0` while the directory probe drops it and short-circuits
+#       with `-print -quit` (design F3/Round-2 F1: `| head -n 1` would swallow
+#       find's exit code and defeat fail->keep)
+#     - noatime  (why mtime, not atime)
+#     - fail->keep direction marker (see inline comment)
+#     - trigger words quota + docker in the frontmatter description or the
+#       「何时加载」 section (AC#6)
+# ---------------------------------------------------------------------------
+run_T7() {
+    say_header "T7  Dual mode + auto-mode DELETE criteria"
+
+    if [ ! -f "$SKILL" ]; then
+        fail "T7 cannot lint body — $SKILL_REL does not exist"
+        local i
+        for i in \
+            "--auto marker" \
+            "交互模式 marker" \
+            "自动模式 marker" \
+            "事后报告 marker" \
+            "-mmin -2880 marker" \
+            "48 小时 marker" \
+            "lsof five-condition marker" \
+            "id -un owner marker" \
+            "local-review- allowlist marker" \
+            "-maxdepth 0 file-probe marker" \
+            "-print -quit dir-probe marker" \
+            "noatime marker" \
+            "fail->keep direction marker" \
+            "trigger word quota" \
+            "trigger word docker"
+        do
+            skip "T7 $i ($SKILL_REL missing)"
+        done
+        return
+    fi
+
+    # Mode split + post-hoc report.
+    assert_literal_in_file "$SKILL" "--auto"   "T7 body has '--auto' (auto-mode switch)"
+    assert_literal_in_file "$SKILL" "交互模式" "T7 body has '交互模式'"
+    assert_literal_in_file "$SKILL" "自动模式" "T7 body has '自动模式'"
+    assert_literal_in_file "$SKILL" "事后报告" "T7 body has '事后报告' (post-hoc report)"
+
+    # Five-condition DELETE criteria markers (design D2: owner / >48h /
+    # unprotected / no open handle / on the one-shot allowlist).
+    assert_literal_in_file "$SKILL" "-mmin -2880"   "T7 body has '-mmin -2880' (48h find probe)"
+    assert_literal_in_file "$SKILL" "48 小时"        "T7 body has '48 小时' (threshold prose)"
+    assert_literal_in_file "$SKILL" "lsof"          "T7 body has 'lsof' (open-handle condition)"
+    assert_literal_in_file "$SKILL" "id -un"        "T7 body has 'id -un' (owner condition)"
+    assert_literal_in_file "$SKILL" "local-review-" "T7 body has 'local-review-' (allowlist literal)"
+
+    # File probe vs directory probe are DISTINCT (design D3): the file probe
+    # keeps `-maxdepth 0`; the directory probe drops it (top-level dir mtime
+    # misses deep writes) and short-circuits via find's own `-print -quit` so
+    # find's exit code stays checkable.  Both literals must be present.
+    assert_literal_in_file "$SKILL" "-maxdepth 0"  "T7 body has '-maxdepth 0' (file mtime probe)"
+    assert_literal_in_file "$SKILL" "-print -quit" "T7 body has '-print -quit' (recursive dir mtime probe)"
+
+    # Why mtime and not atime.
+    assert_literal_in_file "$SKILL" "noatime" "T7 body has 'noatime' (mtime-not-atime rationale)"
+
+    # Fail->keep direction marker (design D2/D3, AC#2): a failed probe must
+    # classify KEEP, never "old enough to delete".  Both accepted literals
+    # come verbatim from the design text: 'probe-failed' is the keep-reason
+    # tag in the D3 probe snippets; 'fail→keep' is D2's direction phrase.
+    if grep -qF -- "probe-failed" "$SKILL" || grep -qF -- "fail→keep" "$SKILL"; then
+        pass "T7 body states fail->keep probe direction ('probe-failed' or 'fail→keep')"
+    else
+        fail "T7 body missing fail->keep direction marker (need 'probe-failed' or 'fail→keep' in $SKILL_REL)"
+    fi
+
+    # Trigger words (design D7, AC#6): quota + docker must appear in the
+    # frontmatter description or the 「何时加载」 section — NOT merely anywhere
+    # in the body ('docker' trivially appears in the Docker cleanup section,
+    # so a whole-file grep would be vacuous).  Frontmatter is approximated by
+    # the first 15 lines (house frontmatter is well under 10 lines); the
+    # 何时加载 section runs from its `## ` heading to the next `## ` heading.
+    local trigger_region
+    trigger_region="$(head -n 15 "$SKILL"; awk '/^## /{f=0} /^##.*何时加载/{f=1} f' "$SKILL")"
+    local w
+    for w in quota docker; do
+        if printf '%s\n' "$trigger_region" | grep -qiF -- "$w"; then
+            pass "T7 trigger word '$w' present in frontmatter description or 何时加载 section"
+        else
+            fail "T7 trigger word '$w' missing from frontmatter description and 何时加载 section of $SKILL_REL"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# T8.  Docker cleanup surface (evolution design D4, AC#3).
+#
+#   Anchored to SKILL.md.  Markers: pre-probe, image/volume prune commands,
+#   daemon-unreachable whole-block skip, rootless-quota motivation path.
+# ---------------------------------------------------------------------------
+run_T8() {
+    say_header "T8  Docker cleanup surface"
+
+    if [ ! -f "$SKILL" ]; then
+        fail "T8 cannot lint body — $SKILL_REL does not exist"
+        local i
+        for i in \
+            "docker system df marker" \
+            "docker image prune -a -f marker" \
+            "docker volume prune -f marker" \
+            "整块跳过 marker" \
+            "~/.local/share/docker marker"
+        do
+            skip "T8 $i ($SKILL_REL missing)"
+        done
+        return
+    fi
+
+    assert_literal_in_file "$SKILL" "docker system df"        "T8 body has 'docker system df' (pre-probe)"
+    assert_literal_in_file "$SKILL" "docker image prune -a -f" "T8 body has 'docker image prune -a -f'"
+    assert_literal_in_file "$SKILL" "docker volume prune -f"   "T8 body has 'docker volume prune -f'"
+    # Daemon unreachable => skip the whole block, not a failure (fail->keep).
+    assert_literal_in_file "$SKILL" "整块跳过"                 "T8 body has '整块跳过' (daemon-unreachable skip)"
+    # Rootless docker data counts against the user's uid quota — the incident
+    # motivation for this cleanup surface.
+    assert_literal_in_file "$SKILL" "~/.local/share/docker"    "T8 body has '~/.local/share/docker' (rootless quota motivation)"
+}
+
+# ---------------------------------------------------------------------------
+# T9.  Compiler / package-manager cache surface (evolution design D5, AC#4).
+#
+#   Anchored to SKILL.md.  Markers: the tiered table's commands, the modcache
+#   keep semantic ON ITS OWN LINE, tool-queried cache paths, CLI existence
+#   probes, and the 1G default threshold.
+# ---------------------------------------------------------------------------
+run_T9() {
+    say_header "T9  Compiler/package cache surface"
+
+    if [ ! -f "$SKILL" ]; then
+        fail "T9 cannot lint body — $SKILL_REL does not exist"
+        local i
+        for i in \
+            "go clean -cache marker" \
+            "go clean -modcache marker" \
+            "go clean -modcache line 不删 marker" \
+            "go env GOCACHE marker" \
+            "pnpm store prune marker" \
+            "uv cache clean marker" \
+            "npm cache clean marker" \
+            "playwright marker" \
+            "command -v marker" \
+            "1G threshold marker"
+        do
+            skip "T9 $i ($SKILL_REL missing)"
+        done
+        return
+    fi
+
+    assert_literal_in_file "$SKILL" "go clean -cache" "T9 body has 'go clean -cache' (build cache, over-threshold delete)"
+
+    # `go clean -modcache` must be present AND its own line must carry the
+    # 「不删」 semantic (design D5: module cache rebuild = re-download every
+    # dependency, so auto mode never deletes it).  Checking the SAME line
+    # guards against the command and the keep rule drifting apart.
+    local mod_lines
+    mod_lines="$(grep -F -- "go clean -modcache" "$SKILL" 2>/dev/null || true)"
+    if [ -z "$mod_lines" ]; then
+        fail "T9 body missing 'go clean -modcache' in $SKILL_REL"
+        fail "T9 'go clean -modcache' line 不删 marker (command itself missing)"
+    else
+        pass "T9 body has 'go clean -modcache'"
+        if printf '%s\n' "$mod_lines" | grep -qF -- "不删"; then
+            pass "T9 'go clean -modcache' line carries '不删' (module cache keep semantic)"
+        else
+            fail "T9 'go clean -modcache' line(s) missing '不删' marker in $SKILL_REL:
+$(printf '%s\n' "$mod_lines" | sed 's/^/      | /')"
+        fi
+    fi
+
+    # Cache paths are queried from the tool itself, never hardcoded (design F2:
+    # macOS default cache dirs differ from Linux).
+    assert_literal_in_file "$SKILL" "go env GOCACHE"  "T9 body has 'go env GOCACHE' (tool-queried cache path)"
+    assert_literal_in_file "$SKILL" "pnpm store prune" "T9 body has 'pnpm store prune'"
+    assert_literal_in_file "$SKILL" "uv cache clean"   "T9 body has 'uv cache clean'"
+    assert_literal_in_file "$SKILL" "npm cache clean"  "T9 body has 'npm cache clean' (interactive-only)"
+    assert_literal_in_file "$SKILL" "playwright"       "T9 body has 'playwright' (needs-your-call browser caches)"
+    assert_literal_in_file "$SKILL" "command -v"       "T9 body has 'command -v' (CLI existence probe)"
+    assert_literal_in_file "$SKILL" "1G"               "T9 body has '1G' (default --go-cache-threshold)"
+}
+
+# ---------------------------------------------------------------------------
+# T10.  Protect-list + multi-user guardrail hardening (evolution design D6,
+#       AC#5).  Anchored to SKILL.md.
+# ---------------------------------------------------------------------------
+run_T10() {
+    say_header "T10  Protect-list + guardrail hardening"
+
+    if [ ! -f "$SKILL" ]; then
+        fail "T10 cannot lint body — $SKILL_REL does not exist"
+        local i
+        for i in \
+            "vscode-* protect marker" \
+            "*.keep protect marker" \
+            "不带属主过滤 lesson marker" \
+            "quota -s marker"
+        do
+            skip "T10 $i ($SKILL_REL missing)"
+        done
+        return
+    fi
+
+    assert_literal_in_file "$SKILL" "vscode-*" "T10 protect-list has 'vscode-*'"
+    assert_literal_in_file "$SKILL" "*.keep"   "T10 protect-list has '*.keep'"
+    # Field lesson: never size your own usage with an owner-unfiltered du.
+    assert_literal_in_file "$SKILL" "不带属主过滤" "T10 body has '不带属主过滤' (du owner-filter lesson)"
+    # Quota perspective: uid quota counts files filesystem-wide.
+    assert_literal_in_file "$SKILL" "quota -s" "T10 body has 'quota -s' (quota perspective)"
+}
+
+# ---------------------------------------------------------------------------
+# T11.  references/ split + doc lockstep (evolution design D1/D8, AC#6/8).
+#
+#   Filesystem existence of the two reference docs lives here; their presence
+#   inside the packed zip is T6's job (design F9: no overlapping duties).
+# ---------------------------------------------------------------------------
+run_T11() {
+    say_header "T11  references/ split + doc lockstep"
+
+    # (a) The two reference docs exist and are non-empty.
+    local rel
+    for rel in "$REF_MACOS_REL" "$REF_SOCKET_REL"; do
+        if [ -s "$REPO_ROOT/$rel" ]; then
+            pass "T11 $rel exists and is non-empty"
+        else
+            fail "T11 $rel missing or empty"
+        fi
+    done
+
+    # (b) SKILL.md explicitly points at both relative paths (on-demand load).
+    if [ ! -f "$SKILL" ]; then
+        fail "T11 cannot check reference links — $SKILL_REL does not exist"
+        skip "T11 $SKILL_REL links references/macos-tmpdir-trap.md ($SKILL_REL missing)"
+        skip "T11 $SKILL_REL links references/socket-liveness.md ($SKILL_REL missing)"
+    else
+        assert_literal_in_file "$SKILL" "references/macos-tmpdir-trap.md" "T11 $SKILL_REL links references/macos-tmpdir-trap.md"
+        assert_literal_in_file "$SKILL" "references/socket-liveness.md"   "T11 $SKILL_REL links references/socket-liveness.md"
+    fi
+
+    # (c) README repo-structure tree shows references/ inside the clean-tmp
+    # subtree.  Anchored: find the tree line ending in 'clean-tmp/' (same
+    # anchor T5 uses), then require a 'references/' line within the next 6
+    # lines — a plain whole-file grep for 'references/' would match other
+    # skills' subtrees.
+    local readme="$REPO_ROOT/README.md"
+    if [ ! -f "$readme" ]; then
+        fail "T11 README.md missing — cannot check tree references/ entry"
+    elif awk '/clean-tmp\/[[:space:]]*$/ { w = NR + 6 } w && NR <= w && /references\// { found = 1 } END { exit(found ? 0 : 1) }' "$readme"; then
+        pass "T11 README.md tree has 'references/' within the clean-tmp/ subtree"
+    else
+        fail "T11 README.md tree is missing a 'references/' entry within 6 lines after the 'clean-tmp/' line"
+    fi
+
+    # (d) project-structure.md no longer names clean-tmp as the
+    # only-a-SKILL.md lightweight example (design D8: git-worktree stays as
+    # that example; clean-tmp becomes the SKILL.md + references/ example).
+    # The current L87 keeps BOTH forms in one paragraph line:
+    #   "...ships only a `SKILL.md` (...), such as `git-worktree`. A skill may
+    #    also pair its `SKILL.md` with a `references/` directory ..., such as
+    #    ... `clean-tmp` (`SKILL.md` + `references/`)."
+    # so a bare "line must not contain clean-tmp" check would false-fail.
+    # Accurate assertion: on the line carrying the only-SKILL.md phrasing,
+    # (d1) git-worktree is the example that follows that phrasing, and
+    # (d2) clean-tmp is either absent or preceded by `references/` on the same
+    # line (i.e. cited as the references form, never the only-SKILL.md form —
+    # the pre-evolution text had no `references/` on this line at all, so it
+    # fails d2 as required).
+    local ps="$REPO_ROOT/docs/conventions/project-structure.md"
+    if [ ! -f "$ps" ]; then
+        fail "T11 docs/conventions/project-structure.md missing"
+        skip "T11 project-structure.md only-SKILL.md example is git-worktree (file missing)"
+        skip "T11 project-structure.md clean-tmp not the only-SKILL.md example (file missing)"
+    else
+        local ps_line
+        ps_line="$(grep -E 'only a .?SKILL\.md|只带 .?SKILL\.md' "$ps" 2>/dev/null | head -n 1)"
+        if [ -z "$ps_line" ]; then
+            fail "T11 project-structure.md has no only-SKILL.md lightweight-skill example line"
+            skip "T11 project-structure.md clean-tmp not the only-SKILL.md example (example line missing)"
+        else
+            # d1: git-worktree follows the only-SKILL.md phrasing.
+            if printf '%s\n' "$ps_line" | grep -qE '(only a .?SKILL\.md|只带 .?SKILL\.md).*git-worktree'; then
+                pass "T11 project-structure.md only-SKILL.md example is git-worktree"
+            else
+                fail "T11 project-structure.md only-SKILL.md example line does not name git-worktree:
+$(printf '%s\n' "$ps_line" | sed 's/^/      | /')"
+            fi
+            # d2: clean-tmp absent, or preceded by references/ on the line.
+            if ! printf '%s\n' "$ps_line" | grep -qF -- "clean-tmp"; then
+                pass "T11 project-structure.md clean-tmp absent from the only-SKILL.md example line"
+            elif printf '%s\n' "$ps_line" | grep -qE 'references/.*clean-tmp'; then
+                pass "T11 project-structure.md cites clean-tmp only as the SKILL.md + references/ form"
+            else
+                fail "T11 project-structure.md still cites clean-tmp as the only-SKILL.md example:
+$(printf '%s\n' "$ps_line" | sed 's/^/      | /')"
+            fi
+        fi
     fi
 }
 
@@ -463,6 +805,11 @@ run_T3
 run_T4
 run_T5
 run_T6
+run_T7
+run_T8
+run_T9
+run_T10
+run_T11
 
 echo
 echo "============================================================"

@@ -84,7 +84,7 @@ skills/
 
 Use `templates/` for reusable output shapes and `references/` for supporting material that the skill may load on demand.
 
-A skill may be a lightweight utility that ships only a `SKILL.md` (no `prompts/` or `templates/`), such as `git-worktree` or the cross-platform temp-directory cleanup skill `clean-tmp`.
+A skill may be a lightweight utility that ships only a `SKILL.md` (no `prompts/` or `templates/`), such as `git-worktree`. A skill may also pair its `SKILL.md` with a `references/` directory for on-demand-loaded supporting material, such as the cross-platform cleanup skill `clean-tmp` (`SKILL.md` + `references/`).
 
 ### `subagents/`
 

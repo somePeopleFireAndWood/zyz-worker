@@ -18,7 +18,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - Execute Task Skill 位于 `skills/execute-task/SKILL.md`
 - Orchestration Scheduling Task Skill 位于 `skills/orchestration-scheduling-task/SKILL.md`
 - git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
-- clean-tmp Skill 位于 `skills/clean-tmp/SKILL.md`（跨平台安全清理临时目录，skill-only）
+- clean-tmp Skill 位于 `skills/clean-tmp/SKILL.md`（跨平台安全清理临时目录 + Docker/编译缓存清理面，交互/自动双模式；细节参考资料在 `references/`）
 - Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
 - Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - Orchestration bash helpers 位于 `scripts/orch-*.sh`（其中 `orch-reuse-worker.sh` 用于「复用已完成任务的 tmux/worktree 创建新任务」——见下方 *容器复用*）
@@ -292,7 +292,10 @@ subagents/
 │   ├── git-worktree/
 │   │   └── SKILL.md
 │   └── clean-tmp/
-│       └── SKILL.md
+│       ├── SKILL.md
+│       └── references/
+│           ├── macos-tmpdir-trap.md
+│           └── socket-liveness.md
 ├── subagents/
 │   ├── README.md
 │   ├── implementation-agent.md
