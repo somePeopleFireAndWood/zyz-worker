@@ -22,6 +22,15 @@
 #     arrays, no ${var,,}).
 #   - Uses `set -u` and `set -o pipefail` only — never `set -e` so the operator
 #     sees the full picture across all checks.
+#   - SIGPIPE discipline: under pipefail, `<producer> | grep -q` is unsafe
+#     whenever the producer can still be writing after grep's first match —
+#     grep -q exits immediately, the producer's next write hits a closed pipe,
+#     SIGPIPE makes the pipeline rc 141, and the check takes the wrong branch
+#     (false FAIL for positive checks; worse, false PASS for must-be-absent
+#     checks).  Therefore NO `| grep -q` pipelines in this file: containment
+#     checks on captured output use grep WITHOUT -q + >/dev/null (grep then
+#     consumes all input, so the producer never gets SIGPIPE).  `grep -q`
+#     directly ON A FILE is safe (no pipe) and stays.
 #
 # Self-scan note (design ## Important Details): this script itself contains the
 # strings "0.9.0", "clean-tmp", "kill -0", "lsof", "ss -lxp", "TMPDIR",
@@ -150,8 +159,11 @@ run_T2() {
     local head10
     head10="$(head -n 10 "$SKILL")"
 
+    # No -q on the $head10 pipes: 'name:' matches on line 2 with 8 more lines
+    # still coming from printf (header SIGPIPE note).
+
     # name: clean-tmp  (allow trailing whitespace only)
-    if printf '%s\n' "$head10" | grep -qE '^name: clean-tmp[[:space:]]*$'; then
+    if printf '%s\n' "$head10" | grep -E '^name: clean-tmp[[:space:]]*$' >/dev/null; then
         pass "T2 $SKILL_REL frontmatter has 'name: clean-tmp'"
     else
         fail "T2 $SKILL_REL frontmatter is missing 'name: clean-tmp' (first 10 lines):
@@ -159,15 +171,18 @@ $(printf '%s\n' "$head10" | sed 's/^/      | /')"
     fi
 
     # description: <non-empty>
-    if printf '%s\n' "$head10" | grep -qE '^description:[[:space:]]*[^[:space:]]'; then
+    if printf '%s\n' "$head10" | grep -E '^description:[[:space:]]*[^[:space:]]' >/dev/null; then
         pass "T2 $SKILL_REL frontmatter has a non-empty 'description:' line"
     else
         fail "T2 $SKILL_REL frontmatter is missing a non-empty 'description:' line (first 10 lines):
 $(printf '%s\n' "$head10" | sed 's/^/      | /')"
     fi
 
-    # argument-hint MUST be absent (design F5).
-    if printf '%s\n' "$head10" | grep -qE '^argument-hint:'; then
+    # argument-hint MUST be absent (design F5).  No -q is load-bearing here:
+    # with -q, a PRESENT argument-hint would match early, SIGPIPE printf, and
+    # the rc-141 pipeline would take the else (pass) branch — masking the very
+    # violation this check exists to catch.
+    if printf '%s\n' "$head10" | grep -E '^argument-hint:' >/dev/null; then
         fail "T2 $SKILL_REL frontmatter must NOT declare 'argument-hint' (design F5 dropped it):
 $(printf '%s\n' "$head10" | grep -nE '^argument-hint:' | sed 's/^/      | /')"
     else
@@ -213,7 +228,9 @@ check_single_version_line() {
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         return
     fi
-    if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$value_re\""; then
+    # $hits is exactly one line here (count==1 guard) so this is SIGPIPE-safe
+    # either way, but we standardize on no-q (header SIGPIPE note).
+    if printf '%s\n' "$hits" | grep -E "\"version\"[[:space:]]*:[[:space:]]*\"$value_re\"" >/dev/null; then
         pass "$label"
     else
         fail "$label — '\"version\"' line did not match.  Line:
@@ -473,7 +490,9 @@ $(printf '%s\n' "$zip_listing" | sed 's/^/      | /')"
     fi
     local rel
     for rel in "$SKILL_REL" "$REF_MACOS_REL" "$REF_SOCKET_REL"; do
-        if printf '%s\n' "$zip_listing" | grep -qF "$rel"; then
+        # No -q: SKILL.md sits mid-listing with many lines still coming from
+        # printf after the match (header SIGPIPE note).
+        if printf '%s\n' "$zip_listing" | grep -F "$rel" >/dev/null; then
             pass "T6 zip contains $rel"
         else
             fail "T6 zip does NOT contain $rel (was it 'git add'-ed before pack?).  Listing tail:
@@ -571,7 +590,9 @@ run_T7() {
     trigger_region="$(head -n 15 "$SKILL"; awk '/^## /{f=0} /^##.*何时加载/{f=1} f' "$SKILL")"
     local w
     for w in quota docker; do
-        if printf '%s\n' "$trigger_region" | grep -qiF -- "$w"; then
+        # No -q: both words match inside the multi-line frontmatter head while
+        # printf still has the 何时加载 lines to write (header SIGPIPE note).
+        if printf '%s\n' "$trigger_region" | grep -iF -- "$w" >/dev/null; then
             pass "T7 trigger word '$w' present in frontmatter description or 何时加载 section"
         else
             fail "T7 trigger word '$w' missing from frontmatter description and 何时加载 section of $SKILL_REL"
@@ -656,7 +677,9 @@ run_T9() {
         fail "T9 'go clean -modcache' line 不删 marker (command itself missing)"
     else
         pass "T9 body has 'go clean -modcache'"
-        if printf '%s\n' "$mod_lines" | grep -qF -- "不删"; then
+        # No -q: $mod_lines may hold several lines with the marker on an early
+        # one (header SIGPIPE note).
+        if printf '%s\n' "$mod_lines" | grep -F -- "不删" >/dev/null; then
             pass "T9 'go clean -modcache' line carries '不删' (module cache keep semantic)"
         else
             fail "T9 'go clean -modcache' line(s) missing '不删' marker in $SKILL_REL:
@@ -773,17 +796,19 @@ run_T11() {
             fail "T11 project-structure.md has no only-SKILL.md lightweight-skill example line"
             skip "T11 project-structure.md clean-tmp not the only-SKILL.md example (example line missing)"
         else
+            # $ps_line is a single line (head -n 1) so these pipes are
+            # SIGPIPE-safe either way; standardized on no-q (header note).
             # d1: git-worktree follows the only-SKILL.md phrasing.
-            if printf '%s\n' "$ps_line" | grep -qE '(only a .?SKILL\.md|只带 .?SKILL\.md).*git-worktree'; then
+            if printf '%s\n' "$ps_line" | grep -E '(only a .?SKILL\.md|只带 .?SKILL\.md).*git-worktree' >/dev/null; then
                 pass "T11 project-structure.md only-SKILL.md example is git-worktree"
             else
                 fail "T11 project-structure.md only-SKILL.md example line does not name git-worktree:
 $(printf '%s\n' "$ps_line" | sed 's/^/      | /')"
             fi
             # d2: clean-tmp absent, or preceded by references/ on the line.
-            if ! printf '%s\n' "$ps_line" | grep -qF -- "clean-tmp"; then
+            if ! printf '%s\n' "$ps_line" | grep -F -- "clean-tmp" >/dev/null; then
                 pass "T11 project-structure.md clean-tmp absent from the only-SKILL.md example line"
-            elif printf '%s\n' "$ps_line" | grep -qE 'references/.*clean-tmp'; then
+            elif printf '%s\n' "$ps_line" | grep -E 'references/.*clean-tmp' >/dev/null; then
                 pass "T11 project-structure.md cites clean-tmp only as the SKILL.md + references/ form"
             else
                 fail "T11 project-structure.md still cites clean-tmp as the only-SKILL.md example:

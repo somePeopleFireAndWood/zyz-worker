@@ -20,6 +20,15 @@
 #   - Uses `set -u` and `set -o pipefail` only — never `set -e` so the
 #     operator sees the full picture across all checks.
 #   - `stat -f %z` (macOS / BSD) vs `stat -c %s` (GNU) handled via fallback.
+#   - SIGPIPE discipline: under pipefail, `<producer> | grep -q` is unsafe
+#     whenever the producer can still be writing after grep's first match —
+#     grep -q exits immediately, the producer's next write hits a closed pipe,
+#     SIGPIPE makes the pipeline rc 141, and the check false-FAILs (bit us on
+#     T6: `git show v0.11.0` emits ~72KB > the 64KB pipe buffer).  Containment
+#     checks on captured output therefore use pure-bash `case` (no pipe), and
+#     regex checks use grep WITHOUT -q + >/dev/null (grep then consumes all
+#     input, so the producer never gets SIGPIPE).  Single-line producers are
+#     exempt (nothing can follow the match).
 
 set -u
 set -o pipefail
@@ -121,7 +130,9 @@ run_and_check_exit_stderr_regex() {
         pass "$desc (exit=$rc as expected)"
         return
     fi
-    if printf '%s\n' "$err_content" | grep -qE -- "$expected_re"; then
+    # No -q: grep must consume ALL of printf's output or a match on an early
+    # stderr line SIGPIPEs printf under pipefail (see header SIGPIPE note).
+    if printf '%s\n' "$err_content" | grep -E -- "$expected_re" >/dev/null; then
         pass "$desc (exit=$rc and stderr matches /$expected_re/)"
     else
         fail "$desc (exit=$rc OK but stderr did NOT match /$expected_re/; stderr was:
@@ -197,8 +208,11 @@ run_T2() {
             fail "T2 .claude-plugin/plugin.json has $count '\"version\"' lines, expected 1.  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            # Exact match against "version": "$EXPECTED_VERSION"
-            if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\""; then
+            # Exact match against "version": "$EXPECTED_VERSION".  $hits is
+            # exactly one line here (count==1 guard), so grep's first match is
+            # also printf's last byte — SIGPIPE-safe — but we standardize on
+            # no-q anyway so a `| grep -q` never reappears in this file.
+            if printf '%s\n' "$hits" | grep -E "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\"" >/dev/null; then
                 pass "T2 .claude-plugin/plugin.json has exactly one \"version\": \"$EXPECTED_VERSION\" line"
             else
                 fail "T2 .claude-plugin/plugin.json '\"version\"' line is not \"$EXPECTED_VERSION\".  Line:
@@ -224,7 +238,7 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
             fail "T2 .claude-plugin/marketplace.json has $count '\"version\"' lines, expected exactly 1 (no top-level version field).  Hits:
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
-            if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\""; then
+            if printf '%s\n' "$hits" | grep -E "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\"" >/dev/null; then
                 pass "T2 .claude-plugin/marketplace.json has exactly one \"version\": \"$EXPECTED_VERSION\" line (plugins[0].version, no top-level version)"
             else
                 fail "T2 .claude-plugin/marketplace.json '\"version\"' line is not \"$EXPECTED_VERSION\".  Line:
@@ -250,7 +264,7 @@ $(printf '%s\n' "$hits" | sed 's/^/      | /')"
 $(printf '%s\n' "$hits" | sed 's/^/      | /')"
         else
             # Match "$EXPECTED_VERSION+codex.<14 digits>"
-            if printf '%s\n' "$hits" | grep -qE "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\\+codex\\.[0-9]{14}\""; then
+            if printf '%s\n' "$hits" | grep -E "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE\\+codex\\.[0-9]{14}\"" >/dev/null; then
                 pass "T2 .codex-plugin/plugin.json '\"version\"' matches \"$EXPECTED_VERSION+codex.<14 digits>\""
             else
                 fail "T2 .codex-plugin/plugin.json '\"version\"' does NOT match \"$EXPECTED_VERSION+codex.<14 digits>\".  Line:
@@ -303,7 +317,9 @@ check_section_has_subheading() {
         fail "T3 CHANGELOG.md section '$version_display' is empty (no body extracted)"
         return
     fi
-    if printf '%s\n' "$body" | grep -qE '^### (Added|Changed|Removed|Fixed)([[:space:]]|$)'; then
+    # No -q: the sub-heading usually matches near the TOP of a multi-KB
+    # section body — grep must consume all remaining input (SIGPIPE note).
+    if printf '%s\n' "$body" | grep -E '^### (Added|Changed|Removed|Fixed)([[:space:]]|$)' >/dev/null; then
         pass "T3 CHANGELOG.md section '$version_display' has at least one of ### Added/Changed/Removed/Fixed"
     else
         fail "T3 CHANGELOG.md section '$version_display' is missing all of ### Added/Changed/Removed/Fixed.  Body:
@@ -409,20 +425,22 @@ Stdout:
 $(printf '%s\n' "$stdout_content" | sed 's/^/      | /')"
     fi
 
-    # Stdout key=value lines per §C contract.
-    if printf '%s\n' "$stdout_content" | grep -qE '^dist='; then
+    # Stdout key=value lines per §C contract.  No -q on these: 'dist=' is the
+    # FIRST stdout line, so grep -q would match and exit while printf still has
+    # the remaining lines to write (SIGPIPE note in header).
+    if printf '%s\n' "$stdout_content" | grep -E '^dist=' >/dev/null; then
         pass "T4 stdout contains 'dist=' line"
     else
         fail "T4 stdout missing 'dist=' line.  Stdout:
 $(printf '%s\n' "$stdout_content" | sed 's/^/      | /')"
     fi
-    if printf '%s\n' "$stdout_content" | grep -qE '^size='; then
+    if printf '%s\n' "$stdout_content" | grep -E '^size=' >/dev/null; then
         pass "T4 stdout contains 'size=' line"
     else
         fail "T4 stdout missing 'size=' line.  Stdout:
 $(printf '%s\n' "$stdout_content" | sed 's/^/      | /')"
     fi
-    if printf '%s\n' "$stdout_content" | grep -qE '^version='; then
+    if printf '%s\n' "$stdout_content" | grep -E '^version=' >/dev/null; then
         pass "T4 stdout contains 'version=' line"
     else
         fail "T4 stdout missing 'version=' line.  Stdout:
@@ -495,10 +513,13 @@ $(printf '%s\n' "$zip_listing" | sed 's/^/      | /')"
         # Inclusion checks.  `unzip -l` prefixes columns; we grep for the
         # path component near end-of-line.  Use anchors / word-boundaries
         # so e.g. "README.md" does not accidentally match "FOO-README.md".
+        # No -q on the listing pipes: the listing is multi-KB (> one stdio
+        # write chunk) and early paths match with more lines still coming —
+        # exactly the racy SIGPIPE shape (header note).
         check_zip_contains() {
             local path="$1"
             # Match: whitespace then path then end-of-line (no trailing data).
-            if printf '%s\n' "$zip_listing" | grep -qE "[[:space:]]${path//./\\.}([[:space:]]|$)"; then
+            if printf '%s\n' "$zip_listing" | grep -E "[[:space:]]${path//./\\.}([[:space:]]|$)" >/dev/null; then
                 pass "T4 zip contains $path"
             else
                 fail "T4 zip does NOT contain $path.  Listing tail:
@@ -508,7 +529,7 @@ $(printf '%s\n' "$zip_listing" | tail -n 20 | sed 's/^/      | /')"
         check_zip_absent_prefix() {
             local prefix="$1"
             # Match: whitespace then the prefix anywhere on the line.
-            if printf '%s\n' "$zip_listing" | grep -qE "[[:space:]]${prefix//./\\.}"; then
+            if printf '%s\n' "$zip_listing" | grep -E "[[:space:]]${prefix//./\\.}" >/dev/null; then
                 fail "T4 zip MUST NOT contain prefix '$prefix' but does.  Offending lines:
 $(printf '%s\n' "$zip_listing" | grep -E "[[:space:]]${prefix//./\\.}" | sed 's/^/      | /')"
             else
@@ -721,12 +742,20 @@ run_T6() {
 $(printf '%s\n' "$show_out" | head -n 20 | sed 's/^/      | /')"
         return
     fi
-    if printf '%s\n' "$show_out" | grep -qF "$annotation"; then
-        pass "T6 git show $tag contains annotated tag content '$annotation'"
-    else
-        fail "T6 git show $tag does NOT contain '$annotation'.  First 20 lines:
+    # Containment check via pure-bash `case` — NO pipe.  The old
+    # `printf | grep -qF` form false-FAILed here deterministically: git show
+    # for v0.11.0 emits ~72KB, grep -q exits at the first match, printf gets
+    # SIGPIPE (rc 141), and pipefail turns that into the FAIL branch even
+    # though the annotation IS present (header SIGPIPE note).
+    case "$show_out" in
+        *"$annotation"*)
+            pass "T6 git show $tag contains annotated tag content '$annotation'"
+            ;;
+        *)
+            fail "T6 git show $tag does NOT contain '$annotation'.  First 20 lines:
 $(printf '%s\n' "$show_out" | head -n 20 | sed 's/^/      | /')"
-    fi
+            ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
