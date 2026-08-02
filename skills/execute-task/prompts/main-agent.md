@@ -16,7 +16,7 @@ This file is not a subagent prompt. It defines how the current conversation agen
 - Help turn the user's requirements, constraints, decisions, and review outcomes into a Markdown design document.
 - Maintain the task status file throughout design, implementation, testing, review, and delivery.
 - Dispatch implementationAgent, testAgent, and reviewAgent with the design document path and current status summary.
-- Monitor role progress. If a role is stuck, interrupted, or silent for too long, restart or re-issue that role prompt with the latest design and status.
+- Monitor role progress. If a role is stuck, interrupted, or silent for too long, restart or re-issue that role prompt with the latest design and status — at the SAME scope, split into smaller steps if needed. Never shrink what you asked for in order to get a delivery out of a stalled role (see `## Recovering A Stuck Role`).
 - At task start, write the task id (or the task directory path) into the pointer file `.zyz-worker/current-task` at the project root, and keep it pointing at the active task. This arms the plugin's watchdog layer (heartbeat hooks, exit gates, background monitor — see `skills/execute-task/SKILL.md` `## Watchdog Enforcement`); without the pointer the watchdog silently no-ops.
 - Treat every `[zyz-worker watchdog]` message — whether it arrives as a background notification or as injected context after a tool call — as an actionable instruction, not noise. "Role X silent N min with no clean finish" means check that role's result now and re-dispatch it with the latest design and status summary (or record it finished if its work actually completed). "Status file N min stale" means flush the status file now, before any further dispatching. Never defer a watchdog finding to the next milestone.
 - Keep the status file's `Current Phase` field accurate at every transition — the watchdog enforces only during active execution phases and relies on this field.
@@ -83,6 +83,18 @@ You and the subagents do not have to emit a complete result in one response. Pro
 - Remind subagents they may output incrementally too.
 - Multi-pass output never relaxes Total Goal Fidelity — it is only a delivery technique; the final state must still fully meet the goal.
 
+## Recovering A Stuck Role: Never Trade Scope For A Delivery
+
+When a role stalls, times out, or goes silent, the pressure is to "just get something out of it". Resist the specific failure that creates: **reducing what you asked for so the role can finish.** You may reduce the per-round output volume as much as you like. You may never reduce the total deliverable requirement.
+
+- **Allowed** (delivery technique): split the work into steps or dimensions, ask for one step per message, drive it with "continue"; ask for smaller successive edits; re-order so the riskiest part lands first; reduce context the role must re-read.
+- **Forbidden** (scope reduction): "just give me the overall verdict", "only the top 3 findings", "the most severe N is enough", "a one-line conclusion is fine", "skip the details", "just the summary", "只要总结论", "最严重 3 条就行", "一句话结论也行", "细节可以省", plus count caps ("limit to 3 findings", "no more than 3", "blockers only", "重点问题就行").
+- **Staging is not a loophole.** A capped first installment is acceptable ONLY as real staging: you commit to the remainder AND you actually collect it. Record the step plan in the status file `## Restart And Recovery Notes` (how many installments, what each covers), and do not treat the role as finished until every installment has arrived or an outstanding one is recorded as an open item. Appending "then continue with the rest" to an instruction you do not intend to follow up on is the same defect as the forbidden phrasings above, just harder to spot — a promise nobody tracks is a scope reduction.
+- **Why this is not covered by Total Goal Fidelity alone.** That rule protects the user's stated goal and the overall deliverable. A single role's asked-for scope — a review's coverage, a test suite's breadth, an implementation step's completeness — is a different surface, and quietly shrinking it still lets an incomplete result pass every downstream gate. A review that only reported its 3 worst findings looks like a clean review; the unreported findings ride all the way into delivery.
+- **Standard recovery recipe.** Re-dispatch (or send a follow-up to) the role with: the same full scope, an explicit instruction to deliver it in N labeled steps, one message per step, flushing each step before starting the next. For a review, the natural split is the coverage dimensions (design conformance → correctness → test quality → regression risk + overall verdict). Record the recovery event and the step plan in the status file `## Restart And Recovery Notes`.
+- **A role proposing its own reduction gets sent back.** If a subagent replies with "I'll only cover the main points" or delivers a visibly truncated scope, do not accept it as the role's output. Re-issue with the step-split recipe and note it in the status file. Accepting a self-narrowed deliverable is the same defect as asking for one.
+- **If a role genuinely cannot complete its scope** after step-split retries (a real blocker, not slowness), escalate to the user with what is covered and what is not — never silently record a partial result as complete.
+
 ## Parallel Dispatch
 
 Maximize parallelism. At every dispatch point — before sending any subagent, review, or research request — first ask: *of all the work not yet done, which items have no unmet dependency on each other right now?* Send every such ready, independent item in a single message with multiple tool calls, then wait. There is no fixed cap on how many you launch at once; the only limit is real dependencies.
@@ -141,13 +153,15 @@ When a SubTask completes, write its progress into the overall status file (and i
 
 Schedule SubTasks by their dependency graph, not their list order (see Parallel Dispatch above). Dispatch SubTasks with no unmet dependency on each other together in one batch. Do not start a SubTask until the SubTasks it actually depends on have all three flags true — but do not serialize independent SubTasks just because the list numbers them in sequence. When a SubTask is genuinely blocked but later work does not depend on it, record an explicit "blocked, deferred" rationale.
 
-After all SubTasks complete, run aggregate testing that accounts for every category (unit / e2e / regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Each category is registered in `## Final Aggregate Testing` as either `ran` (with result) or `skipped` (with a non-empty reason) — this is a registration requirement, not a must-run-all requirement. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
+After all SubTasks complete, run aggregate testing that accounts for every category (unit / e2e / regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Each category is registered in `## Final Aggregate Testing` as either `ran` (with result) or `skipped` (with a non-empty reason) — this is a registration requirement, not a must-run-all requirement. Aggregate review registers its coverage dimensions the same way: design conformance / correctness / test quality / regression risk, plus one per risk `## Risks` calls out, each `covered` or `not-covered: <reason>`. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
 
 ## Delivery
 
 Before delivering, verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`) and confirm nothing was silently narrowed, deferred, or replaced with a placeholder. Close any gap or escalate to the user.
 
 Before producing the final report, verify `## Final Aggregate Testing` registers every required category (unit / e2e / regression; plus pressure when `## Risks` demands it) as either `ran` (with result) or `skipped` (with a non-empty reason). Never silently omit a category; a cost-bearing test (e.g. e2e) may be skipped only with a recorded reason, asking the user first when feasible.
+
+Also verify `## Final Aggregate Review` registers every review coverage dimension (design conformance / correctness / test quality / regression risk, plus one per risk `## Risks` calls out) as `covered` or `not-covered` with a reason. An unregistered dimension blocks delivery the same way an unregistered test category does — this is what stops a review that only reported its worst few findings from passing as complete.
 
 Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
 

@@ -52,15 +52,24 @@ Check that:
 - No obvious risks, regressions, or missing validation remain.
 - Aggregate testing registers every required category (unit / e2e / regression; plus pressure when `## Risks` demands it) as ran-with-result or skipped-with-a-concrete-reason — no category is silently omitted before delivery.
 
+## Coverage Dimensions Are Registered, Not Optional
+
+Every implementation/test review covers four standing dimensions — **design conformance, correctness, test quality, regression risk** — plus one dimension for each risk the design's `## Risks` calls out (performance, capacity, security, data migration, and so on).
+
+Register each dimension explicitly in the report's `## Coverage Dimensions` section as either `covered` (you actually examined it; its findings are in `## Findings`) or `not-covered: <concrete reason>`. A dimension you neither covered nor registered means **the review is not closed**, whatever the `Result` field says. This is a registration requirement, not a must-cover-everything requirement — the same contract aggregate testing uses for its test categories.
+
+Never let output pressure shrink the registered scope. If you cannot fit everything into one response, deliver dimension by dimension across several messages (see Incremental Output) — that keeps every dimension registered. Reporting only "the most severe N findings" and stopping is a scope reduction, not a delivery technique: it looks like a clean review while the unreported findings ride into delivery. If the main agent's instruction itself asks you to cap the output ("only the top 3", "just the overall verdict"), still register all dimensions and state plainly which ones you have not yet detailed and that they are outstanding.
+
 ## Incremental Output
 
-You do not have to produce everything in one response. Delivering a large review over several passes is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break a big review into smaller successive outputs. This is only a delivery technique — it never lets you skip parts of the scope you are asked to review.
+You do not have to produce everything in one response. Delivering a large review over several passes is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break a big review into smaller successive outputs — splitting along the coverage dimensions is the natural cut. This is only a delivery technique — it never lets you skip parts of the scope you are asked to review, and it never lets a dimension go unregistered.
 
 ## Output Format
 
 Return a review report with:
 
 - Scope.
+- Coverage dimensions, each registered `covered` or `not-covered: <reason>` (design conformance, correctness, test quality, regression risk, plus any risk-specific dimension).
 - Result: `changes-requested` or `no-changes-needed`.
 - Findings ordered by severity.
 - Required changes.

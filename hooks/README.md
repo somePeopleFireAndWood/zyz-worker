@@ -1,12 +1,15 @@
 # Hooks
 
-Deterministic watchdog layer for the execute-task workflow. It hardens two
+Deterministic watchdog layer for the execute-task workflow. It hardens three
 rules that prompt discipline alone cannot guarantee:
 
 1. **Silent/dead subagents get noticed.** Liveness becomes a mechanical side
    effect of tool calls, and dead roles are surfaced to the main agent.
 2. **Status files stay fresh.** Stale status triggers injected reminders,
    exit gates, and stop gates instead of relying on the model remembering.
+3. **Recovery never shrinks the ask.** A dispatch that caps what a role must
+   deliver is denied before it reaches the role (L5) — reducing per-round
+   output volume is fine, reducing the total deliverable is not.
 
 All hooks are registered in `hooks.json` (loaded automatically when the
 plugin is enabled) and fail open: any missing input, missing JSON parser
@@ -81,6 +84,36 @@ Runtime bookkeeping lives under `<task-dir>/runtime/`:
   further work.
 - Failure behavior: fail open.
 - Supported agents: main agent.
+
+## scripts/dispatch-scope-guard.sh — L5
+
+The only layer that inspects what a dispatch *asks for*; every other layer
+observes after the fact. It exists because the recovery path has its own
+failure mode: when a role stalls, the tempting fix is to shrink the ask so
+it can finish, and a review that reported only its worst few findings then
+passes every downstream gate looking clean.
+
+- Trigger point: `PreToolUse`, matcher `^Agent$`, sync (a deny decision
+  requires sync). Only inspects dispatches whose `subagent_type` is a
+  zyz-worker role; anything else passes untouched.
+- Inputs: hook JSON on stdin (`tool_input.prompt`,
+  `tool_input.subagent_type`); `ZYZ_SCOPE_GUARD_DISABLE=1` disables just
+  this guard, `ZYZ_HOOKS_DISABLE=1` the whole layer.
+- Outputs: a `PreToolUse` deny (`hookSpecificOutput.permissionDecision:
+  "deny"` — deny reasons are shown to the model, so it can correct and
+  retry) when the prompt caps the deliverable ("only the top 3 findings",
+  "just the overall verdict", "只要总结论", "最严重 3 条", "一句话结论",
+  "skip the details") AND carries no commitment to deliver the remainder
+  ("then continue", "the rest in later messages", "step 1 of 4", "分步",
+  "分维度", "register all dimensions"). The reason tells the main agent to
+  re-dispatch at full scope split into labeled steps. Blocked attempts are
+  appended to `<task-dir>/runtime/scope-guard.log`.
+- Failure behavior: fail open (allow) on missing input/parser/pointer.
+  Matching is heuristic by nature, hence the continuation-commitment
+  exemption and the per-guard disable switch; the suite's T7 group pins 10
+  capped phrasings that must deny and 10 legitimate ones that must pass.
+- Supported agents: main agent dispatching implementation-agent /
+  test-agent / review-agent.
 
 ## scripts/stop-gate-subagent.sh — L2
 

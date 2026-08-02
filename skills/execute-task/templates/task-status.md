@@ -105,8 +105,14 @@ Per-SubTask scoreboard:
 
 ## Final Aggregate Review
 
-(Filled at §3.C after aggregate testing converges.)
+(Filled at §3.C after aggregate testing converges. Coverage dimensions are registered the same way test categories are: each is `covered` or `not-covered: <reason>`. An unregistered dimension means the review is not closed, whatever the verdict says — a review that only reported its worst few findings must not pass as complete.)
 
+- Coverage — Design Conformance: (covered | not-covered: <reason>)
+- Coverage — Correctness: (covered | not-covered: <reason>)
+- Coverage — Test Quality: (covered | not-covered: <reason>)
+- Coverage — Regression Risk: (covered | not-covered: <reason>)
+- Coverage — Risk-Specific: (one line per dimension the design `## Risks` calls out, each covered | not-covered: <reason>; or `n/a: no such risk recorded`)
+- Outstanding Staged Installments: (none | list each promised-but-not-yet-received installment from `## Restart And Recovery Notes` — an outstanding installment counts as uncovered, not complete)
 - Reviewer Verdict:
 - Cross-SubTask Findings:
 - Required Changes:

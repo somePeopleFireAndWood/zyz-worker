@@ -9,7 +9,7 @@
     {
       "name": "zyz-worker",
       "description": "Design-first code development workflow for Claude Code: requirements, design doc, implementation, tests, and review via dedicated subagents.",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "source": "./",
       "author": {
         "name": "yu",

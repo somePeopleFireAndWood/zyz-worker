@@ -27,7 +27,17 @@
 # - zyz_write_atomic <f> <line> tmpfile+rename single-line write.
 # - zyz_emit_context <ev> <msg> print hookSpecificOutput additionalContext
 #                               JSON for event <ev>.
-# - zyz_emit_block <reason>     print top-level {"decision":"block",...}.
+# - zyz_emit_block <reason>     print top-level {"decision":"block",...}
+#                               (Stop / SubagentStop decision format).
+# - zyz_emit_deny <ev> <reason> print hookSpecificOutput permissionDecision
+#                               deny for <ev> (PreToolUse format; the reason
+#                               IS shown to the model, unlike allow/ask).
+# - zyz_scope_cap_hit <text>    first scope-capping phrase in <text> ("only
+#                               the top 3", "只要总结论", …), or empty.
+# - zyz_scope_continuation <text>
+#                               0 when <text> commits to delivering the
+#                               remainder ("then continue", "分步", "step 1
+#                               of 4"), making a capped installment legit.
 # - zyz_role_of <agent_type>    agent_type with plugin scope prefix stripped.
 # - zyz_phase_of <status.md>    lowercased "Current Phase" value, or empty.
 # - zyz_phase_active <phase>    0 when phase is implementation/testing/
@@ -192,6 +202,107 @@ print(json.dumps({"decision": "block", "reason": sys.argv[1]}))
 
 zyz_role_of() {
     printf '%s' "${1##*:}"
+}
+
+zyz_emit_deny() {
+    # $1 = hook event name, $2 = reason shown to the model.
+    if command -v jq >/dev/null 2>&1; then
+        jq -cn --arg e "$1" --arg r "$2" \
+            '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json, sys
+print(json.dumps({"hookSpecificOutput": {"hookEventName": sys.argv[1], "permissionDecision": "deny", "permissionDecisionReason": sys.argv[2]}}))
+' "$1" "$2" 2>/dev/null
+        return 0
+    fi
+    return 0
+}
+
+zyz_scope_negated() {
+    # $1 = dispatch prompt text (already lowercased and flattened).
+    # 0 when the text NEGATES a cap — i.e. it is telling the role NOT to
+    # truncate. Without this veto the guard denies the very instruction the
+    # anti-degradation rule teaches ("do not just report the verdict —
+    # list every finding").
+    local p
+    p="${1:-}"
+    printf '%s' "$p" | grep -qE "(do|does|did) ?n.?o?t (just|only|merely|simply)" && return 0
+    printf '%s' "$p" | grep -qE "not (just|only|merely|simply) (the |a )?[a-z0-9]" && return 0
+    printf '%s' "$p" | grep -qE "(more|rather) than (just|only) " && return 0
+    printf '%s' "$p" | grep -qE "(is|are|would be) ?n.?o?t (enough|sufficient|fine|ok|acceptable)" && return 0
+    printf '%s' "$p" | grep -qE "(more than|beyond) (just|only) (the )?(verdict|conclusion|summary)" && return 0
+    printf '%s' "$p" | grep -qE "(不是|不只是|不能只|别只|不要只|不止)(要|给|报|写|看)?" && return 0
+    # Careful: bare 不行 also appears in the DEGRADATION idiom "实在不行就先
+    # 给一句话结论" (a fallback condition, not a negation), so require the
+    # negation to attach to the truncation itself.
+    printf '%s' "$p" | grep -qE "(总?结论|摘要|概要|几条|最严重)[^。；]{0,8}(不够|不足|不行|不可以|不允许)" && return 0
+    printf '%s' "$p" | grep -qE "(不可以|不允许|禁止|不得)[^。；]{0,8}(只|仅|省略|忽略|截断|降级)" && return 0
+    return 1
+}
+
+zyz_scope_cap_hit() {
+    # $1 = dispatch prompt text. Prints the first scope-capping phrase found
+    # (so the deny reason can quote it), or nothing. Input is lowercased, so
+    # English patterns need no case folding; the CJK ones are unaffected.
+    local p pat m
+    p="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' 2>/dev/null | tr '\n' ' ' 2>/dev/null)"
+    [ -n "$p" ] || return 0
+    # A prompt that explicitly forbids truncation is never a cap.
+    zyz_scope_negated "$p" && return 0
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        m="$(printf '%s' "$p" | grep -oE "$pat" 2>/dev/null | head -n1)"
+        if [ -n "$m" ]; then
+            printf '%s' "$m"
+            return 0
+        fi
+    done <<'ZYZ_CAP_PATTERNS'
+(only|just) (the )?(top|most severe|worst) [a-z0-9]+ ?(findings|issues|problems|items)?
+(top|most severe|worst) [0-9]+ ?(findings|issues|problems|items)? ?(is|are|would be)? ?(enough|fine|ok|okay|sufficient)
+(limit(ed)?|cap(ped)?|restrict(ed)?|hold|keep|stop) (it |yourself |them |the (report|review|findings|list) )?(to|at|after) (just |only )?[0-9]+ ?(findings|issues|problems|items)?
+(no more than|at most|up to) [0-9]+ ?(findings|issues|problems|items)
+(just|only) (give (me )?|report |return |send |the )*(overall |final |high.level |top.level )?(verdict|conclusion|summary|result)( is (enough|fine|ok))?
+(verdict|conclusion|summary)(-| )only
+one.(line|sentence) (verdict|conclusion|summary|answer|result)
+(skip|drop|omit|forget|leave out) (the )?(details|specifics|rest|remainder|remaining|minor|less severe)
+do ?n.?t (bother with|need) (the )?(details|specifics|rest)
+do ?n.?t be (exhaustive|thorough|comprehensive)
+a (short |brief |quick )?(summary|verdict|conclusion) (is|will be|would be) (enough|fine|ok|okay|sufficient)
+(enough|fine|ok) (to )?(just )?(give|report) (the )?(verdict|conclusion|summary)
+(high.severity|high.priority|blocker|critical|p0|p1)(s| issues| findings| ones)? only
+(focus |look )?only on (blockers|criticals?|the (worst|top|main|key|important))
+(只要|只需|只给|仅给|仅需|只报|只写|只列|只看)[^。；,，]{0,12}(总?结论|结果|摘要|概要|几条|几个|几项|重点|关键|最严重|最重要)
+(重点|关键|主要|重要)(问题|的?几条|的?几个)?(就行|即可|就好|足矣|即够)
+(挑|选|列|给)[^。；,，]{0,4}(最|前)?(重要|严重|关键)的?(几|[0-9一二三四五六七八九十]+)(条|个|项)
+最严重(的)?[0-9一二三四五六七八九十]+ ?(条|个|项)
+一句话(总?结论|说明|交代|交待|结果)
+(细节|其它|其他)[^。；,，]{0,4}(可以)?(省|省略|略过|忽略|不用|不必|不写)
+(实在不行|不行的话|至少|最少)[^。；,，]{0,10}(一句话|总?结论)
+(降级|放宽|放低)[^。；,，]{0,8}(要求|标准|目标)
+ZYZ_CAP_PATTERNS
+    return 0
+}
+
+zyz_scope_continuation() {
+    # $1 = dispatch prompt text. 0 when the prompt commits to delivering the
+    # remainder (so a capped first installment is legitimate staging, not a
+    # scope reduction).
+    local p
+    p="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+    printf '%s' "$p" | grep -qE 'then (continue|the rest|cover|deliver|proceed|list|report|do)' && return 0
+    printf '%s' "$p" | grep -qE '(the |, |plus (the )?|and (the )?)?(rest|remainder|remaining) (findings? )?(in|will|then|comes?|follow|later|second|next|afterwards?)' && return 0
+    printf '%s' "$p" | grep -qE '(remaining|rest|others?) (in|as) (a |the )?(later|second|next|subsequent|follow)' && return 0
+    printf '%s' "$p" | grep -qE 'in (a |the )?(later|subsequent|following|second|next) (message|response|pass|step|installment|batch)' && return 0
+    printf '%s' "$p" | grep -qE '(step|part|installment|pass|batch) [0-9]+ ?(of|/) ?[0-9]+' && return 0
+    printf '%s' "$p" | grep -qE 'all (four |4 )?(coverage )?dimensions' && return 0
+    printf '%s' "$p" | grep -qE 'register (every|all) (dimension|categor)' && return 0
+    printf '%s' "$p" | grep -qE '(分步|逐步|分批|分几步|分维度|分\s*[0-9一二三四五六七八九十]+\s*步|后续(再|继续)?|再继续|随后(再)?(列|给|补)|之后(再|补)|剩(下|余)的?(部分|内容|发现)?(再|后续|随后|列|给))' && return 0
+    printf '%s' "$p" | grep -qE '其余[^。；,，]{0,6}(随后|之后|后续|再|稍后|接着|接下来|另)(列|给|报|补|发|说)' && return 0
+    printf '%s' "$p" | grep -qE '第[0-9一二三四五六七八九十]+步' && return 0
+    return 1
 }
 
 zyz_cooldown_ok() {
