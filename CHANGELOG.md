@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (reserved for next release; intentionally empty after each release tag)
 
+## [0.12.0] — 2026-08-02
+
+This release adds a **PR review handling** policy so the execute-task / worker main agent does not blindly accept external pull-request review feedback. When review results (comments, "changes requested", inline threads, or automated review findings) land on an actual PR, the main agent processes them one at a time and independently verifies whether each raised problem objectively exists. Findings confirmed to exist are fixed through the normal role/test/review gates and acknowledged on the PR; findings that do not hold are declined with a reasoned comment posted on the PR thread. No finding is silently ignored. This is distinct from the plugin's pre-existing internal review-agent loop.
+
+### Added
+- **New `## PR Review Handling (External Review Feedback)` section** in `skills/execute-task/prompts/main-agent.md`: do-not-blindly-accept posture, per-finding independent verification (one at a time), route confirmed findings to implementation-agent/test-agent, reject non-holding findings with a concrete reason posted on the PR via the platform CLI (`gh pr`/`gh api`, `glab mr`, or the repo tool), never silently ignore, escalate on Goals/Acceptance-Criteria impact or accept↔reject loops, and record every decision in the status file.
+- **Mirror `### PR Review Handling` subsection** in `skills/execute-task/SKILL.md` under the Automatic Execution Policy.
+- **New `## PR Review` section** in `skills/execute-task/templates/task-status.md` (PR reference, accepted findings with verification + change, rejected findings with disproving evidence + posted comment, escalated items) so external-review decisions are auditable and survive restart/handoff.
+
+### Changed
+- **`skills/orchestration-scheduling-task/SKILL.md` PR flow note** now points at the worker's PR-review-handling behavior and clarifies that a worker acting on PR feedback rolls `phase` back from `awaiting-confirmation`; only write `confirmed` once the resolved PR is satisfactory.
+- **Version bump 0.11.0 → 0.12.0** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated).
+
 ## [0.11.0] — 2026-07-28
 
 This release evolves the **`clean-tmp`** skill from an interactive-only `/tmp` cleaner into a **dual-mode (interactive / auto-unattended) cleanup skill with two new cleanup surfaces — Docker resources and language build/package-manager caches** (GitHub issue #1). Interactive mode (the default) keeps the inventory → user-confirms → delete contract unchanged; the new auto mode (`--auto` or explicit unattended authorization) replaces "wait for confirmation" with a tightened five-condition DELETE criterion (owner = current user, mtime > 48h, not protected, no open handles, positive allowlist match) plus a fixed four-block post-run report. The other three safety-contract rules (never wildcard-delete, never touch other users' files, uncertain → keep) are explicitly not relaxed in either mode, and NEEDS-YOUR-CALL items are always kept and reported in auto mode.

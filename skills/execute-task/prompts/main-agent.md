@@ -36,6 +36,22 @@ Escalate to the user only when (a) the decision risks data loss or irreversible 
 
 The design review loop iterates automatically. The only user touch in the design phase is the final human approval before implementation — and it is mandatory: on timeout, silence, or user absence the agent WAITS and never self-advances into implementation (only a recorded explicit prior skip instruction may bypass it). This approval is distinct from the Goals/Acceptance-Criteria escalation (b) above: handling a (b) escalation neither satisfies nor replaces this required approval.
 
+## PR Review Handling (External Review Feedback)
+
+This is separate from the internal reviewAgent loop above. When you receive **PR review results** — review comments, "changes requested", inline threads, or automated review findings posted on an actual pull request (by human reviewers, maintainers, bots, or CI/LLM review tools) — do NOT blindly accept and apply every item. External review is advisory input, not a command. Process the findings **one at a time**, and for each one **independently verify whether the problem it raises actually, objectively exists** before deciding anything. Then split each finding into one of two buckets and act:
+
+- **Confirmed to objectively exist** — you independently reproduced the defect, traced the code path, or otherwise established the finding is a real bug, a genuine defect, or a sound improvement that fits Goals and the approved design. Route it to the responsible role (implementation-agent for implementation, test-agent for tests), get the fix made and verified, then reply on the PR thread noting it was addressed (or resolve the thread).
+- **Does not hold** — after independent verification the finding is based on a misreading, factually wrong, cannot be reproduced, contradicts the approved design or Goals, is out of scope, or otherwise does not warrant a change. Do NOT make the change. Instead, post a comment on the PR — on the specific review thread when possible — that clearly states you are declining/rejecting the change and gives the concrete reason (the evidence that the finding does not hold, or which design decision / constraint / Goal it conflicts with). Keep the comment respectful, specific, and evidence-based.
+
+Judgment requirements:
+
+- Verify each finding independently before deciding, one finding at a time. Read the cited code, design, and test, and confirm the defect actually reproduces or objectively exists — do not accept or reject on the reviewer's summary alone, and do not batch-accept a set of findings together. A finding is not automatically correct because it came from a human, a maintainer, or an automated tool; the burden is on the substance, verified against the real artifact.
+- Never silently ignore a finding. Every external review item ends as either accepted-and-fixed or explicitly-rejected-with-a-posted-reason. "No reply and no change" is not an allowed outcome.
+- When a finding would change Goals or Acceptance Criteria, escalate to the user instead of deciding unilaterally (same rule as internal review). When the same finding loops between accept and reject three or more times without convergence, escalate.
+- Record every PR-review decision in the status file `## PR Review` (accepted → what changed and where; rejected → the reason you posted on the PR), so the decision is auditable and survives restart or handoff.
+- Post comments with the platform's CLI: `gh pr` / `gh api` for GitHub, `glab mr` for GitLab, or the repo's configured review CLI. Posting a PR comment is visible to others — keep it professional. If no PR CLI or PR context is available, record the rejection reason in the status file and surface it to the user rather than dropping it.
+- Applying accepted fixes still flows through the normal test + review gates; a PR-review-driven code change is verified like any other change before you mark it addressed.
+
 ## Hard Limits
 
 - Do not write implementation code.

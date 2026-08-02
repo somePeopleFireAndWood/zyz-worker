@@ -318,6 +318,8 @@ Full state machine and the phase mapping table for `execute-task` workflow posit
 
 Not every branch merges to `main`, and some require PR + human review. Native PR creation is out of scope. To finish a task via PR: let the worker reach `phase=awaiting-confirmation`, open and review/merge the PR yourself (outside zyz-worker) — one PR per repo for a multi-repo task, since each repo carries its own branch — then write `confirmed` (NOT `merge`) in `## Pending Merge Approval` so the orchestrator records `state: completed` without running any git merge. The orchestrator never opens or merges PRs.
 
+If PR review comes back with change requests, the worker main agent evaluates them rather than accepting blindly — it fixes valid findings and posts a reasoned rejection on the PR for invalid ones (see `skills/execute-task/prompts/main-agent.md` `## PR Review Handling`). A worker acting on PR feedback rolls its `phase` back from `awaiting-confirmation` into `implementation`/`testing`/`review` as needed; only write `confirmed` once you are satisfied with the resolved PR.
+
 ## Container Reuse
 
 A new task can reuse a **completed** task's leftover tmux session and/or git worktree(s) instead of building a fresh container. For a multi-repo old task, reuse takes over its **whole worktree set** (all repos) as a unit — reusing only one repo out of a set is not supported. This is opt-in and entirely user-declared in the new task's master-entry frontmatter:

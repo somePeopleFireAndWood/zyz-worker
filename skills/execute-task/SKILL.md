@@ -85,6 +85,15 @@ Escalate to the user only when:
 
 The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed. Only §2 step 8 (final human approval before implementation) is a user touch. This design-approval gate is a hard stop, not an escalation the agent can satisfy-and-move-past: absent explicit user approval (or a recorded explicit prior skip instruction), the workflow holds at the design phase indefinitely and does not enter implementation. The "By default, do not ask the user" posture above and the "prefer continuing through non-blocking ambiguity" guidance do NOT apply to this gate.
 
+### PR Review Handling (external review feedback)
+
+This is separate from the internal review-agent loop. When the main agent receives **PR review results** — review comments, "changes requested" verdicts, inline threads, or automated findings posted on an actual pull request (by humans, maintainers, bots, or CI/LLM review tools) — it must NOT blindly accept and apply every item. External review is advisory, not a command. The main agent processes the findings **one at a time**, and for each one **independently verifies whether the problem objectively exists** before deciding, then splits the feedback into two buckets:
+
+- **Confirmed to objectively exist** (independently reproduced or traced — a real bug, genuine defect, or a sound improvement consistent with Goals and the approved design) are routed to the responsible role (implementation-agent or test-agent), fixed, verified through the normal test + review gates, and acknowledged on the PR thread.
+- **Does not hold** (after verification: misreading, factually wrong, cannot be reproduced, contradicting the approved design or Goals, or out of scope) are NOT applied. The main agent instead posts a comment on the PR — on the specific thread when possible — declining/rejecting the change and stating the concrete reason.
+
+Rules: verify each finding independently against the actual code/design/tests before deciding, one at a time (a finding is not correct merely because of who or what raised it, and findings are never batch-accepted); never silently ignore a finding — every item ends as accepted-and-fixed or explicitly-rejected-with-a-posted-reason; escalate to the user when a finding would change Goals or Acceptance Criteria, or when the same finding loops accept↔reject three or more times without convergence; record every decision in the status file `## PR Review`. Use the platform PR CLI (`gh pr`/`gh api`, `glab mr`, or the repo's configured tool) to post comments; posting is visible to others, so keep it professional. See `prompts/main-agent.md` `## PR Review Handling` for the full contract.
+
 ## Total Goal Fidelity
 
 The user always describes the final, complete target. The final deliverable of the overall task must satisfy that target in full.

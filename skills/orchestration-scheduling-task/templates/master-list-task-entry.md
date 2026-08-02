@@ -193,7 +193,11 @@ updated-at: <yyyy-mm-dd>
   open/review/merge the PR yourself (outside zyz-worker), then write `confirmed`
   (NOT `merge`) here. The orchestrator relays the confirmation to the worker, which
   writes `phase=done`; the orchestrator then mirrors `state: completed` without running
-  any git merge. See `## State Machine` → "PR flow" in
+  any git merge. If PR review returns change requests, the worker evaluates them per
+  its PR-review-handling policy — fixing findings it verifies as real, posting a
+  reasoned rejection on the PR for those that do not hold — and may roll its `phase`
+  back from `awaiting-confirmation`; only write `confirmed` once the resolved PR is
+  satisfactory. See `## State Machine` → "PR flow" in
   `skills/orchestration-scheduling-task/SKILL.md`.
 
   This gate is mandatory. The orchestrator never changes state, merges, or cleans

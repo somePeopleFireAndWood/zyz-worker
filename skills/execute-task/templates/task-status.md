@@ -83,6 +83,15 @@ Per-SubTask scoreboard:
 - Required Changes:
 - Rejected Suggestions:
 
+## PR Review
+
+(External pull-request review feedback — comments, "changes requested", inline threads, or automated review findings posted on an actual PR. Do NOT blindly accept: process each finding one at a time, independently verify whether the problem objectively exists, then record it here. Every item must end as accepted-and-fixed or explicitly-rejected-with-a-posted-reason — never silently ignored.)
+
+- PR Reference: (URL or number)
+- Accepted Findings: (one per line — the finding + how you verified it objectively exists + what changed and where + the acknowledgement posted/thread resolved)
+- Rejected Findings: (one per line — the finding + the concrete evidence it does not hold + the PR comment posted declining it)
+- Escalated To User: (findings that would change Goals/Acceptance Criteria, or that looped accept↔reject 3+ times)
+
 ## Final Aggregate Testing
 
 (Filled at §3.C after all SubTasks or the single no-split iteration complete. Each required category must be registered before delivery — see §4 delivery gate.)
