@@ -20,6 +20,7 @@ This repository is a multi-CLI agent plugin. It targets both Codex and Claude Co
 │   ├── conventions/
 │   └── design/
 ├── hooks/
+├── monitors/
 ├── scripts/
 ├── skills/
 │   └── <skill-name>/
@@ -97,6 +98,12 @@ These are sources of truth for the role prompts. Claude Code native subagents in
 Hook definitions and hook scripts belong here when the project needs lifecycle automation, validation, or event-based behavior.
 
 Hooks should be small, deterministic, and documented with their trigger point, inputs, outputs, and failure mode.
+
+Implemented: `hooks/hooks.json` registers the execute-task watchdog layer (tool-call heartbeats, status-freshness reminders, subagent exit gate, main-agent stop gate) backed by scripts in `hooks/scripts/`. All watchdog hooks fail open and no-op without a `.zyz-worker/current-task` pointer. Each script carries an in-file contract block and is documented in `hooks/README.md`.
+
+### `monitors/`
+
+Plugin background monitors. `monitors/monitors.json` declares long-lived processes whose stdout lines are delivered to the main agent as notifications. Implemented: `watchdog.sh`, started on the first execute-task invocation in a session; it reports silent/dead subagent roles and stale status files so the main agent intervenes without having to remember to poll.
 
 ### `scripts/`
 

@@ -7,7 +7,7 @@ description: Use when the user wants help executing a single confirmed developme
 
 Use this skill to help a user execute a single confirmed code development task — design through delivery. This is zyz-worker's "execute one task" skill; higher-level multi-task orchestration belongs to the `orchestration-scheduling-task` skill in this same plugin and is out of scope here. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
 
-This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for implementationAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation.
+This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for implementationAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation. When the plugin's watchdog hooks and monitor are available they mechanically harden this workflow (see `## Watchdog Enforcement`), but their absence never blocks it.
 
 ## Main Agent Loading
 
@@ -141,8 +141,9 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 1. Create or identify a task id.
 2. Create a task directory, preferably `.zyz-worker/tasks/<task-id>/`.
 3. Create a status file from `templates/task-status.md`. This is the single mandatory overall task status file.
-4. Record the task name, phase, known inputs, open questions, and current assumptions.
-5. Record the user's full, final goal in the status file `## Total Goal` so the overall target cannot drift later (see Total Goal Fidelity).
+4. Write the task id (a single line) into the pointer file `.zyz-worker/current-task` at the project root. This pointer is what the plugin's watchdog hooks and monitor use to locate the active task; without it the entire watchdog layer silently no-ops (see `## Watchdog Enforcement`). If the task directory is not `.zyz-worker/tasks/<task-id>/`, write the directory's path (relative to project root, or absolute) instead of the bare id.
+5. Record the task name, phase, known inputs, open questions, and current assumptions.
+6. Record the user's full, final goal in the status file `## Total Goal` so the overall target cannot drift later (see Total Goal Fidelity).
 
 ### 2. Design
 
@@ -249,6 +250,25 @@ During long implementation phases, the main agent should keep the status file cu
 If a subagent is stuck, interrupted, or silent for too long, the main agent should restart that role if the platform supports it. If no real subagent runtime exists, resume from the status file and re-issue the relevant role prompt with the latest design and status summary.
 
 See also [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md) — long-running tasks must persist state to files, not context.
+
+## Watchdog Enforcement
+
+The two rules above — "restart silent roles" and "keep the status file current" — are also enforced mechanically by the plugin's hooks (`hooks/hooks.json`) and background monitor (`monitors/monitors.json`). Prompt discipline remains the primary behavior; the watchdog is the deterministic backstop for when it slips. The layers:
+
+- **L0 heartbeats (automatic, invisible).** Every tool call — in the main agent and inside every subagent — stamps `<task-dir>/runtime/agents/<agent>.heartbeat`. SubagentStart stamps `.start`; a clean SubagentStop stamps `.done`. Liveness is therefore a side effect of working, never a thing a model must remember to do. A `.start` with no `.done` and no fresh heartbeat is the definition of a dead-or-stuck role.
+- **L1 freshness reminders.** When the overall status file goes stale during an active phase (implementation/testing/review/delivery), a PostToolUse hook injects a reminder into the current context (main agent: "persist progress now"; implementation/test subagents: "report progress / update your SubTask-status file"). Rate-limited; advisory only.
+- **L2 subagent exit gate.** A SubagentStop hook blocks a role from finishing with an empty or too-short final message and instructs it to emit a proper final report first (so the main agent always has something to persist). One block maximum per stop; never loops.
+- **L3 background watchdog.** While the execute-task skill is active, a plugin monitor scans heartbeats and status mtime on a timer and, on a violation, emits a notification line that wakes the main agent: "role X silent N min with no clean finish — re-dispatch or mark finished", or "status file N min stale — persist now". This is the layer that catches subagents killed by API errors, where SubagentStop never fires.
+- **L4 main-agent stop gate.** A Stop hook prevents the main agent from going idle while a dispatched role looks dead (`.start`, no `.done`, stale heartbeat, and not present as a running background task) or while the status file is badly stale in an active phase. The block reason names the exact roles to check.
+
+Main-agent obligations toward the watchdog:
+
+- Write the `.zyz-worker/current-task` pointer at §1 Start Task (and update it if the active task changes). No pointer → no watchdog.
+- Treat any `[zyz-worker watchdog]` notification or injected context as an actionable instruction, not noise: re-dispatch the named role with the latest design and status summary, or flush the status file, immediately — do not defer to the next delivery milestone.
+- Keep the status file's `Current Phase` field accurate; the watchdog only enforces during active execution phases and deliberately stays quiet during design and awaiting-confirmation (where waiting on the user is correct).
+- The runtime markers under `<task-dir>/runtime/` are watchdog bookkeeping, not task state. Do not hand-edit them; they may be deleted with the task directory after delivery.
+
+Degraded environments: hooks and monitors may be unavailable (plugin hooks disabled by policy, monitors unsupported on this platform or version). Everything still works — the prompt-level monitoring duties in `## Long-Running Work` and the flush rules in `## Core Rules` remain in force and become the only enforcement. The watchdog never replaces those duties; it only backstops them. All thresholds are tunable via `ZYZ_*` env vars (see `hooks/README.md`); `ZYZ_HOOKS_DISABLE=1` turns the whole layer off.
 
 ## Optional Skills And Plugins
 

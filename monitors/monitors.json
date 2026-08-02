@@ -1,0 +1,8 @@
+[
+  {
+    "name": "zyz-worker-watchdog",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/monitors/watchdog.sh \"${CLAUDE_PROJECT_DIR}\"",
+    "description": "execute-task watchdog: reports silent/dead subagent roles and stale task status files so the main agent intervenes",
+    "when": "on-skill-invoke:execute-task"
+  }
+]

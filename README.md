@@ -23,11 +23,13 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - Orchestration bash helpers 位于 `scripts/orch-*.sh`（其中 `orch-reuse-worker.sh` 用于「复用已完成任务的 tmux/worktree 创建新任务」——见下方 *容器复用*）
 - 提示词式 SubAgent 定义位于 `subagents/`
+- Watchdog hooks（execute-task 确定性监督层：心跳、状态新鲜度、退出/停止门禁）位于 `hooks/hooks.json` 与 `hooks/scripts/`，详见 `hooks/README.md`
+- Watchdog 后台监视器位于 `monitors/monitors.json` 与 `monitors/watchdog.sh`（execute-task 触发时启动，发现角色静默/状态过期时唤醒主 agent）
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
 - execute-task Skill 设计文档位于 `docs/design/execute-task-skill-design.md`
 - 工程结构约定位于 `docs/conventions/project-structure.md`
-- 暂未实现 hooks、MCP server 或真实 SubAgent 运行时
+- 暂未实现 MCP server 或真实 SubAgent 运行时
 
 ## 多项目 orchestration（multi-project orchestration）
 
@@ -259,7 +261,19 @@ subagents/
 │       ├── execute-task-skill-design.md
 │       └── initial-design.md
 ├── hooks/
-│   └── README.md
+│   ├── README.md
+│   ├── hooks.json
+│   └── scripts/
+│       ├── lib.sh
+│       ├── heartbeat.sh
+│       ├── subagent-track.sh
+│       ├── status-freshness.sh
+│       ├── post-agent-flush.sh
+│       ├── stop-gate-subagent.sh
+│       └── stop-gate-main.sh
+├── monitors/
+│   ├── monitors.json
+│   └── watchdog.sh
 ├── scripts/
 │   ├── README.md
 │   ├── orch-scan-tasks.sh
@@ -320,7 +334,8 @@ subagents/
 - `skills/<skill-name>/prompts/` 保存当前 Skill 内部使用的主控提示词或辅助提示词。
 - `skills/<skill-name>/templates/` 保存可复用的输出模板。
 - `subagents/` 保存可被主控 Agent 调度的提示词式子角色定义；当前不实现真实 SubAgent 运行时。
-- `hooks/` 预留给后续生命周期自动化。
+- `hooks/` 保存 execute-task watchdog hooks（`hooks.json` + `scripts/`），随插件启用自动生效；详见 `hooks/README.md`。
+- `monitors/` 保存插件后台监视器（`monitors.json` + `watchdog.sh`），execute-task skill 首次触发时启动。
 - `scripts/` 保存本仓库的校验、打包、测试等自动化脚本。
 - `docs/conventions/` 保存跨目录的工程约定。
 
@@ -334,4 +349,4 @@ subagents/
 - 用于仓库检查、验证和自动化的脚本
 - 产品需求拆解文档模板
 - 技术实现设计文档模板
-- 如有明确需要，再增加 hooks、MCP server 或 app manifest
+- 如有明确需要，再增加 MCP server 或 app manifest

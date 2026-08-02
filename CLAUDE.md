@@ -17,6 +17,9 @@ The workflow is defined by:
 - `skills/execute-task/SKILL.md`
 - `skills/execute-task/prompts/main-agent.md`
 - `skills/execute-task/templates/`
+- `hooks/hooks.json` + `hooks/scripts/` and `monitors/` (the watchdog enforcement layer: automatic per-tool-call heartbeats, status-freshness reminders, subagent exit gate, background dead-role watchdog, main-agent stop gate — see `skills/execute-task/SKILL.md` `## Watchdog Enforcement` and `hooks/README.md`)
+
+The main agent arms the watchdog by writing the `.zyz-worker/current-task` pointer at task start; `[zyz-worker watchdog]` notifications and injected context are actionable instructions (re-dispatch the named role or flush the status file immediately), not noise.
 
 The current conversation agent is the main agent. It remains user-facing and coordinates the workflow.
 
