@@ -71,10 +71,32 @@ trap 'exit 0' TERM INT HUP
 # agent learns the layer is not protecting it, then stay quiet; re-arm resets it.
 UNARMED_REPORTED="false"
 
+# But this monitor is armed `when: always`, so it starts in EVERY session —
+# including the overwhelming majority that never run execute-task. Reporting a
+# bare resolution miss there is a false alarm that tells the user dead subagents
+# will not be reported when there is nothing to report on, and a warning that
+# cries wolf in ordinary sessions is worse than no warning: it trains people to
+# ignore the one that matters. So only speak up when a task plausibly EXISTS but
+# the pointer cannot be found — i.e. some `.zyz-worker/tasks/<id>/` is present
+# (here or in a sibling worktree) yet resolution still came back empty. A repo
+# with no task dirs at all, or one whose task dirs are all finished, stays silent.
+zyz_unarmed_is_suspicious() {
+    local d
+    for d in "$BASE"/.zyz-worker/tasks/*/; do
+        [ -d "$d" ] || continue
+        # A task dir counts as evidence only while it is not finished; completed
+        # tasks legitimately leave their directories behind forever.
+        zyz_task_is_done "${d%/}" && continue
+        [ -f "${d%/}/status.md" ] || continue
+        return 0
+    done
+    return 1
+}
+
 while :; do
     [ -d "$BASE" ] || exit 0
     root="$(zyz_task_root "$BASE")"
-    if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ]; then
+    if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then
         UNARMED_REPORTED="true"
         printf '[zyz-worker watchdog] NOT ARMED: no task pointer resolved from %s (tried that dir, $ZYZ_TASK_DIR, and sibling git worktrees of the same repo). The watchdog layer is inert for this session — dead subagents will NOT be reported and the idle gate will NOT hold. If an execute-task run is active, its .zyz-worker/current-task is somewhere this cannot see: write the pointer under the session cwd, or make its contents an ABSOLUTE path to the task dir. This is reported once per miss, not per tick.\n' "$BASE"
     fi

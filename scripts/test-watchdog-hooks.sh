@@ -36,7 +36,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.16.0"
+EXPECTED_VERSION="0.16.1"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -557,20 +557,66 @@ fi
 # empty — so this case documents the behavior rather than guarding a fix; it
 # would catch a future rewrite to `${1-word}`, which does NOT substitute on empty.)
 # ---------------------------------------------------------------------------
-t11_dir="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t11.XXXXXX")"
-t11_out="$t11_dir/out.txt"
-ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "$t11_dir" >"$t11_out" 2>&1 &
-t11_pid=$!
-sleep 3
-kill "$t11_pid" 2>/dev/null || true
-wait "$t11_pid" 2>/dev/null || true
-t11_n="$(grep -c 'NOT ARMED' "$t11_out" 2>/dev/null || echo 0)"
+# The monitor is armed `when: always`, so it runs in EVERY session — including
+# the vast majority that never touch execute-task. The unarmed report must
+# therefore fire only when a task plausibly EXISTS but its pointer cannot be
+# found; a bare miss in an ordinary repo is a false alarm, and a warning that
+# cries wolf in normal use trains people to ignore the one that matters.
+# (Observed for real: this monitor warned "dead subagents will NOT be reported"
+# in a session that was not running a task at all.)
+t11_run() { # $1 dir -> prints the NOT ARMED count
+    ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "$1" >"$1/out.txt" 2>&1 &
+    local p=$!
+    sleep 3
+    kill "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+    # NOT `grep -c ... || echo 0`: grep -c PRINTS 0 and ALSO exits 1 on no match,
+    # so the fallback appends a second 0 and the caller's integer comparison dies
+    # on "0\n0". Count with grep -c alone and normalize a non-numeric result.
+    local n
+    n="$(grep -c 'NOT ARMED' "$1/out.txt" 2>/dev/null)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s' "$n"
+}
+t11_base="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t11.XXXXXX")"
+
+# (i) live task dir, pointer missing -> the real issue-#5 bug, must report ONCE.
+mkdir -p "$t11_base/live/.zyz-worker/tasks/t"
+printf -- '## Metadata\n\n- Current Phase: implementation\n' > "$t11_base/live/.zyz-worker/tasks/t/status.md"
+t11_n="$(t11_run "$t11_base/live")"
 if [ "$t11_n" -eq 1 ]; then
     pass "T11 unarmed watchdog reports the miss exactly once across several ticks"
 else
     fail "T11 unarmed watchdog reports the miss exactly once" "saw $t11_n 'NOT ARMED' lines"
 fi
-t11_out2="$t11_dir/out2.txt"
+
+# (ii) no .zyz-worker at all -> ordinary session, must stay SILENT.
+mkdir -p "$t11_base/plain"
+t11_n="$(t11_run "$t11_base/plain")"
+if [ "$t11_n" -eq 0 ]; then
+    pass "T11 no unarmed report in a repo that never used the workflow (no false alarm)"
+else
+    fail "T11 no unarmed report in a repo that never used the workflow" "saw $t11_n 'NOT ARMED' lines"
+fi
+
+# (iii) task dirs present but all finished -> must stay SILENT (completed tasks
+#       leave their directories behind forever, so their presence is not evidence).
+mkdir -p "$t11_base/finished/.zyz-worker/tasks/old"
+printf -- '## Metadata\n\n- Current Phase: done\n' > "$t11_base/finished/.zyz-worker/tasks/old/status.md"
+t11_n="$(t11_run "$t11_base/finished")"
+if [ "$t11_n" -eq 0 ]; then
+    pass "T11 no unarmed report when every task dir is already done (no false alarm)"
+else
+    fail "T11 no unarmed report when every task dir is already done" "saw $t11_n 'NOT ARMED' lines"
+fi
+# Point CLAUDE_PROJECT_DIR at the `live` fixture, not the bare base: the report
+# now requires a plausibly-active task (see the suspicion gate above), so a base
+# with no task dirs would print nothing and the assertion would pass/fail for the
+# wrong reason. The claim under test is only "an empty $1 falls through to
+# CLAUDE_PROJECT_DIR", and the message naming that path is the evidence.
+t11_dir="$t11_base/live"
+t11_out="$t11_base/live/out.txt"
+t11_out2="$t11_base/out2.txt"
 CLAUDE_PROJECT_DIR="$t11_dir" ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "" >"$t11_out2" 2>&1 &
 t11_pid2=$!
 sleep 2

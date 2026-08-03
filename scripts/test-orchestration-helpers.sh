@@ -5651,7 +5651,12 @@ t12_wiring_guard() {
         fail "T12 wiring(neg): scripts/orch-reuse-worker.sh missing (cannot scope-check injection)"
     else
         local n_calls
-        n_calls="$(grep -cF "orch-build-env.sh" "$reuse" 2>/dev/null || echo 0)"
+        # NOT `|| echo 0`: grep -c prints 0 AND exits 1 on no match, so the
+        # fallback would append a second 0 and the -eq below would die on
+        # "0\n0" — i.e. the assertion would break precisely in the case it
+        # exists to catch (the call having disappeared entirely).
+        n_calls="$(grep -cF "orch-build-env.sh" "$reuse" 2>/dev/null)"
+        case "$n_calls" in ''|*[!0-9]*) n_calls=0 ;; esac
         if [ "$n_calls" -eq 1 ]; then
             pass "T12 wiring(neg): reuse calls orch-build-env.sh EXACTLY once (not in tmux|both scope)"
         else
