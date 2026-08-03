@@ -103,7 +103,9 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 ### 4.3 关键机制
 
-- **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；没有指针，整层静默 no-op。主 agent 在 §1 写它。
+- **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来。现已加**有界兜底**：单 base 命中（热路径不变）→ `$ZYZ_TASK_DIR` → 同仓库的兄弟 worktree（按 `status.md` mtime 取最新、跳过 `phase: done`、每次兜底命中记一行日志）。刻意**不做**无界向上遍历：默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session。
+- **「未武装」必须可见（比空转本身更深的问题）。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分——这正是整层失效一整个任务却无人察觉的原因。现在 L3 在解析失败时**报一次**（不是每 tick），明说「dead subagent 不会被上报、空闲闸门不会拦」；§1 也要求在若干次工具调用后确认 `runtime/agents/main.heartbeat` 存在（心跳是 async，第一次调用时还没写）。
+- **`.start` 有、`.done` 无、心跳仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。`runtime/` 整个不存在则意味着看门狗从未上膛，此时没有任何存活证据可用。
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
 - **输出形状按事件类型区分。** `PostToolUse` / `PreToolUse` 这类注入或拦截，输出 `hookSpecificOutput` 且其中 `hookEventName` 必须与注册的事件一致（前者带 `additionalContext`，后者带 `permissionDecision`）；而 Stop / SubagentStop 两个停止门禁输出的是**不带**事件名的 `{decision:"block",reason}`——这是该事件族的约定，不是漏写。
 - **三个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5（因其匹配是启发式的，必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。

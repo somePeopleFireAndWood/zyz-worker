@@ -126,7 +126,9 @@ zyz_sanitize() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
-zyz_task_root() {
+# Resolve a pointer file that lives under exactly one base directory.
+# Returns the task dir on stdout, or nothing (rc 0) on any miss — fail-open.
+zyz_resolve_pointer_at() {
     [ -n "${1:-}" ] || return 0
     local pointer target
     pointer="$1/.zyz-worker/current-task"
@@ -140,6 +142,102 @@ zyz_task_root() {
     esac
     [ -d "$target" ] || return 0
     printf '%s' "$target"
+}
+
+# True when the task dir's status.md reports a terminal phase. A finished task's
+# leftover pointer must never win the worktree fallback below: pointers are never
+# deleted anywhere in this plugin (cleanup removes worktrees, not the pointer
+# inside them), so stale ones accumulate with worktree count and are exactly the
+# wrong-attach candidates a searching resolver would hit. Phase-gating beats a
+# cleanup step because it does not depend on anybody remembering to clean up.
+zyz_task_is_done() {
+    local st="${1:-}/status.md" ph
+    [ -f "$st" ] || return 1
+    ph="$(zyz_phase_of "$st")"
+    case "$ph" in
+        done) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+zyz_task_root() {
+    [ -n "${1:-}" ] || return 0
+    local base found
+    base="$1"
+
+    # (a) Hot path, unchanged: the pointer directly under the given base. No
+    # fork, no git, byte-identical to the historical behavior on a hit.
+    found="$(zyz_resolve_pointer_at "$base")"
+    if [ -n "$found" ]; then
+        printf '%s' "$found"
+        return 0
+    fi
+
+    # (b) Explicit override. Only usable where something exported it into the
+    # environment before `claude` started (orchestrated spawn/reuse do this); a
+    # skill cannot set it for itself, since each skill Bash call is a new shell.
+    if [ -n "${ZYZ_TASK_DIR:-}" ] && [ -d "${ZYZ_TASK_DIR}" ]; then
+        printf '%s' "$ZYZ_TASK_DIR"
+        return 0
+    fi
+
+    # (c) Sibling git worktrees of the same repository.
+    #
+    # Why this direction: the plugin's own git-worktree skill puts new worktrees
+    # OUTSIDE the main checkout (~/.zyz-worker/worktrees/...), so a task can run
+    # — pointer and all — in a tree that the session cwd is not inside. Reducing
+    # a linked worktree to its main checkout (`--show-toplevel` /
+    # `--git-common-dir`) is the direction that already worked; the direction
+    # that was unreachable is main checkout -> sibling worktree, which is what
+    # this enumerates.
+    #
+    # NOT an unbounded upward walk: under the default layout the ancestor chain
+    # climbs through $HOME/.zyz-worker, where a stray pointer would capture every
+    # session under $HOME.
+    #
+    # Newest-first by status.md mtime, because `git worktree list` is ordered by
+    # PATH — with two worktrees holding pointers, first-hit-wins would pick by
+    # alphabetical accident rather than by which task is actually live. Terminal
+    # (`phase: done`) tasks are skipped outright. Residual risk, stated plainly:
+    # two genuinely concurrent execute-task runs in one repo can still attach to
+    # the wrong one, so every fallback hit is logged (a wrong reminder is more
+    # confusing than silence — it must at least be diagnosable).
+    command -v git >/dev/null 2>&1 || return 0
+    local common wt_dir cand best best_mt mt
+    common="$(git -C "$base" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+    [ -n "$common" ] || return 0
+    best=""; best_mt=""
+    # The main checkout (parent of the common dir) plus each linked worktree.
+    for wt_dir in "$(dirname "$common")" "$common"/worktrees/*/; do
+        [ -d "$wt_dir" ] || continue
+        cand="$wt_dir"
+        # For a linked worktree, <common>/worktrees/<name>/gitdir holds the path
+        # of its .git FILE; the worktree root is that file's parent.
+        if [ -f "${wt_dir%/}/gitdir" ]; then
+            cand="$(head -n1 "${wt_dir%/}/gitdir" 2>/dev/null)"
+            [ -n "$cand" ] || continue
+            cand="$(dirname "$cand")"
+        fi
+        [ -d "$cand" ] || continue
+        [ "$cand" = "$base" ] && continue   # already tried in (a)
+        found="$(zyz_resolve_pointer_at "$cand")"
+        [ -n "$found" ] || continue
+        zyz_task_is_done "$found" && continue
+        mt="$(zyz_mtime "$found/status.md")"
+        [ -n "$mt" ] || mt=0
+        if [ -z "$best_mt" ] || [ "$mt" -gt "$best_mt" ]; then
+            best="$found"; best_mt="$mt"
+        fi
+    done
+    [ -n "$best" ] || return 0
+    # Log the fallback hit so a wrong attach is diagnosable. Rate-limited by the
+    # caller's own cooldowns is not enough here (this runs before any of them),
+    # so keep it to one line appended per resolution; failures are ignored.
+    if [ -d "$best/runtime" ] || mkdir -p "$best/runtime" 2>/dev/null; then
+        printf '%s\tresolved via worktree fallback from base=%s\n' \
+            "$(zyz_iso)" "$base" >> "$best/runtime/task-root-fallback.log" 2>/dev/null || true
+    fi
+    printf '%s' "$best"
 }
 
 zyz_phase_of() {

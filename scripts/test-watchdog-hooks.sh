@@ -465,6 +465,125 @@ for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugi
 done
 
 # ---------------------------------------------------------------------------
+# T10  Pointer resolution across a split base (issue #5).
+#
+# Every pre-existing fixture writes the pointer into the SAME directory it then
+# passes as `cwd`, so the case that actually broke — pointer in tree A, hook cwd
+# in tree B — had no coverage at all, and the missing-pointer no-op was pinned as
+# if it were the only possible outcome. Real consequence: a task run inside a
+# git-worktree-created worktree left every layer inert (no runtime/, two dead
+# subagents unreported, idle gate open) while looking healthy.
+#
+# Guarded here: (a) resolution from the main checkout reaches a pointer held in a
+# sibling worktree; (b) the newest live task wins, NOT the alphabetically first
+# (git worktree list is path-ordered, so first-hit-wins picks by accident);
+# (c) a task whose status.md phase is `done` is skipped, because pointers are
+# never deleted and stale ones accumulate; (d) when nothing resolves the result
+# is still empty with rc 0 — fail-open is preserved, not traded away.
+# ---------------------------------------------------------------------------
+if command -v git >/dev/null 2>&1; then
+    t10_root="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t10.XXXXXX")"
+    (
+        cd "$t10_root" || exit 1
+        git init -q -b main main >/dev/null 2>&1
+        cd main || exit 1
+        git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1
+        git worktree add -q ../wtA -b tA >/dev/null 2>&1
+        git worktree add -q ../wtB -b tB >/dev/null 2>&1
+    ) >/dev/null 2>&1
+    t10_mk() { # $1 worktree, $2 task-id, $3 phase, $4 mtime-stamp
+        mkdir -p "$t10_root/$1/.zyz-worker/tasks/$2"
+        printf '%s\n' "$2" > "$t10_root/$1/.zyz-worker/current-task"
+        printf -- '## Metadata\n\n- Current Phase: %s\n' "$3" > "$t10_root/$1/.zyz-worker/tasks/$2/status.md"
+        [ -n "${4:-}" ] && touch -t "$4" "$t10_root/$1/.zyz-worker/tasks/$2/status.md"
+    }
+    t10_resolve() { ( . hooks/scripts/lib.sh 2>/dev/null || exit 0; zyz_task_root "$t10_root/main" ); }
+
+    if [ -d "$t10_root/wtB" ]; then
+        t10_mk wtB live implementation ""
+        t10_out="$(t10_resolve)"
+        case "$t10_out" in
+            */wtB/.zyz-worker/tasks/live) pass "T10 pointer in a sibling worktree resolves from the main checkout" ;;
+            *) fail "T10 pointer in a sibling worktree resolves from the main checkout" "got [$t10_out]" ;;
+        esac
+
+        # wtA sorts BEFORE wtB but is older: newest must win.
+        t10_mk wtA older implementation 202601010000
+        t10_out="$(t10_resolve)"
+        case "$t10_out" in
+            */wtB/.zyz-worker/tasks/live) pass "T10 newest live task wins over the alphabetically-first stale one" ;;
+            *) fail "T10 newest live task wins over the alphabetically-first stale one" "got [$t10_out]" ;;
+        esac
+
+        # Mark the newest done: a terminal task's leftover pointer must not win.
+        printf -- '## Metadata\n\n- Current Phase: done\n' > "$t10_root/wtB/.zyz-worker/tasks/live/status.md"
+        t10_out="$(t10_resolve)"
+        case "$t10_out" in
+            */wtA/.zyz-worker/tasks/older) pass "T10 phase=done pointer is skipped in favor of a live one" ;;
+            *) fail "T10 phase=done pointer is skipped in favor of a live one" "got [$t10_out]" ;;
+        esac
+
+        # All done -> empty, rc 0 (byte-identical to the historical behavior).
+        printf -- '## Metadata\n\n- Current Phase: done\n' > "$t10_root/wtA/.zyz-worker/tasks/older/status.md"
+        t10_out="$(t10_resolve)"; t10_rc=$?
+        if [ -z "$t10_out" ] && [ "$t10_rc" -eq 0 ]; then
+            pass "T10 no live pointer anywhere -> empty result, rc 0 (fail-open preserved)"
+        else
+            fail "T10 no live pointer anywhere -> empty result, rc 0" "out=[$t10_out] rc=$t10_rc"
+        fi
+    else
+        skip "T10 pointer in a sibling worktree resolves from the main checkout (worktree setup failed)"
+        skip "T10 newest live task wins over the alphabetically-first stale one (worktree setup failed)"
+        skip "T10 phase=done pointer is skipped in favor of a live one (worktree setup failed)"
+        skip "T10 no live pointer anywhere -> empty result, rc 0 (fail-open preserved) (worktree setup failed)"
+    fi
+    rm -rf "$t10_root"
+else
+    skip "T10 pointer in a sibling worktree resolves from the main checkout (git unavailable)"
+    skip "T10 newest live task wins over the alphabetically-first stale one (git unavailable)"
+    skip "T10 phase=done pointer is skipped in favor of a live one (git unavailable)"
+    skip "T10 no live pointer anywhere -> empty result, rc 0 (fail-open preserved) (git unavailable)"
+fi
+
+# ---------------------------------------------------------------------------
+# T11  Watchdog reports being UNARMED (issue #5).
+#
+# The deeper defect: an inert layer and a healthy quiet one are externally
+# identical, which is why a whole task ran unprotected without anyone noticing.
+# The monitor must announce a resolution miss — once, not per tick.
+# Also pinned: monitors.json interpolates "${CLAUDE_PROJECT_DIR}" into argv, so
+# an unset variable yields an EMPTY $1. BASE must still fall through to
+# CLAUDE_PROJECT_DIR. (This already held — `${1:-word}` substitutes on unset OR
+# empty — so this case documents the behavior rather than guarding a fix; it
+# would catch a future rewrite to `${1-word}`, which does NOT substitute on empty.)
+# ---------------------------------------------------------------------------
+t11_dir="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t11.XXXXXX")"
+t11_out="$t11_dir/out.txt"
+ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "$t11_dir" >"$t11_out" 2>&1 &
+t11_pid=$!
+sleep 3
+kill "$t11_pid" 2>/dev/null || true
+wait "$t11_pid" 2>/dev/null || true
+t11_n="$(grep -c 'NOT ARMED' "$t11_out" 2>/dev/null || echo 0)"
+if [ "$t11_n" -eq 1 ]; then
+    pass "T11 unarmed watchdog reports the miss exactly once across several ticks"
+else
+    fail "T11 unarmed watchdog reports the miss exactly once" "saw $t11_n 'NOT ARMED' lines"
+fi
+t11_out2="$t11_dir/out2.txt"
+CLAUDE_PROJECT_DIR="$t11_dir" ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "" >"$t11_out2" 2>&1 &
+t11_pid2=$!
+sleep 2
+kill "$t11_pid2" 2>/dev/null || true
+wait "$t11_pid2" 2>/dev/null || true
+if grep -qF "resolved from $t11_dir" "$t11_out2" 2>/dev/null; then
+    pass "T11 empty positional arg falls through to CLAUDE_PROJECT_DIR (not \$PWD)"
+else
+    fail "T11 empty positional arg falls through to CLAUDE_PROJECT_DIR" "$(head -c 200 "$t11_out2" 2>/dev/null)"
+fi
+rm -rf "$t11_dir"
+
+# ---------------------------------------------------------------------------
 # T9  Watchdog-audit regression guards. Three defects found by audit and each
 # verified by execution before fixing; pinned here so they cannot return.
 #

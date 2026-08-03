@@ -50,6 +50,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../hooks/scripts/lib.sh
 . "$SCRIPT_DIR/../hooks/scripts/lib.sh" 2>/dev/null || exit 0
 
+# monitors.json interpolates "${CLAUDE_PROJECT_DIR}" straight into argv, so an
+# unset variable invokes this with an EMPTY first argument. That is already
+# handled: `${1:-word}` substitutes when $1 is unset OR empty (it is `${1-word}`
+# that distinguishes them), so an empty $1 falls through to CLAUDE_PROJECT_DIR
+# and then $PWD. Verified across all nine arg/env combinations — do not "fix"
+# this into a two-step form believing empty defeats the default; it does not.
 BASE="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}"
 INTERVAL="${ZYZ_WATCHDOG_INTERVAL_SEC:-60}"
 ROLE_STALE="${ZYZ_WATCHDOG_ROLE_STALE_SEC:-1200}"
@@ -59,10 +65,21 @@ COOLDOWN="${ZYZ_WATCHDOG_COOLDOWN_SEC:-900}"
 
 trap 'exit 0' TERM INT HUP
 
+# Unarmed-visibility state. An unarmed watchdog and a healthy quiet one are
+# externally indistinguishable — that is how a whole task ran with every layer
+# inert and nobody noticing. Report the miss ONCE (not every tick) so the main
+# agent learns the layer is not protecting it, then stay quiet; re-arm resets it.
+UNARMED_REPORTED="false"
+
 while :; do
     [ -d "$BASE" ] || exit 0
     root="$(zyz_task_root "$BASE")"
+    if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ]; then
+        UNARMED_REPORTED="true"
+        printf '[zyz-worker watchdog] NOT ARMED: no task pointer resolved from %s (tried that dir, $ZYZ_TASK_DIR, and sibling git worktrees of the same repo). The watchdog layer is inert for this session — dead subagents will NOT be reported and the idle gate will NOT hold. If an execute-task run is active, its .zyz-worker/current-task is somewhere this cannot see: write the pointer under the session cwd, or make its contents an ABSOLUTE path to the task dir. This is reported once per miss, not per tick.\n' "$BASE"
+    fi
     if [ -n "$root" ]; then
+        UNARMED_REPORTED="false"
         status_file="$root/status.md"
         phase="$(zyz_phase_of "$status_file")"
         if zyz_phase_active "$phase"; then
