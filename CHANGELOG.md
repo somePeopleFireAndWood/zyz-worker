@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(reserved for next release; intentionally empty after each release tag)
+
+## [0.16.0] — 2026-08-03
+
+Four field-reported issues (#2–#5), each reproduced by execution before being fixed and pinned by a mutation-tested guard after. Two of them turned out to be the same defect seen from different ends: the watchdog layer was silently inert whenever a task ran in a git worktree (#5), which is also why nobody noticed the status file going a day stale (#4).
+
 ### Fixed — issue #5: the watchdog was silently inert whenever the pointer lived in a git worktree
 
 `zyz_task_root` resolved `.zyz-worker/current-task` under exactly one base — the hook payload's `cwd`. The plugin's own `git-worktree` skill places worktrees *outside* the main checkout and deliberately does not `cd` into them, so a task run in such a worktree put its pointer where the session cwd could not see it, and **all six layers returned empty and no-op'd**: no `runtime/` was ever created, two dead subagents went unreported, and the idle gate let the main agent stop. Reproduced against the shipped scripts: the same payload creates `runtime/agents/main.heartbeat` with `cwd` set to the worktree and creates nothing with `cwd` set to the main checkout. Also confirmed as the mechanism behind issue #4's worst symptom — in #4's exact scenario (status.md a day stale) L1 stays silent and L4 allows idle.
@@ -62,6 +68,14 @@ The core insight from the field report: **"ran" ≠ "tested"** — every silent 
 - **P2-20 `git stash push/pop` banned on shared working trees** (both prohibition lists + implementation-agent): another agent's stash may exist, and a conflicted `go.mod` still BUILDS while `go test` breaks at module parse — reading as "their code is broken"; replacement `git diff > patch` + `git apply -R`; bisection requires a clean-environment precondition.
 - **P2-21 Test categories derive from the design's Testing Plan**: the fixed unit/e2e/regression/pressure enumeration becomes example slots in all five places it was hardcoded; user-named categories get their own registration line plus a structural-ceiling note — a fixed enum let a user's explicitly-not-skippable category pass the delivery gate silently.
 - **Pre-Delivery Checklist** (the field run's live checklist, generalized): 26 items across test effectiveness / verdict hygiene / environment & coordinates / attribution & collaboration / scope & self-disclosure, answered item-by-item with evidence as a delivery gate (§4 step 4).
+
+### Changed
+- **Version bump 0.15.0 → 0.16.0** across `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.codex-plugin/plugin.json` (codex build suffix regenerated); `EXPECTED_VERSION` aligned to 0.16.0 in `scripts/test-release-0-5-0.sh`, `scripts/test-clean-tmp-skill.sh`, and `scripts/test-watchdog-hooks.sh`.
+
+### Upgrade notes
+- **Breaking (issue #2):** workers no longer inherit the host's MCP servers. Set `ZYZ_WORKER_MCP=inherit` for tasks that need the host's MCP tools, or point it at a scoped config file. Default `none` gives each worker zero MCP servers.
+- **Behavior change (issue #5):** the pointer belongs under the **session cwd**, not "the project root" — inside a linked worktree those differ. A task whose task dir is not under the session cwd must write an **absolute** path into the pointer. The new sibling-worktree fallback covers the common case, but it is a safety net, not a contract: with two concurrent runs in one repo it can attach to the wrong task (every fallback hit is logged to `<task-dir>/runtime/task-root-fallback.log`).
+- **New expectation (issues #4/#5):** after a few tool calls, confirm `<task-dir>/runtime/agents/main.heartbeat` exists. Its absence means the watchdog never armed and no conclusion should rest on it; the monitor now says so once per miss instead of staying silent.
 
 ## [0.15.0] — 2026-08-03
 

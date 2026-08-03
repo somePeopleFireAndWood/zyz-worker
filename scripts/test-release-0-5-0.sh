@@ -55,7 +55,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
-EXPECTED_VERSION="0.15.0"
+EXPECTED_VERSION="0.16.0"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns. Derived so a version bump only requires editing EXPECTED_VERSION above.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
