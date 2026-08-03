@@ -2846,6 +2846,9 @@ run_T8() {
     (
         cd "$TMPROOT" || exit 99
         unset CLAUDE_PLUGIN_ROOT
+        # Also unset ZYZ_WORKER_MCP so the a-mcp assertion below exercises the
+        # DEFAULT policy (none -> --strict-mcp-config), not the caller's env.
+        unset ZYZ_WORKER_MCP
         bash "$spawn" "$TASK_ID" "$LIST_DIR" </dev/null
     ) >"$spawn_out_file" 2>"$spawn_err_file"
     spawn_rc=$?
@@ -2893,6 +2896,8 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
                  shell-pid worktree source-repo branch base plugin-root encoded-cwd; do
             skip "T8 dispatch.md Phase-1 key $k non-empty (a) (skipped: dispatch.md absent)"
         done
+        skip "T8 dispatch.md worker-mcp-args key present (a-mcp) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md worker-mcp-args defaults to --strict-mcp-config (a-mcp) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md tmux-window-id matches ^@[0-9]+\$ (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md shell-pid is a positive integer (a) (skipped: dispatch.md absent)"
@@ -2960,6 +2965,26 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
             T8_FAIL "dispatch.md Phase-1 key $key is EMPTY (a)"
         fi
     done
+
+    # ---- worker-mcp-args (issue #2): key PRESENT, and under the default
+    #      policy (ZYZ_WORKER_MCP unset in the spawn env) it must render
+    #      `--strict-mcp-config` — zero MCP servers. Presence-with-empty is the
+    #      legitimate rendering ONLY for ZYZ_WORKER_MCP=inherit; a MISSING key
+    #      means the launch command and the recovery --resume would silently
+    #      re-inherit the host's full mcpServers (the ~745 MB/worker baseline
+    #      the policy exists to eliminate). ----
+    if grep -qE '^worker-mcp-args:' "$DISPATCH"; then
+        T8_PASS "dispatch.md worker-mcp-args key present (a-mcp)"
+    else
+        T8_FAIL "dispatch.md worker-mcp-args key MISSING (a-mcp)"
+    fi
+    local mcp_val
+    mcp_val="$(t8_fm "$DISPATCH" worker-mcp-args 2>/dev/null || true)"
+    if [ "$mcp_val" = "--strict-mcp-config" ]; then
+        T8_PASS "dispatch.md worker-mcp-args defaults to --strict-mcp-config (a-mcp)"
+    else
+        T8_FAIL "dispatch.md worker-mcp-args='$mcp_val', expected '--strict-mcp-config' under the default policy (a-mcp)"
+    fi
 
     # ---- tmux-window-id / tmux-pane-id format ----
     local win_id pane_id

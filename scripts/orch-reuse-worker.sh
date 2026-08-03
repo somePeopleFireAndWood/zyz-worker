@@ -605,6 +605,12 @@ base-$n: ${OLD_BS[$idx]}
 fi
 
 TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
+# MCP inheritance policy snapshot (issue #2) — same call as spawn's. Note it
+# only takes effect where a claude is actually (re)launched: the restart and
+# new-session reuse branches. A same-claude reuse keeps the already-running
+# process, whose MCP set was fixed at ITS launch — recorded here anyway so the
+# recovery command and any future restart use the current policy.
+WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null || true)"
 cat > "$TMP_DISPATCH" <<EOF
 ---
 task-id: $TASK_ID
@@ -619,6 +625,7 @@ branch: $BRANCH
 base: $BASE
 ${NUMBERED_GROUP}plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
+worker-mcp-args: $WORKER_MCP_ARGS
 reuse-from: $REUSE_FROM
 reuse-scope: $REUSE_SCOPE
 reuse-claude-effective: $REUSE_CLAUDE_EFFECTIVE

@@ -409,9 +409,12 @@ echo "=== A2: parent-shell invariant (L2 first-dispatch launch) ==="
 # Launch claude into the RECORDED pane so it becomes a DIRECT child of
 # SHELL_PID. NO nohup / setsid / subshell / & / new window — any reparent would
 # break pgrep -P <shell-pid>. Use the plugin-root recorded in dispatch.md (fall
-# back to PLUGIN_ROOT if somehow empty).
+# back to PLUGIN_ROOT if somehow empty). Append the worker-mcp-args snapshot
+# from dispatch.md, exactly as the L2 driver contract specifies (issue #2 —
+# default policy renders --strict-mcp-config, so the worker starts MCP-free).
 LAUNCH_PLUGIN_ROOT="${DISPATCH_PLUGIN_ROOT:-$PLUGIN_ROOT}"
-LAUNCH_CMD="claude --plugin-dir '$LAUNCH_PLUGIN_ROOT' --permission-mode bypassPermissions --dangerously-skip-permissions --settings '{\"ultracode\": true}'"
+DISPATCH_MCP_ARGS="$(awk -F': ' '/^worker-mcp-args:/{sub(/^ +/,"",$2); print $2; exit}' "$DISPATCH_FILE" 2>/dev/null || true)"
+LAUNCH_CMD="claude --plugin-dir '$LAUNCH_PLUGIN_ROOT' --permission-mode bypassPermissions --dangerously-skip-permissions --settings '{\"ultracode\": true}'${DISPATCH_MCP_ARGS:+ $DISPATCH_MCP_ARGS}"
 info "send-keys launch into pane $PANE_ID: $LAUNCH_CMD"
 tmux send-keys -t "$PANE_ID" "$LAUNCH_CMD" Enter
 

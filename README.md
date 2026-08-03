@@ -56,6 +56,22 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 
 落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree（多仓时为整套 worktree）——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## Container Reuse`。
 
+## Worker MCP 隔离（ZYZ_WORKER_MCP）
+
+orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型 MCP server 是每 claude 进程各 spawn 一份、无法跨进程共享**——若 worker 全量继承宿主 `~/.claude.json` 的全局 `mcpServers`，内存开销随 worker 数线性放大（实测单个 lark-mcp 基线 **~745 MB/worker**，其中 ~695 MB 为私有内存，11 个 worker 累计 ~8 GB；该基线是 `require` 全量 zod schema 的启动成本，与存活时长无关，`preset.light` / 压 heap 上限均无效）。这与 `ZYZ_GO_BUILD_P` 治过的 `workers × go build -p` 是同一形态的问题——`workers × MCP 基线`，正确的旋钮是**继承策略**而不是 worker 数。
+
+派发 worker 时的 MCP 继承策略由 `ZYZ_WORKER_MCP` 控制（`scripts/orch-worker-mcp-args.sh` 产出 CLI 片段，spawn/reuse 快照进 `dispatch.md` 的 `worker-mcp-args:` 字段，L2 启动命令与崩溃恢复的 `--resume` 命令都用同一份快照）：
+
+| 值 | 效果 |
+|---|---|
+| `none`（**默认**） | 启动加 `--strict-mcp-config`：worker **零 MCP**，每个 stdio server 省 ~745 MB/worker。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
+| `inherit` | 旧行为：不加任何 flag，worker 全量继承宿主全局 `mcpServers` |
+| `<config-path>` | `--strict-mcp-config --mcp-config '<path>'`：worker 只拿该 JSON 里声明的 server（共享 server 的接入点）。路径非法时**收敛回 `none`**（fail closed，stderr 告警），绝不静默退回全量继承 |
+
+**共享 server 的安全边界（用 `<config-path>` 前必读）**：把一个烤了凭据的 MCP server 起成常驻进程共享给多个 worker 时——(1) **不要用 TCP 端口**（127.0.0.1 也不行：本机所有用户都能连，等于把凭据使用权开放给同机他人），socket 应放在 `$XDG_RUNTIME_DIR` 这类 0700 属主目录内，worker 侧经 stdio 桥接；(2) 凭据走 `--config <0600 文件>` 或环境变量，**不要放进 argv**（`ps` 全机可见）；(3) `XDG_RUNTIME_DIR` 不存在（cron / 非 login session）时应显式失败而非回退 TCP。收益量级：N×745MB → 1×~834MB + N×~15MB 桥进程。本插件当前只提供 `<config-path>` 这个接入点，不代起共享 server。
+
+另：若 worker 确需 stdio MCP，配置里用**已安装二进制的绝对路径**而非 `npx -y <pkg>`——npx 会额外留两层常驻包装进程（~47 MB/worker）。
+
 ## Go 构建 I/O 优化注入（Go build I/O optimization）
 
 多个 worker 并行在各自 worktree（多仓 worker 则是名下多个 worktree）里跑 `go build ./...` 时，**总编译并行 ≈ worker 数 × 每个 build 的 `-p`**（`-p` 默认 = NumCPU，常为 16）。worker 不限本身没问题，真正会把单块磁盘 I/O 打满的是「每个 build 又各自十几路链接、且中间产物全写同一块盘」这个二次放大。
@@ -284,6 +300,7 @@ subagents/
 │   ├── orch-spawn-worker.sh
 │   ├── orch-reuse-worker.sh
 │   ├── orch-build-env.sh
+│   ├── orch-worker-mcp-args.sh
 │   ├── orch-check-worker.sh
 │   ├── orch-heartbeat-daemon.sh
 │   ├── orch-cleanup-worker.sh

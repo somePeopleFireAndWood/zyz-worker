@@ -178,6 +178,13 @@ rewrite_dispatch_atomic() {
     p1_reuse_scope="$(fm_field "$file" reuse-scope)"
     p1_reuse_claude_eff="$(fm_field "$file" reuse-claude-effective)"
     p1_heartbeat_window="$(fm_field "$file" heartbeat-window-id)"
+    # MCP inheritance snapshot (issue #2; written by spawn/reuse). Read back and
+    # re-emitted for the same reason as the reuse fields: this fixed-field-list
+    # rewriter would otherwise DROP it on the first Phase-2 poll — and the
+    # recovery `--resume` command below embeds it, so losing it would make a
+    # resumed worker silently re-inherit the host's full mcpServers.
+    local p1_worker_mcp
+    p1_worker_mcp="$(fm_field "$file" worker-mcp-args)"
 
     # Multi-repo numbered field group (worktree-N / source-repo-N / branch-N /
     # base-N, written by spawn for REPO_COUNT>=2). Like the reuse fields above,
@@ -228,7 +235,7 @@ Discovered at $r_first_seen."
             body="This worker is bound to claude session \`$r_claude_sid\`. Recovery commands:
 
 - If tmux session \`$p1_tmux_session\` is still alive: \`tmux attach -t $p1_tmux_session\`
-- If tmux is dead but the transcript exists: \`cd $p1_worktree && claude --resume $r_claude_sid --plugin-dir $p1_plugin_root\`
+- If tmux is dead but the transcript exists: \`cd $p1_worktree && claude --resume $r_claude_sid --plugin-dir $p1_plugin_root${p1_worker_mcp:+ $p1_worker_mcp}\`
 - Transcript file (for read-only inspection): \`$r_transcript\`
 
 Discovered at $r_first_seen."
@@ -252,6 +259,7 @@ branch: $p1_branch
 base: $p1_base$p1_numbered
 plugin-root: $p1_plugin_root
 encoded-cwd: $p1_encoded_cwd
+worker-mcp-args: $p1_worker_mcp
 reuse-from: $p1_reuse_from
 reuse-scope: $p1_reuse_scope
 reuse-claude-effective: $p1_reuse_claude_eff

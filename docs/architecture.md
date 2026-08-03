@@ -26,7 +26,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
                               ├─ 主控提示词  skills/.../prompts/main-agent.md
                               ├─ 1 个 subAgent  orch-driver-agent (L2)
                               ├─ 5 个模板  master-entry / worker-status / monitor / dispatch / question-answer
-                              └─ 9 个 bash helper  scripts/orch-*.sh          ← 确定性动作
+                              └─ 10 个 bash helper  scripts/orch-*.sh          ← 确定性动作
 ```
 
 辅助 skill 两个：`git-worktree`（推导 worktree 默认路径）、`clean-tmp`（跨平台清理临时文件 / Docker / 编译缓存）。二者独立可用，不属于上面两条主链。
@@ -169,7 +169,7 @@ L3 ←→ 文件(自己的 worktree + worker-status.md)
 
 ### 5.5 bash helper：确定性动作层
 
-提示词负责判断，脚本负责动作。9 个 helper，统一约定：`set -euo pipefail` + in-file contract 块；task-id 白名单 `^[A-Za-z0-9_-]+$` 违规 exit 2；缺 tmux/git exit 3；stdout 输出结构化 `key=value`，人类消息走 stderr。
+提示词负责判断，脚本负责动作。10 个 helper，统一约定：`set -euo pipefail` + in-file contract 块；task-id 白名单 `^[A-Za-z0-9_-]+$` 违规 exit 2；缺 tmux/git exit 3；stdout 输出结构化 `key=value`，人类消息走 stderr。
 
 | helper | 职责 |
 |---|---|
@@ -177,6 +177,7 @@ L3 ←→ 文件(自己的 worktree + worker-status.md)
 | `orch-spawn-worker.sh` | **只建容器**：每仓一个 worktree + 1 个 tmux session + pane 内心跳 + Phase-1 `dispatch.md`。**从不起 claude** |
 | `orch-reuse-worker.sh` | 复用某个**已完成**任务的 session/worktree 集合来承接新任务，而不新建容器；同样从不起 claude |
 | `orch-build-env.sh` | 打印 Go 构建 I/O 优化片段（`GOTMPDIR` 走 tmpfs + `GOFLAGS=-p`），由 spawn/reuse 注入 pane |
+| `orch-worker-mcp-args.sh` | 打印 worker 的 MCP 隔离 CLI 参数（`ZYZ_WORKER_MCP` 策略；默认 `--strict-mcp-config` = 零 MCP），spawn/reuse 快照进 `dispatch.md`，L2 启动命令与恢复 `--resume` 同用一份快照 |
 | `orch-check-worker.sh` | 只读探测（文件 + `pgrep`，**不碰 pane**）；顺带惰性补全 `dispatch.md` 的 Phase-2 绑定字段 |
 | `orch-heartbeat-daemon.sh` | pane 内常驻，定期刷 `heartbeat`；session 消失即自退 |
 | `orch-merge.sh` | 只合并 + 推送，不改 state、不清理 |

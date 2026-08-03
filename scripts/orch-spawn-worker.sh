@@ -582,6 +582,14 @@ base-$n: ${BASES[$n]}"
 fi
 
 TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
+# MCP inheritance policy snapshot (issue #2). Evaluated ONCE here at container
+# build time via orch-worker-mcp-args.sh (reads ZYZ_WORKER_MCP; default `none`
+# => `--strict-mcp-config` => worker gets ZERO MCP servers). Persisted into
+# dispatch.md so the L2 driver's launch command and the crash-recovery
+# `claude --resume` command use the SAME args — a resume that silently
+# re-inherited the host's full mcpServers would re-pay the per-worker MCP
+# baseline the policy exists to eliminate (~745 MB/worker measured).
+WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null || true)"
 cat > "$TMP_DISPATCH" <<EOF
 ---
 task-id: $TASK_ID
@@ -596,6 +604,7 @@ branch: $BRANCH
 base: $BASE$NUMBERED_FIELDS
 plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
+worker-mcp-args: $WORKER_MCP_ARGS
 reuse-from:
 reuse-scope:
 reuse-claude-effective:

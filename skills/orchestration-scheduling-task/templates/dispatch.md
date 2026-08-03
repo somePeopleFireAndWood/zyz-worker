@@ -26,6 +26,17 @@ encoded-cwd: <claude-projects-dir form of pwd -P of worktree>
                                   # "-" squeezed; matches ~/.claude/projects/<dir>.
                                   # Diagnostics only — transcript discovery is by
                                   # session-id (see Phase-2 note below).
+worker-mcp-args: <cli args or empty>
+                                  # Phase-1; MCP-inheritance snapshot from
+                                  # orch-worker-mcp-args.sh (ZYZ_WORKER_MCP policy),
+                                  # taken once at container build time. The L2 driver
+                                  # appends this verbatim to the `claude` launch
+                                  # command, and the Phase-2 `## Recovery` --resume
+                                  # command embeds it — so a crash-resumed worker
+                                  # keeps the same MCP policy instead of silently
+                                  # re-inheriting the host's full mcpServers.
+                                  # Default policy `none` renders `--strict-mcp-config`
+                                  # (zero MCP servers); `inherit` renders empty.
 reuse-from:                       # Phase-1; empty = plain spawn (orch-spawn-worker.sh),
                                   # non-empty = the old task-id whose container this task
                                   # reuses (orch-reuse-worker.sh). Snapshot of the new task's
@@ -60,6 +71,8 @@ first-seen-iso:                   # Phase-2; set when the trio above first compl
   Phase-1 fields are deterministic and never empty:
     task-id, spawn-iso, tmux-session, tmux-window-id, tmux-pane-id, shell-pid,
     worktree, source-repo, branch, base, plugin-root, encoded-cwd.
+  `worker-mcp-args` is also Phase-1 but MAY be legitimately empty (that is the
+  rendered form of ZYZ_WORKER_MCP=inherit).
   For a multi-repo task the writer ALSO emits the numbered group
     worktree-N, source-repo-N, branch-N, base-N   (N = 2..repo-count),
   one contiguous block per extra repo, with fully resolved values (defaults

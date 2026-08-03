@@ -34,6 +34,7 @@ Helper scripts (the orchestrator calls these — do not re-implement them):
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-spawn-worker.sh <task-id> <list-dir>` (builds the container only — one worktree per declared repo + a single tmux session + heartbeat + dispatch.md Phase-1 incl. the numbered `worktree-N`/`source-repo-N`/`branch-N`/`base-N` group for a multi-repo task; never starts claude)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-reuse-worker.sh <task-id> <list-dir>` (used instead of spawn when the master entry declares `reuse-from`: associates a completed task's tmux session and/or whole worktree set to this task; also never starts claude)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-build-env.sh` (prints the Go build I/O optimization snippet that spawn / worktree-scope reuse inject into the worker pane; not called directly by the orchestrator)
+- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-worker-mcp-args.sh` (prints the MCP-isolation CLI args from the `ZYZ_WORKER_MCP` policy — default `none` = `--strict-mcp-config` = worker gets zero MCP servers; spawn/reuse snapshot the output into `dispatch.md` `worker-mcp-args:`, which the L2 driver appends to the claude launch command; not called directly by the orchestrator)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-check-worker.sh <task-id> <list-dir>`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-heartbeat-daemon.sh <heartbeat-file> <interval-sec>` (run inside the worker's tmux pane; not invoked directly by the orchestrator)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-cleanup-worker.sh <task-id> <list-dir> [--force]`
