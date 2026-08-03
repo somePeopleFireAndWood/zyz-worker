@@ -589,7 +589,15 @@ TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 # `claude --resume` command use the SAME args — a resume that silently
 # re-inherited the host's full mcpServers would re-pay the per-worker MCP
 # baseline the policy exists to eliminate (~745 MB/worker measured).
-WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null || true)"
+# Fail CLOSED, not open: an empty value renders as `inherit`, so a missing or
+# non-executable helper would silently restore the very full-MCP inheritance
+# this feature removes — and nothing downstream could tell that apart from a
+# deliberate `inherit`. Degrade to the safe default (`--strict-mcp-config`,
+# zero MCP) and warn, matching the helper's own invalid-path behavior.
+if ! WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null)"; then
+    echo "warning: orch-worker-mcp-args.sh missing or failed; defaulting to --strict-mcp-config (zero MCP). Set ZYZ_WORKER_MCP=inherit explicitly if the worker needs the host's MCP servers." >&2
+    WORKER_MCP_ARGS="--strict-mcp-config"
+fi
 cat > "$TMP_DISPATCH" <<EOF
 ---
 task-id: $TASK_ID

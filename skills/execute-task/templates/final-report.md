@@ -16,11 +16,14 @@
 
 <!-- Enumerate every aggregate category actually executed; each ran-with-result or skipped-with-reason (matches status ## Final Aggregate Testing). The category list derives from the design ## Testing Plan — add lines for user-named categories; the four below are standing examples, not a closed enumeration. Each `ran:` line carries mutation evidence: a coverage claim without a killed mutation is "ran", not "tested". -->
 
-- Unit: (ran: <result> | skipped: <reason>) — Mutation evidence: (killed/survived tally | none: <reason>)
-- E2E: (ran: <result> | skipped: <reason>) — Mutation evidence: (…)
-- Regression: (ran: <result> | skipped: <reason>) — Mutation evidence: (…)
-- Pressure: (ran: <result> | skipped: <reason> | n/a) — Mutation evidence: (…)
-- <design-Testing-Plan category>: (one line per additional category the design names)
+- Unit: (ran: <result> | skipped: <reason>) — Mutation evidence: (killed/survived tally | none: <reason>) — Coverage ceiling: (what this layer structurally cannot reach)
+- E2E: (ran: <result> | skipped: <reason>) — Mutation evidence: (…) — Coverage ceiling: (…)
+- Regression: (ran: <result> | skipped: <reason>) — Mutation evidence: (…) — Coverage ceiling: (…)
+- Pressure: (ran: <result> | skipped: <reason> | n/a) — Mutation evidence: (…) — Coverage ceiling: (…)
+- <design-Testing-Plan category>: (one line per additional category the design names, same three fields)
+
+<!-- Coverage ceiling is required per category because same-shaped layers are not substitutes: frontend unit tests cannot reach real backend contracts and browser e2e cannot enumerate precision/boundary cases, so "we ran e2e" never discharges what the unit layer owed. Without the ceiling written down, a reader treats any one green category as covering the others. -->
+
 
 ## Weakest Link
 

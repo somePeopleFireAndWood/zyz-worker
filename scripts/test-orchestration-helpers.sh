@@ -213,6 +213,7 @@ HELPER_SCRIPTS=(
     "scripts/orch-merge-and-cleanup.sh"
     "scripts/orch-merge.sh"
     "scripts/orch-build-env.sh"
+    "scripts/orch-worker-mcp-args.sh"
 )
 
 AGENT_FILES=(

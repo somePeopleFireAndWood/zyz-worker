@@ -610,7 +610,13 @@ TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 # new-session reuse branches. A same-claude reuse keeps the already-running
 # process, whose MCP set was fixed at ITS launch — recorded here anyway so the
 # recovery command and any future restart use the current policy.
-WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null || true)"
+# Fail CLOSED, same reasoning as spawn's call site: an empty value renders as
+# `inherit`, so a missing/non-executable helper would silently restore full MCP
+# inheritance and be indistinguishable from a deliberate `inherit`.
+if ! WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null)"; then
+    echo "warning: orch-worker-mcp-args.sh missing or failed; defaulting to --strict-mcp-config (zero MCP). Set ZYZ_WORKER_MCP=inherit explicitly if the worker needs the host's MCP servers." >&2
+    WORKER_MCP_ARGS="--strict-mcp-config"
+fi
 cat > "$TMP_DISPATCH" <<EOF
 ---
 task-id: $TASK_ID
