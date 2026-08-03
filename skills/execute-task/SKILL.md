@@ -154,7 +154,11 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 1. Create or identify a task id.
 2. Create a task directory, preferably `.zyz-worker/tasks/<task-id>/`.
 3. Create a status file from `templates/task-status.md`, named `status.md` inside the task directory. This is the single mandatory overall task status file. The filename `status.md` is load-bearing: the watchdog layer resolves the overall status file as `<task-dir>/status.md`, so a differently-named file leaves L1/L3/L4 freshness enforcement silently inert (see `## Watchdog Enforcement`).
-4. Write the task id (a single line) into the pointer file `.zyz-worker/current-task` at the project root. This pointer is what the plugin's watchdog hooks and monitor use to locate the active task; without it the entire watchdog layer silently no-ops (see `## Watchdog Enforcement`). If the task directory is not `.zyz-worker/tasks/<task-id>/`, write the directory's path (relative to project root, or absolute) instead of the bare id.
+4. Write the task id (a single line) into the pointer file `.zyz-worker/current-task` **under the session cwd** — the directory this conversation is running in, which is what the hooks receive as `cwd`. "Project root" is ambiguous here and has caused a real outage: `git rev-parse --show-toplevel` returns the *worktree* root inside a linked worktree, so a task run in a worktree created by the `git-worktree` skill (which places worktrees OUTSIDE the main checkout and does not cd into them) ends up with its pointer somewhere the session cwd is not inside.
+   - **If the task directory is not under the session cwd, the pointer's contents MUST be an ABSOLUTE path to the task directory.** A bare id (or a relative path) is resolved against the directory holding the pointer, so it cannot reach across trees.
+   - The resolver does try sibling git worktrees of the same repo as a fallback, but that is a safety net with a real ambiguity (two concurrent runs in one repo can attach to the wrong task); a correctly-placed pointer is still the contract.
+   - This pointer is what the plugin's watchdog hooks and monitor use to locate the active task; without a resolvable pointer the entire watchdog layer silently no-ops (see `## Watchdog Enforcement`).
+   - **Verify the layer actually armed.** After a few tool calls (the heartbeat hook is async, so it is not written on the very first one), confirm `<task-dir>/runtime/agents/main.heartbeat` exists. If it does not, the watchdog is inert: say so explicitly in the status file and to the user rather than proceeding as if protected — an unarmed watchdog is indistinguishable from a healthy quiet one, which is how a full task once ran with every layer inert and two dead subagents unreported.
 5. Record the task name, phase, known inputs, open questions, and current assumptions.
 6. Record the user's full, final goal in the status file `## Total Goal` so the overall target cannot drift later (see Total Goal Fidelity).
 
@@ -235,7 +239,7 @@ When split, the main agent records SubTasks in the status file `## SubTasks` sec
 3.5. **Freeze.** Before dispatching review, obtain that lane's implementation-agent workspace-frozen declaration and record it (with the frozen file set) in the status file; the reviewed files must not change during the review. review-agent records mtimes/hashes at start and re-checks at finish — a mid-review change voids the review, which is reported for re-dispatch, not patched. Without this, in parallel execution the review's conclusion may describe a tree that no longer exists.
 4. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Implementation Review > Rejected Suggestions`.
 5. Loop 2-4 until tests pass (with mutations killed) and review-agent reports no changes for this SubTask.
-6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
+6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true. **Flipping any one of these bits is not complete until the MAIN status file is written — the write is part of the transition, not a follow-up.** Do not batch several flips and reconcile later, and do not update only the SubTask's own file: a main file that says "not done" while `subtasks/*.md` say "done" is the single most expensive failure mode for a recovering session, because the main file is the first thing it reads. Observed: a 9-SubTask task whose main file froze at ST1 while all nine were implemented, tested, reviewed and pushed — recovery misjudged the interruption point and had to reconstruct it from `git log` plus transcripts, and treated every status conclusion as untrustworthy.
    - `Coded: true` when implementation is complete.
    - `Tested: true` when this SubTask's tests pass **and every mechanism claimed as covered has a recorded killed mutation** (from the executed manifest). Green alone is "ran", not "tested" — measured reality: the no-op assertions that green hides are found by mutation injection and not by review.
    - `Reviewed: true` when review-agent reports no changes for this SubTask (rejected findings allowed if reasons are recorded) AND that review registered every coverage dimension (§3.C step 2). A review whose dimensions are unregistered — for example one that only reported its worst few findings — does not satisfy this flag. Like the per-iteration test runs, this per-SubTask review is not the aggregate registration gate; §3.C and §4 still apply.
@@ -271,9 +275,21 @@ The final report's `## Tests` section must enumerate the aggregate categories ac
 8. Advance to `phase=done` ONLY when the user confirms — either directly in the worker window/conversation (standalone or attached), or via an L1-relayed confirmation message arriving in the pane. The worker never self-advances to `done`. On user confirmation, flush `phase=done` (atomically, valid frontmatter) in orchestrated mode. `done` is the sole non-reversible absorbing terminal.
 9. Ask the user whether to delete the task status files.
 
+## Resuming An Existing Task
+
+When picking up a task that was already in flight (a frozen or restarted session), the status file is the FIRST thing you read — and it is the thing most likely to be stale, because it only advances when somebody remembers to write it. Before trusting any of it, cross-check it against sources that advance by themselves:
+
+1. **`git log` / `git status`** for the task's branch. Commits are written by the work itself, so they cannot lag the way the status file can. A `Coded: false` SubTask with commits implementing it means the status file is behind, not that the work is missing.
+2. **`subtasks/*.md` against the main file.** These are written by different actors at different times; when they disagree, the more advanced one is usually right, and a SubTask file can also contradict *itself* (one section marking a piece complete while a later line still lists it as pending).
+3. **`<task-dir>/runtime/agents/*.heartbeat`** to tell "lost" from "still running". A `.start` with no `.done` and a heartbeat that is still advancing means that role is ALIVE — re-dispatching it would put two agents in the same workspace writing the same files. A heartbeat that stopped long ago means it really is gone. This is what the L0 layer is for; if `runtime/` does not exist at all, the watchdog never armed (see §1 step 4) and you have no liveness evidence — say so rather than guessing.
+
+If the cross-check finds a conflict, write the reconciled state into the main status file immediately and mark plainly which parts were reconstructed from code rather than recorded. Do not silently continue from a file you have just proven wrong; the next reader will trust it exactly as much as you did.
+
 ## Long-Running Work
 
 During long implementation phases, the main agent should keep the status file current. Record the active role, latest output, blocked items, next action, and restart notes.
+
+**The status file is only worth what its last write is worth.** Every state transition writes through to the main file as part of the transition (§3.B step 6); it is never a separate bookkeeping pass to be done "when there is a pause". Two-layer drift — main file frozen while `subtasks/*.md` advance — is the specific shape that makes a recovering session misjudge where the work stopped.
 
 If a subagent is stuck, interrupted, or silent for too long, the main agent restarts that role as a **continuation, never a redo**. Under long multi-instance runs, timeouts are the norm, not the exception; default-redo costs O(lanes × timeouts) repeated work AND leaves dirty data that masquerades as regressions. Three steps:
 

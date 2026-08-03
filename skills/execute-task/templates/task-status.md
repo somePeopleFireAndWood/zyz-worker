@@ -141,6 +141,13 @@ Shared-file hotspots: (declared at dispatch time when parallel SubTasks append t
 
 - when | role | reason | artifacts already on disk (from `git status` + lease table) | resume-point | cleanup done
 
+## Status Freshness
+
+- Updated At: (ISO timestamp of the last write to THIS file — a transition is not complete until this advances)
+- Reconciled From Code At: (when a resuming session last cross-checked this file against `git log` / `subtasks/*.md` / `runtime/agents/*.heartbeat`; empty = never)
+- Fields Reconstructed From Code: (which entries below were rebuilt from commits/transcripts rather than recorded live — a later reader must know which parts were never written by the actor that did the work)
+- Known Divergences: (any place this file still disagrees with the git history or a SubTask file, and which one is authoritative)
+
 ## Pre-Delivery Checklist
 
 (Answer EVERY item before §4 delivery — per item, with evidence; an unanswered item blocks delivery the same way an unregistered test category does. Batching into "the rest are fine" is prohibited. Items marked (∥) apply only when ≥2 lanes ran concurrently.)
@@ -168,6 +175,8 @@ C. Environment and coordinates
 16. Any state changed via non-production write paths (raw SQL / direct file / cache poke) had the paired production invalidation performed (advance seq / emit event / clear key)?
 17. (∥) Full-suite greens carry before-and-after compile-cleanliness checks (tree not swapped mid-run)?
 18. Interrupted runs' dirty data cleaned before rerun?
+18b. Does this file agree with `git log` and with every `subtasks/*.md`? (If this task was ever resumed: was the cross-check done, and are reconstructed fields marked in `## Status Freshness`?) A main file that lags its own SubTask files is what makes the next recovery expensive.
+18c. Was the watchdog confirmed ARMED for this task (`<task-dir>/runtime/agents/` exists with advancing heartbeats)? If not, say so — an unarmed layer reported nothing all task, so no conclusion here rests on it.
 
 D. Attribution and collaboration
 19. Every failure attributed in order (change-surface causality → tooling → concurrent edit → real regression), rerun used only to prove flakiness, never innocence?
