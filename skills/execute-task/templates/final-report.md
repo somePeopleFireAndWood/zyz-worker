@@ -14,12 +14,17 @@
 
 ## Tests
 
-<!-- Enumerate every aggregate category actually executed; each ran-with-result or skipped-with-reason (matches status ## Final Aggregate Testing). -->
+<!-- Enumerate every aggregate category actually executed; each ran-with-result or skipped-with-reason (matches status ## Final Aggregate Testing). The category list derives from the design ## Testing Plan — add lines for user-named categories; the four below are standing examples, not a closed enumeration. Each `ran:` line carries mutation evidence: a coverage claim without a killed mutation is "ran", not "tested". -->
 
-- Unit: (ran: <result> | skipped: <reason>)
-- E2E: (ran: <result> | skipped: <reason>)
-- Regression: (ran: <result> | skipped: <reason>)
-- Pressure: (ran: <result> | skipped: <reason> | n/a)
+- Unit: (ran: <result> | skipped: <reason>) — Mutation evidence: (killed/survived tally | none: <reason>)
+- E2E: (ran: <result> | skipped: <reason>) — Mutation evidence: (…)
+- Regression: (ran: <result> | skipped: <reason>) — Mutation evidence: (…)
+- Pressure: (ran: <result> | skipped: <reason> | n/a) — Mutation evidence: (…)
+- <design-Testing-Plan category>: (one line per additional category the design names)
+
+## Weakest Link
+
+<!-- Required. Where is a no-op assertion most likely hiding in this delivery: why that spot is suspected, what currently guards it, whether a more direct observation point exists. If something sits at the observation-granularity ceiling, say why — otherwise the next reader assumes laziness rather than limits. The author knows the argument's thinnest point better than any reviewer; leaving this section empty withholds that information, and a role that reports its own tooling failures RAISES the credibility of its other conclusions. -->
 
 ## Review Result
 

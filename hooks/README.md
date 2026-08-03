@@ -82,7 +82,9 @@ Runtime bookkeeping lives under `<task-dir>/runtime/`:
   Rate-limited per audience via `runtime/nag/<audience>.last`.
 - Failure behavior: fail open; advisory only, never blocks.
 - Supported agents: main agent, implementation-agent, test-agent
-  (review-agent is excluded — it must not write files).
+  (review-agent is excluded — it owns no status file to flush; its Bash
+  access is for read-only reruns and throwaway mutations that must be
+  restored, never for deliverable writes).
 
 ## scripts/post-agent-flush.sh — L1
 

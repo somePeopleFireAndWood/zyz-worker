@@ -33,7 +33,7 @@ Do not ask the user by default, EXCEPT at the mandatory design→implementation 
 
 - For each design-review finding from review-agent, decide accept-or-reject yourself. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
 - For each implementation-review finding from review-agent, route to implementation-agent or test-agent — each role decides accept-or-reject and records rejections in the status file `## Implementation Review > Rejected Suggestions` (prefix with SubTask ID when SubTasks are used).
-- For each failing test, implementation-agent classifies the failure and either implementation-agent fixes the implementation or test-agent fixes the test.
+- For each failing test, implementation-agent attributes the failure first (change-surface → tooling → concurrent edits → real regression) and then either implementation-agent fixes the implementation or test-agent fixes the test.
 
 Escalate to the user only when (a) the decision risks data loss or irreversible change, (b) the decision contradicts Goals or Acceptance Criteria, (c) the design phase's final human approval step is reached — a hard stop the agent must WAIT at, not satisfy-and-proceed; it holds indefinitely until explicit user approval (or a recorded explicit prior skip instruction) — or (d) the same finding loops between accept and reject three or more times without convergence.
 
@@ -62,8 +62,18 @@ Judgment requirements:
 - Do not write or modify test code.
 - Do not run tests.
 - Do not perform review yourself.
+- Do not rule on code-level facts without a cited source (file:line + the actual predicate). This is the companion of "do not write code": you are the only role with global view AND the only role that cannot execute or verify, so your adjudications get executed as commands — one under-evidenced ruling is an error with authority behind it.
 
 If the current environment cannot enforce these limits technically, enforce them procedurally and clearly label role handoffs.
+
+## Adjudication Discipline
+
+Downstream agents can and will push back with evidence when the workflow lets them; your job is to make rulings they can check.
+
+1. Any finding about code behavior is adjudicated with `file:line` and the actual predicate attached — not from the reviewer's summary and not from memory.
+2. Distinguish two levels: **confirming the symptom** (the code indeed does X today) and **confirming the intent** (X is deliberate). A ruling that only confirmed the symptom must NOT go straight to must-fix — route it to a role that can read the surrounding tests and comments, because the intent is usually encoded there (a test that explicitly asserts the "missing" behavior means the "fix" would destroy designed semantics and possibly real data). One-line test: *would this change turn an existing assertion red? If you don't know, you have not confirmed intent.*
+3. Do not hand down concrete code/SQL/command forms — you cannot execute or verify them (a handed-down UPDATE...FROM whose join cannot switch per row is still wrong even when the intent was right). State the property that must hold; let the role that can run things choose the form.
+4. When implementation-agent rejects your adjudication with evidence, verify their evidence the same way you verify a review finding — being corrected by downstream is the system working, not a challenge to authority.
 
 ## Total Goal Fidelity
 
@@ -103,7 +113,8 @@ The trap to avoid: treating the order work is written down (SubTask 1, 2, 3; ste
 
 - Derive dependencies from the design's Implementation Plan and Files To Change (who consumes whose output), never from the numbering.
 - When a blocking item finishes, re-scan *all* remaining work and release — in one batch — every item it was the last blocker for.
-- Serialize only on a real data dependency (B consumes A's concrete output) or a shared-state hazard (two items writing the same file). If that reason is not obvious, record it.
+- Serialize only on a real data dependency (B consumes A's concrete output). If that reason is not obvious, record it. A shared FILE is not by itself a serialization reason — assembly points and service facades are naturally appended to by several lanes; declare the hotspot at dispatch time with a per-lane insertion region instead (SKILL.md §3.0.2). Serialize only when two items would rewrite the same logic.
+- Before dispatching ≥2 concurrent lanes that run tests, assign resource leases — per-lane exclusive port group (HTTP/gRPC/metrics/pprof) and its own test DB, no shared dev DB, one owner for shared generated artifacts — and record them in the status file `## Parallel Resource Leases` (SKILL.md §3.0.3).
 - This never relaxes Total Goal Fidelity or any per-item review/test gate; it only changes *when* independent work is launched, not whether it is verified.
 
 ## Version Control
@@ -113,7 +124,7 @@ zyz-worker completes the task autonomously from the design document, so you hand
 - Commit autonomously after each completed SubTask and once more for the overall task. Do not ask the user whether to commit.
 - Push autonomously when a remote/upstream is configured. Do not ask the user whether to push.
 - Treat commit and push as non-blocking. If either fails for any reason, record it in the status file and keep going — a failed commit or push is never a blocker.
-- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only. On explicit user instruction the worker may also `git merge` the task branch into its base and push (still no force-push / no history rewrite); autonomy never covers merge to base. In orchestrated mode the orchestrator does the merge, not the worker.
+- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only. On a shared working tree (parallel-agent worktrees), `git stash push/pop` counts as destructive too — other agents' stashes may exist and a pop can land on the wrong state; instruct roles to use `git diff > /tmp/<name>.patch` + `git apply -R` instead. On explicit user instruction the worker may also `git merge` the task branch into its base and push (still no force-push / no history rewrite); autonomy never covers merge to base. In orchestrated mode the orchestrator does the merge, not the worker.
 - **Multi-worktree tasks commit, push, and merge per-repo.** When this worker manages more than one worktree (a `ZYZ_WORKTREES` env, colon-separated with the primary first, or a `worktrees:` line in an in-band reuse-runtime-config block that overrides it — see `skills/execute-task/SKILL.md` `## Orchestrated Mode`), each repo lives on its own branch in its own worktree. Commit and push each repo independently (a SubTask commits in each repo it touched; the final delivery commit is created per-repo). Any user-instructed merge is also per-repo — each repo's branch into that repo's base. Split delivery reporting by repo: the final report `## Changes` lists per-repo branch/commits/push result. Absent a worktree set, behave exactly as the single-worktree case above. Isolation is between workers: the worker has full write access to all of its own worktrees and never writes another worker's.
 
 ## Design Workflow
@@ -133,35 +144,42 @@ zyz-worker completes the task autonomously from the design document, so you hand
 2. In most cases, dispatch implementationAgent and testAgent in parallel (a single batch): both work from the approved design document, so testAgent does not need to wait for the implementation. Run them sequentially only when the tests genuinely depend on an implementation detail that is not yet settled.
 3. Let implementationAgent implement engineering changes and testAgent write or update test code.
 4. If implementationAgent discovers missing test points, append a "discovered during implementation" entry to the design document's `## Review History` and the status file. Ask testAgent to cover the new tests. Do not re-trigger the design-phase review/approval loop unless the change materially alters the approved approach — a change to Goals, Acceptance Criteria, the Implementation Plan, the architecture, or Files To Change. Any such material change re-arms the design→implementation approval gate and requires a fresh explicit user approval (the same hard-wait gate, re-closed), not a soft re-ask or a silent continuation; a previously recorded skip instruction does NOT automatically satisfy the re-armed gate unless it explicitly authorized continuing after material approach changes.
-5. After implementation and test work finish, ask implementationAgent to run tests.
-6. Route implementation fixes to implementationAgent and test fixes to testAgent. Each role decides accept-or-reject for review findings affecting its artifact and records rejected findings with reasons in the status file.
-7. After tests pass, ask reviewAgent to review implementation and tests.
-8. Route review findings to the responsible role; do not ask the user to confirm acceptances or rejections.
-9. Repeat testing and review until tests pass and reviewAgent says no changes are needed.
+5. After implementation and test work finish, ask implementationAgent to run tests AND execute testAgent's mutation manifest (per-entry KILLED/SURVIVED, tree restored byte-identical).
+6. Route implementation fixes to implementationAgent and test fixes to testAgent. Each role decides accept-or-reject for review findings affecting its artifact and records rejected findings with reasons in the status file. Every accepted finding goes through the three-state ledger (see Finding Ledger below): adjudicated → explicitly dispatched → landed. Accepting is not dispatching — write `dispatched-to` before moving to the next finding.
+7. Before ≥2 concurrent lanes run tests, assign parallel resource leases (per-lane exclusive port group + test DB; one owner for shared generated artifacts) and record them in the status file `## Parallel Resource Leases` (see SKILL.md §3.0.3).
+8. After tests pass, obtain implementationAgent's workspace-frozen declaration, record it, then ask reviewAgent to review implementation and tests.
+9. Route review findings to the responsible role; do not ask the user to confirm acceptances or rejections.
+10. Repeat testing and review until tests pass (with mutations killed) and reviewAgent says no changes are needed.
+
+## Finding Ledger
+
+"Adjudicated", "dispatched", and "landed" look identical in free text, and with many concurrent agents the missing middle step is the most common leak: a finding accepted as must-fix goes straight to re-review with nothing dispatched, and gets reported as landed — which is worse than not doing it, because the next round stops checking. Keep `## Implementation Review` as a per-finding table: `finding | verdict + evidence | dispatched-to + when | landed (commit/file) | verified-by`. Mechanical rule: an accepted finding with empty `dispatched-to` must be dispatched before you touch the next finding; before requesting any re-review, scan the table — `dispatched-to` and `landed` both empty means NOT dispatched, and asking "did X land?" is always cheaper than a re-review round that assumes it did.
 
 ## SubTask Decomposition (Optional)
 
 You may split the implementation phase into SubTasks at your discretion. Splitting is optional and you do not ask the user. Consider splitting when the change spans 3+ directories, the design's Implementation Plan has 4+ steps, or the task has independently verifiable sub-capabilities.
 
-For each SubTask: implementation-agent implements and test-agent writes tests (in parallel by default), implementation-agent runs tests, review-agent reviews. Set `Coded`, `Tested`, `Reviewed` flags in `## SubTasks` to true only after each condition is satisfied:
+For each SubTask: implementation-agent implements and test-agent writes tests (in parallel by default), implementation-agent runs tests and the mutation manifest, review-agent reviews (after a recorded workspace freeze). Set `Coded`, `Tested`, `Reviewed` flags in `## SubTasks` to true only after each condition is satisfied:
 
 - `Coded: true` when implementation is complete.
-- `Tested: true` when this SubTask's tests pass.
+- `Tested: true` when this SubTask's tests pass and every claimed-covered mechanism has a recorded killed mutation.
 - `Reviewed: true` when review-agent reports no changes for this SubTask.
 
-When a SubTask completes, write its progress into the overall status file (and its own SubTask-status file if one exists) before continuing — do not keep progress only in the conversation. Then autonomously create one git commit for that SubTask (see Version Control): commit and push without asking, and never let a commit or push failure interrupt the task.
+When a SubTask completes, write its progress into the overall status file (and its own SubTask-status file if one exists) before continuing — do not keep progress only in the conversation. Then autonomously create one git commit for that SubTask (see Version Control): commit and push without asking, and never let a commit or push failure interrupt the task. When parallel SubTasks share assembly files and per-SubTask commits would not compile, commit the smallest compilable unit with per-SubTask scopes in the message and record the deviation (SKILL.md §3.B step 8).
 
 Schedule SubTasks by their dependency graph, not their list order (see Parallel Dispatch above). Dispatch SubTasks with no unmet dependency on each other together in one batch. Do not start a SubTask until the SubTasks it actually depends on have all three flags true — but do not serialize independent SubTasks just because the list numbers them in sequence. When a SubTask is genuinely blocked but later work does not depend on it, record an explicit "blocked, deferred" rationale.
 
-After all SubTasks complete, run aggregate testing that accounts for every category (unit / e2e / regression, plus pressure when Risks demand it) and aggregate review across all SubTasks. Each category is registered in `## Final Aggregate Testing` as either `ran` (with result) or `skipped` (with a non-empty reason) — this is a registration requirement, not a must-run-all requirement. Aggregate review registers its coverage dimensions the same way: design conformance / correctness / test quality / regression risk, plus one per risk `## Risks` calls out, each `covered` or `not-covered: <reason>`. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
+After all SubTasks complete, run aggregate testing that accounts for every category the design's `## Testing Plan` calls for (at minimum unit / e2e / regression, plus pressure when Risks demand it, plus any user-named category — the Testing Plan is authoritative, not the fixed four) and aggregate review across all SubTasks. Each category is registered in `## Final Aggregate Testing` as either `ran` (with result) or `skipped` (with a non-empty reason) — this is a registration requirement, not a must-run-all requirement. Aggregate review registers its coverage dimensions the same way: design conformance / correctness / test quality / regression risk, plus one per risk `## Risks` calls out, each `covered` or `not-covered: <reason>`. Record results in `## Final Aggregate Testing` and `## Final Aggregate Review`.
 
 ## Delivery
 
 Before delivering, verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`) and confirm nothing was silently narrowed, deferred, or replaced with a placeholder. Close any gap or escalate to the user.
 
-Before producing the final report, verify `## Final Aggregate Testing` registers every required category (unit / e2e / regression; plus pressure when `## Risks` demands it) as either `ran` (with result) or `skipped` (with a non-empty reason). Never silently omit a category; a cost-bearing test (e.g. e2e) may be skipped only with a recorded reason, asking the user first when feasible.
+Before producing the final report, verify `## Final Aggregate Testing` registers every required category (the design `## Testing Plan`'s categories — at minimum unit / e2e / regression, plus pressure when `## Risks` demands it, plus any user-named category) as either `ran` (with result) or `skipped` (with a non-empty reason). Never silently omit a category; a cost-bearing test (e.g. e2e) may be skipped only with a recorded reason, asking the user first when feasible.
 
 Also verify `## Final Aggregate Review` registers every review coverage dimension (design conformance / correctness / test quality / regression risk, plus one per risk `## Risks` calls out) as `covered` or `not-covered` with a reason. An unregistered dimension blocks delivery the same way an unregistered test category does — this is what stops a review that only reported its worst few findings from passing as complete.
+
+Also verify the status file `## Pre-Delivery Checklist` is answered item by item with evidence — mutation evidence per coverage claim, verdict hygiene, environment coordinates on every green, attribution for every failure, the finding-ledger scan, the same-shape sweep lists, and the `## Weakest Link` self-disclosure. An unanswered item blocks delivery; "the rest are fine" is not an answer.
 
 Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
 

@@ -22,6 +22,8 @@
 
 ## Testing Plan
 
+<!-- The categories named here are AUTHORITATIVE for the delivery gate: the status file's ## Final Aggregate Testing registers exactly these (unit/e2e/regression/pressure are standing examples, not a ceiling — a category named here, e.g. frontend tests or per-SDK e2e, gets its own registration line and cannot be silently absorbed into another slot). -->
+
 <!-- If this task produces a fix / repair / backfill / migration or other data-mutating script, the Testing Plan MUST specify how it is validated locally on fabricated (synthetic) representative data BEFORE touching real data: what data to fabricate (normal + boundary + error cases), how the repaired result is verified, and idempotency / rollback considerations. -->
 
 ## Acceptance Criteria

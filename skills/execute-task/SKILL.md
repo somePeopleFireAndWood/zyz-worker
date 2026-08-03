@@ -75,7 +75,7 @@ By default, do not ask the user. Inside the workflow loops, each role decides fo
 
 - During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
 - During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Implementation Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
-- When a test fails, implementation-agent decides whether the failure is an implementation bug or an invalid test, then implementation-agent fixes implementation bugs and test-agent fixes invalid tests.
+- When a test fails, implementation-agent attributes it in order — change-surface causality, tooling failure, someone else's in-flight edit / environment, and only then a real regression (its `## Test Failure Handling`) — then implementation-agent fixes implementation bugs and test-agent fixes invalid tests. Under parallel execution the third bucket is the most frequent; forcing every failure into "my bug or their bad test" makes agents fix correct code.
 
 Escalate to the user only when:
 
@@ -130,7 +130,7 @@ zyz-worker is designed to complete the whole task autonomously from the design d
 - Commit autonomously. Create a commit after each completed SubTask, and a final commit for the overall task. Do not stop to ask the user whether to commit.
 - Push autonomously when a remote/upstream is configured. Do not stop to ask the user whether to push.
 - Commit and push are non-blocking. If a commit or push fails (no remote, auth, hook, conflict, or any other reason), record the failure in the status file and continue the task. A failed commit or push is never a blocker and must not interrupt or pause the workflow.
-- Still respect destructive-action safety: do not force-push, reset --hard, or rewrite published history on your own. Autonomy here covers ordinary `git commit` and `git push`, not destructive operations.
+- Still respect destructive-action safety: do not force-push, reset --hard, or rewrite published history on your own. On a shared working tree (parallel-agent worktrees), `git stash push/pop` is also treated as destructive — another agent's stash may be present and a pop can land on the wrong state (a conflicted `go.mod` still BUILDS but breaks `go test` at module parse, which reads as "their code is broken"); use `git diff > /tmp/<name>.patch` + `git apply -R` instead. Autonomy here covers ordinary `git commit` and `git push`, not destructive operations.
 - On explicit user instruction (via conversation in standalone mode, or via a matching `## Pending Merge Approval` token in orchestrated mode), the worker MAY also `git merge` the task branch into its base and push the result — this still respects the no-force-push / no-history-rewrite limit. Autonomy never covers merge to base; only user-instructed merges are allowed. In orchestrated mode the orchestrator performs the merge (the worker does not), to avoid both layers writing the base concurrently. For a multi-worktree task each repo merges on its own branch into its own base — the merge is per-repo (see the multi-worktree rules under `## Orchestrated Mode`).
 
 ## Role Boundaries
@@ -196,18 +196,30 @@ Concretely:
 
 - Derive dependencies from the design's Implementation Plan and Files To Change (who reads/writes whose output), never from the numbering.
 - When a blocking item completes, re-scan *all* remaining work and release every item it was the last blocker for — in one batch, not one at a time.
-- Run items sequentially only when there is a real data dependency (item B consumes item A's concrete output) or a shared-state hazard (two items writing the same file). Record that reason if it is not obvious.
+- Run items sequentially only when there is a real data dependency (item B consumes item A's concrete output). Record that reason if it is not obvious.
+- A shared FILE is not by itself a serialization reason. Assembly points (`main.go` wiring, service facades) are naturally appended to by several parallel SubTasks; serializing on them collapses genuinely independent work into a chain. Instead, declare the hotspot at dispatch time: list the shared files and give each lane its own insertion region; each agent appends only within its region and never reorders others' code. Serialize only when two items would REWRITE the same logic, not merely touch the same file.
 - Parallelism is a scheduling technique only; it never relaxes Total Goal Fidelity, the per-item review/test gates, or the dependency correctness below.
+
+#### 3.0.3 Parallel resource leases (mandatory at ≥2 concurrent lanes)
+
+Under parallel execution, "green" is a claim about an environment, and shared environments make both false reds and — worse — false greens. Two measured failure classes: parallel lanes truncating shared dev-DB tables produce waves of spurious failures that look like real regressions (deadlocks, vanishing rows, "green → 3 red → green" on the same command); and a port collision does not even error — a wrong port env name is silently ignored, the process binds the default port, and the probe happily tests SOMEONE ELSE'S server (a DB collision fails loudly; a port collision fails silently).
+
+Before dispatching ≥2 concurrent lanes, the main agent assigns leases and records them in the status file `## Parallel Resource Leases`:
+
+- Each lane gets an exclusive FULL port group (HTTP / gRPC / metrics / pprof — pprof is the most-missed) and its own test database.
+- Sharing a dev DB across lanes is prohibited; full-table cleanup (TRUNCATE and friends) against any shared DB is prohibited.
+- After starting a service, the lane must positively confirm it is talking to its own instance (probe an identifying endpoint), not assume.
+- Exactly one lane per batch owns regenerating shared build artifacts (bundle/dist); generated-file churn from a non-owner lane turns formatting checks red for reasons unrelated to any code change.
 
 #### 3.A No-split path
 
 When the task is not split, run a single iteration:
 
 1. implementation-agent implements the engineering changes, and test-agent writes or updates tests from the design document. Run these two in parallel by default (see §3.0.1).
-2. implementation-agent runs the tests.
-3. If tests fail, implementation-agent classifies the failure; implementation-agent fixes implementation bugs and test-agent fixes invalid tests.
-4. After tests pass, review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
-5. Repeat 2-4 until tests pass and review-agent reports no changes.
+2. implementation-agent runs the tests, and executes test-agent's mutation manifest (each coverage claim's mutation applied → named cases red → restored byte-identical).
+3. If tests fail, implementation-agent attributes the failure FIRST — change-surface causality, then tooling, then concurrent edits/environment, then real regression (see its `## Test Failure Handling`) — and only then fixes: implementation-agent fixes implementation bugs and test-agent fixes invalid tests. The parallel-execution case (someone else's in-flight edit) is a real third bucket, not a variant of "invalid test".
+4. After tests pass, obtain implementation-agent's workspace-frozen declaration, record it in the status file, then review-agent reviews implementation and tests. Each role decides accept-or-reject for findings affecting its artifact.
+5. Repeat 2-4 until tests pass (with mutations killed) and review-agent reports no changes.
 
 Then proceed to §3.C aggregate testing and aggregate review. Per-iteration test runs (§3.A step 2 / §3.B step 2) are not the aggregate gate; before delivery every category must be registered ran-or-skipped at §3.C and verified at §4.
 
@@ -216,29 +228,30 @@ Then proceed to §3.C aggregate testing and aggregate review. Per-iteration test
 When split, the main agent records SubTasks in the status file `## SubTasks` section. For each SubTask:
 
 1. implementation-agent implements that SubTask's engineering changes, and test-agent writes or updates tests for that SubTask. Run these two in parallel by default (see §3.0.1).
-2. implementation-agent runs that SubTask's tests.
-3. If tests fail, implementation-agent classifies and the responsible role fixes; loop until tests pass.
+2. implementation-agent runs that SubTask's tests, and executes test-agent's mutation manifest for the SubTask (each coverage claim's mutation applied → named cases red → restored byte-identical).
+3. If tests fail, implementation-agent attributes first (change-surface → tooling → concurrent edits → real regression, per its `## Test Failure Handling`) and the responsible role fixes; loop until tests pass.
+3.5. **Freeze.** Before dispatching review, obtain that lane's implementation-agent workspace-frozen declaration and record it (with the frozen file set) in the status file; the reviewed files must not change during the review. review-agent records mtimes/hashes at start and re-checks at finish — a mid-review change voids the review, which is reported for re-dispatch, not patched. Without this, in parallel execution the review's conclusion may describe a tree that no longer exists.
 4. review-agent reviews the SubTask's implementation and tests. Each role decides accept-or-reject and records rejections (prefixed with SubTask ID) in `## Implementation Review > Rejected Suggestions`.
-5. Loop 2-4 until tests pass and review-agent reports no changes for this SubTask.
+5. Loop 2-4 until tests pass (with mutations killed) and review-agent reports no changes for this SubTask.
 6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true:
    - `Coded: true` when implementation is complete.
-   - `Tested: true` when this SubTask's tests pass.
+   - `Tested: true` when this SubTask's tests pass **and every mechanism claimed as covered has a recorded killed mutation** (from the executed manifest). Green alone is "ran", not "tested" — measured reality: the no-op assertions that green hides are found by mutation injection and not by review.
    - `Reviewed: true` when review-agent reports no changes for this SubTask (rejected findings allowed if reasons are recorded) AND that review registered every coverage dimension (§3.C step 2). A review whose dimensions are unregistered — for example one that only reported its worst few findings — does not satisfy this flag. Like the per-iteration test runs, this per-SubTask review is not the aggregate registration gate; §3.C and §4 still apply.
 7. Update the overall task status file (and this SubTask's status file, if one exists) to reflect the completed SubTask before moving on. Do not leave the progress only in the conversation.
-8. After a SubTask is complete, autonomously create one git commit for that SubTask's changes (one commit per completed SubTask). See Version Control — commit and push without asking, and never let a commit or push failure interrupt the task.
+8. After a SubTask is complete, autonomously create one git commit for that SubTask's changes (one commit per completed SubTask). See Version Control — commit and push without asking, and never let a commit or push failure interrupt the task. **Exception — shared assembly files:** when a batch of parallel SubTasks all append to shared wiring files and per-SubTask commits would create commits that DO NOT COMPILE (one SubTask's wiring without the sibling's), commit the smallest compilable unit instead: one commit covering those SubTasks, its message listing each SubTask's scope, and the deviation recorded in the status file. "One SubTask, one commit" is a readability convention; "every commit compiles" is a hard constraint (bisect, CI, and rollback all depend on it).
 
 Do not start SubTask N+1 until SubTask N has all three flags true, unless the main agent records SubTask N as "blocked, deferred" with all of the following:
 
 - a written rationale showing no later SubTask has a static dependency on SubTask N's code path (per the design's Implementation Plan and Files To Change);
 - an entry added to `## Progress > Blocked` and the SubTask's `Notes`.
 
-SubTasks are scheduled by their dependency graph, not by their list order (see §3.0.2). Dispatch independent SubTasks — those with no unmet dependency on each other — together in one batch. The dependency-correctness rule above still holds for each chain: do not start a SubTask until the SubTasks it actually depends on have all three flags true. So in a typical fan-out where ST2 and ST3 both depend only on ST1, run ST1 first, then dispatch ST2 and ST3 in parallel once ST1 is done — do not serialize ST2 then ST3 just because the list numbers them in order. Record a real data dependency or shared-file hazard in `## SubTasks > Notes` when it forces two SubTasks to run sequentially.
+SubTasks are scheduled by their dependency graph, not by their list order (see §3.0.2). Dispatch independent SubTasks — those with no unmet dependency on each other — together in one batch. The dependency-correctness rule above still holds for each chain: do not start a SubTask until the SubTasks it actually depends on have all three flags true. So in a typical fan-out where ST2 and ST3 both depend only on ST1, run ST1 first, then dispatch ST2 and ST3 in parallel once ST1 is done — do not serialize ST2 then ST3 just because the list numbers them in order. Record a real data dependency in `## SubTasks > Notes` when it forces two SubTasks to run sequentially; a shared assembly file is declared as a hotspot with per-lane insertion regions (§3.0.2), not treated as a dependency.
 
 #### 3.C Aggregate testing and aggregate review
 
 When all SubTasks (or the single no-split iteration) are complete, run:
 
-1. Aggregate testing by implementation-agent must account for every category — unit tests, end-to-end tests, regression tests (plus pressure tests when the design's `## Risks` calls out performance or capacity risk). For each category, record it in the status file `## Final Aggregate Testing` per-category checklist as either `ran` (with its result) or `skipped` (with a non-empty reason). This is a registration requirement, not a "must run all" requirement: a cost-bearing category may be skipped, but it must never be silently omitted.
+1. Aggregate testing by implementation-agent must account for every category the design's `## Testing Plan` calls for — the standing set is unit tests, end-to-end tests, regression tests (plus pressure tests when the design's `## Risks` calls out performance or capacity risk), but the Testing Plan's own categories are authoritative: a category the user named (frontend tests, per-SDK e2e, …) gets its own registration line rather than being squeezed into the nearest standing slot, and each registered category carries a one-line note of that layer's structural coverage ceiling. For each category, record it in the status file `## Final Aggregate Testing` per-category checklist as either `ran` (with its result) or `skipped` (with a non-empty reason). This is a registration requirement, not a "must run all" requirement: a cost-bearing category may be skipped, but it must never be silently omitted. A fixed enumeration would let a user-named, explicitly-not-skippable category pass the delivery gate silently just because the template had no slot for it.
 2. Aggregate review by review-agent across all SubTasks for consistency, contracts, and regression. Review coverage is registered per dimension exactly as test categories are: **design conformance, correctness, test quality, regression risk**, plus one dimension per risk the design's `## Risks` calls out. Each dimension is registered as `covered` or `not-covered: <reason>` in the review report's `## Coverage Dimensions` section and mirrored into the status file `## Final Aggregate Review`. A review with an unregistered dimension is NOT closed, whatever verdict it reports — this is what prevents a review that only reported its worst few findings from passing as complete. Each role decides accept-or-reject for findings affecting its artifact; rejections recorded as in §3.B. Record the verdict in the status file `## Final Aggregate Review`.
 3. Loop aggregate test and aggregate review until both converge.
 
@@ -247,19 +260,26 @@ The final report's `## Tests` section must enumerate the aggregate categories ac
 ### 4. Deliver
 
 1. Verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`). Confirm nothing from the user's stated target was silently narrowed, deferred, or replaced with a placeholder. If any gap remains, either close it or escalate to the user — do not deliver a reduced version as final.
-2. Verify `## Final Aggregate Testing` (populated at §3.C) registers **every required category** (unit / e2e / regression; plus pressure when `## Risks` demands it) as either `ran` (with result) or `skipped` (with a non-empty reason). If any required category is unregistered, do not deliver — run it or record an explicit skip reason first. A cost-bearing test (e.g. e2e consuming API quota) may be skipped, but the reason must be recorded; in orchestrated or standalone mode, ask the user before skipping a cost-bearing test when feasible — never silently omit a category.
+2. Verify `## Final Aggregate Testing` (populated at §3.C) registers **every required category** (the design `## Testing Plan`'s categories — at minimum unit / e2e / regression, plus pressure when `## Risks` demands it, plus any user-named category) as either `ran` (with result) or `skipped` (with a non-empty reason). If any required category is unregistered, do not deliver — run it or record an explicit skip reason first. A cost-bearing test (e.g. e2e consuming API quota) may be skipped, but the reason must be recorded; in orchestrated or standalone mode, ask the user before skipping a cost-bearing test when feasible — never silently omit a category.
 3. Verify `## Final Aggregate Review` registers **every coverage dimension** (design conformance / correctness / test quality / regression risk; plus one per risk `## Risks` calls out) as either `covered` or `not-covered` with a non-empty reason. If any dimension is unregistered, do not deliver — get it covered or record an explicit reason first. Same contract as the testing gate above: a dimension may go uncovered for a stated reason, but it must never be silently omitted. Also check `## Restart And Recovery Notes` for any staged delivery whose later installments never arrived; an outstanding installment is an uncovered dimension, not a completed one.
-4. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
-5. Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
-6. Produce a final report from `templates/final-report.md`. After shipping the final report the worker enters `phase=awaiting-confirmation` and WAITS for the user to confirm delivery; it does not self-advance.
-7. Advance to `phase=done` ONLY when the user confirms — either directly in the worker window/conversation (standalone or attached), or via an L1-relayed confirmation message arriving in the pane. The worker never self-advances to `done`. On user confirmation, flush `phase=done` (atomically, valid frontmatter) in orchestrated mode. `done` is the sole non-reversible absorbing terminal.
-8. Ask the user whether to delete the task status files.
+4. Verify the status file `## Pre-Delivery Checklist` is answered item by item with evidence (test effectiveness incl. mutation evidence, verdict hygiene, environment coordinates, attribution/collaboration, scope sweeps and the `## Weakest Link` self-disclosure). An unanswered item blocks delivery exactly as an unregistered test category does; "the rest are fine" is not an answer.
+5. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
+6. Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
+7. Produce a final report from `templates/final-report.md`. After shipping the final report the worker enters `phase=awaiting-confirmation` and WAITS for the user to confirm delivery; it does not self-advance.
+8. Advance to `phase=done` ONLY when the user confirms — either directly in the worker window/conversation (standalone or attached), or via an L1-relayed confirmation message arriving in the pane. The worker never self-advances to `done`. On user confirmation, flush `phase=done` (atomically, valid frontmatter) in orchestrated mode. `done` is the sole non-reversible absorbing terminal.
+9. Ask the user whether to delete the task status files.
 
 ## Long-Running Work
 
 During long implementation phases, the main agent should keep the status file current. Record the active role, latest output, blocked items, next action, and restart notes.
 
-If a subagent is stuck, interrupted, or silent for too long, the main agent should restart that role if the platform supports it. If no real subagent runtime exists, resume from the status file and re-issue the relevant role prompt with the latest design and status summary. Restart at the same scope — see `## Incremental Output > Recovering a stuck role: never trade scope for a delivery`.
+If a subagent is stuck, interrupted, or silent for too long, the main agent restarts that role as a **continuation, never a redo**. Under long multi-instance runs, timeouts are the norm, not the exception; default-redo costs O(lanes × timeouts) repeated work AND leaves dirty data that masquerades as regressions. Three steps:
+
+1. **Inventory first.** List what the interrupted role already produced on disk — files written, test DBs/fixtures/migrations created, ports held — using `git status` plus the resource-lease table. The inventory must come from disk, not from the interrupted context (which is gone).
+2. **Resume, don't rebuild.** Put the inventory into the restart prompt as the continuation point, with an explicit "continue; do not recreate the following artifacts".
+3. **Clean the debris.** An interrupted run must be assumed to have left dirty data (half-written fixture rows with fixed ids cause primary-key collisions that look exactly like implementation regressions — the tell: a rerun reproduces them stably, so it is not a race). Clean before rerunning.
+
+Record each event as a new row in the status file `## Restart And Recovery Notes` (it is an append-only event list, not a single-slot form). If no real subagent runtime exists, resume from the status file and re-issue the relevant role prompt with the latest design and status summary. Restart at the same scope — see `## Incremental Output > Recovering a stuck role: never trade scope for a delivery`.
 
 See also [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md) — long-running tasks must persist state to files, not context.
 
