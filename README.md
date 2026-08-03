@@ -13,7 +13,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - Claude Code 项目说明位于 `CLAUDE.md`
 - Slash command 位于 `commands/execute-task.md`（主名）与 `commands/code-development.md`（alias，与主名内容等价）
 - 多任务调度 Slash command 位于 `commands/orchestrate-tasks.md`
-- SubAgent 位于 `agents/`
+- SubAgent 位于 `agents/`：execute-task 的 `implementation-agent` / `test-agent` / `review-agent`，以及 orchestration 的 L2 驱动 `orch-driver-agent`
 - `.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，方便在本仓库内直接以项目模式使用 Claude Code
 - Execute Task Skill 位于 `skills/execute-task/SKILL.md`
 - Orchestration Scheduling Task Skill 位于 `skills/orchestration-scheduling-task/SKILL.md`
@@ -25,6 +25,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 提示词式 SubAgent 定义位于 `subagents/`
 - Watchdog hooks（execute-task 确定性监督层：心跳、状态新鲜度、退出/停止门禁）位于 `hooks/hooks.json` 与 `hooks/scripts/`，详见 `hooks/README.md`
 - Watchdog 后台监视器位于 `monitors/monitors.json` 与 `monitors/watchdog.sh`（execute-task 触发时启动，发现角色静默/状态过期时唤醒主 agent）
+- 整体架构说明位于 `docs/architecture.md`（各 skill / subAgent / 脚本 / hook 的职责与主体原理）
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
 - execute-task Skill 设计文档位于 `docs/design/execute-task-skill-design.md`
@@ -245,6 +246,7 @@ subagents/
 │   └── commands/ -> ../commands (symlink)
 ├── agents/
 │   ├── implementation-agent.md
+│   ├── orch-driver-agent.md
 │   ├── review-agent.md
 │   └── test-agent.md
 ├── commands/
@@ -254,6 +256,7 @@ subagents/
 ├── assets/
 │   └── README.md
 ├── docs/
+│   ├── architecture.md
 │   ├── conventions/
 │   │   ├── long-running-state.md
 │   │   └── project-structure.md
@@ -269,6 +272,7 @@ subagents/
 │       ├── subagent-track.sh
 │       ├── status-freshness.sh
 │       ├── post-agent-flush.sh
+│       ├── dispatch-scope-guard.sh
 │       ├── stop-gate-subagent.sh
 │       └── stop-gate-main.sh
 ├── monitors/
@@ -279,11 +283,13 @@ subagents/
 │   ├── orch-scan-tasks.sh
 │   ├── orch-spawn-worker.sh
 │   ├── orch-reuse-worker.sh
+│   ├── orch-build-env.sh
 │   ├── orch-check-worker.sh
 │   ├── orch-heartbeat-daemon.sh
 │   ├── orch-cleanup-worker.sh
 │   ├── orch-merge.sh
-│   └── orch-merge-and-cleanup.sh
+│   ├── orch-merge-and-cleanup.sh
+│   └── pack.sh
 ├── skills/
 │   ├── README.md
 │   ├── execute-task/
@@ -302,6 +308,8 @@ subagents/
 │   │   └── templates/
 │   │       ├── master-list-task-entry.md
 │   │       ├── worker-status.md
+│   │       ├── monitor.md
+│   │       ├── dispatch.md
 │   │       └── question-answer.md
 │   ├── git-worktree/
 │   │   └── SKILL.md
@@ -313,6 +321,7 @@ subagents/
 ├── subagents/
 │   ├── README.md
 │   ├── implementation-agent.md
+│   ├── orch-driver-agent.md
 │   ├── review-agent.md
 │   └── test-agent.md
 ├── CLAUDE.md

@@ -107,6 +107,9 @@ fi
 fm_field() {
     local file="$1"
     local key="$2"
+    # Guard an absent/unreadable file: awk would exit non-zero and, under
+    # `set -e`, kill the caller. Callers treat a missing field as empty.
+    [ -f "$file" ] && [ -r "$file" ] || { printf ''; return 0; }
     awk -v k="$key" '
         BEGIN { in_fm = 0; fence = 0 }
         /^---[[:space:]]*$/ {
@@ -199,7 +202,24 @@ if [ -n "$DISPATCH_WORKTREE" ]; then
             br="$(fm_field "$DISPATCH_FILE" branch)"
             bs="$(fm_field "$DISPATCH_FILE" base)"
         fi
-        [ -n "$wt" ] || break
+        if [ -z "$wt" ]; then
+            # Numbering-gap detection, mirroring orch-spawn-worker.sh's probe.
+            # This loop stops at the first empty worktree-N, so a hole (worktree-3
+            # present, worktree-2 absent) would silently truncate the repo set and
+            # this script would merge only the repos before the hole while still
+            # reporting merge-status=success — silent data loss on the delivery
+            # path. Spawn rejects such an entry with exit 5; a reader must not be
+            # more permissive than the writer.
+            gap_probe="$disc_n"
+            while [ "$gap_probe" -le 9 ]; do
+                if [ -n "$(fm_field "$DISPATCH_FILE" "worktree-$gap_probe")" ]; then
+                    echo "error: worktree numbering gap in $DISPATCH_FILE: worktree-$disc_n is missing but worktree-$gap_probe is present" >&2
+                    exit 11
+                fi
+                gap_probe=$((gap_probe + 1))
+            done
+            break
+        fi
         case "$wt" in
             "~/"*) wt="$HOME/${wt#"~/"}" ;;
         esac
@@ -303,6 +323,26 @@ emit_results() {
     done
 }
 
+# Restore each main checkout's original HEAD on ANY exit path (success, conflict
+# 12, push-failure 13). The local merge path below runs `git checkout <base>` in
+# the MAIN repo, which otherwise silently strands the operator on the base branch
+# — their in-progress branch is switched out from under them with no notice. We
+# record the pre-merge ref per repo and restore in a trap so no exit path leaks
+# the switch. Only refs we actually moved are restored, and restore failures are
+# non-fatal (never mask the real exit code).
+RESTORE_REPO=()
+RESTORE_REF=()
+restore_checkouts() {
+    local k=0
+    while [ "$k" -lt "${#RESTORE_REPO[@]}" ]; do
+        if [ -n "${RESTORE_REF[$k]}" ]; then
+            git -C "${RESTORE_REPO[$k]}" checkout "${RESTORE_REF[$k]}" >/dev/null 2>&1 || true
+        fi
+        k=$((k + 1))
+    done
+}
+trap restore_checkouts EXIT
+
 loop_i=0
 while [ "$loop_i" -lt "$REPO_COUNT" ]; do
     REPO_NUM=$((loop_i + 1))
@@ -386,7 +426,12 @@ while [ "$loop_i" -lt "$REPO_COUNT" ]; do
         if git -C "$MAIN_REPO" merge-base --is-ancestor "$BRANCH" "$BASE_BRANCH" >/dev/null 2>&1; then
             MERGE_OK="true"
             STATUS="already-merged"
-        elif ! git -C "$MAIN_REPO" checkout "$BASE_BRANCH" >/dev/null 2>&1; then
+        elif ! _pre_ref="$(git -C "$MAIN_REPO" symbolic-ref --quiet --short HEAD 2>/dev/null \
+                || git -C "$MAIN_REPO" rev-parse HEAD 2>/dev/null)"; then
+            echo "error: cannot read current HEAD in $MAIN_REPO (repo $REPO_NUM)" >&2
+            exit 11
+        elif ! { git -C "$MAIN_REPO" checkout "$BASE_BRANCH" >/dev/null 2>&1 \
+                && { RESTORE_REPO+=("$MAIN_REPO"); RESTORE_REF+=("$_pre_ref"); }; }; then
             echo "error: failed to checkout $BASE_BRANCH in $MAIN_REPO (repo $REPO_NUM)" >&2
             exit 11
         elif git -C "$MAIN_REPO" merge --no-ff "$BRANCH" >/dev/null 2>&1; then

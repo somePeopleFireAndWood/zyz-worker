@@ -63,8 +63,16 @@ agent_type="$(zyz_get agent_type)"
 mark_done() {
     [ -n "$agent_id" ] || return 0
     mkdir -p "$root/runtime/agents" 2>/dev/null || return 0
-    zyz_write_atomic "$root/runtime/agents/$(zyz_sanitize "$agent_id").done" \
+    _k="$(zyz_sanitize "$agent_id")"
+    # Write the .done marker (kept for diagnostics and backward compatibility),
+    # then REMOVE this role's .start/.heartbeat so the stale scan has nothing
+    # left to report. Clearing the trigger — rather than adding a third file
+    # that suppresses it — is what keeps runtime/ from growing one triple per
+    # dispatch, and it makes "no .start left" the whole liveness question.
+    zyz_write_atomic "$root/runtime/agents/$_k.done" \
         "$(zyz_iso) ${agent_type:-unknown}"
+    rm -f "$root/runtime/agents/$_k.start" \
+          "$root/runtime/agents/$_k.heartbeat" 2>/dev/null || true
 }
 
 if [ "$(zyz_get stop_hook_active)" = "true" ]; then
@@ -73,8 +81,23 @@ if [ "$(zyz_get stop_hook_active)" = "true" ]; then
 fi
 
 min_chars="${ZYZ_SUBAGENT_MIN_FINAL_CHARS:-80}"
+case "$min_chars" in
+    ''|*[!0-9]*) min_chars=80 ;;
+esac
 final_msg="$(zyz_get last_assistant_message)"
-if [ "${#final_msg}" -lt "$min_chars" ]; then
+# Measure BYTES, not `${#...}`. Bash's ${#var} counts characters under a UTF-8
+# locale but bytes under LC_ALL=C, so the same message measured two different
+# ways — and a COMPLETE CJK report would trip the gate: 45 Chinese characters is
+# a full report but scores 45 against a threshold of 80, while its 135 bytes
+# clearly clear it. The workflow explicitly supports Chinese output (SKILL.md
+# `## Core Rules`), so the character reading blocked valid work. Bytes are
+# locale-independent and the threshold is calibrated for them: 80 bytes is ~80
+# ASCII characters or ~26 CJK characters, both of which are genuinely too short.
+msg_len="$(printf '%s' "$final_msg" | wc -c 2>/dev/null | tr -d '[:space:]')"
+case "$msg_len" in
+    ''|*[!0-9]*) msg_len="${#final_msg}" ;;
+esac
+if [ "$msg_len" -lt "$min_chars" ]; then
     role="$(zyz_role_of "${agent_type:-subagent}")"
     zyz_emit_block "[zyz-worker watchdog] Your final message is too short for the main agent to persist into the task status file. Before finishing, emit a complete final report for your role (${role}): what you completed, what remains, blockers, decisions made, and the exact file paths you touched. If you already did the work, summarize it now — do not redo it."
     exit 0

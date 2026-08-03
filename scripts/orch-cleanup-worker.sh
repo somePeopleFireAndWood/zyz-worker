@@ -91,6 +91,9 @@ fi
 fm_field() {
     local file="$1"
     local key="$2"
+    # Guard an absent/unreadable file: awk would exit non-zero and, under
+    # `set -e`, kill the caller. Callers treat a missing field as empty.
+    [ -f "$file" ] && [ -r "$file" ] || { printf ''; return 0; }
     awk -v k="$key" '
         BEGIN { in_fm = 0; fence = 0 }
         /^---[[:space:]]*$/ {
@@ -149,7 +152,22 @@ if [ -f "$DISPATCH_FILE" ] && [ -n "$DISPATCH_PRIMARY" ]; then
         key="worktree"
         [ "$i" -ge 2 ] && key="worktree-$i"
         v="$(fm_field "$DISPATCH_FILE" "$key")"
-        [ -n "$v" ] || break
+        if [ -z "$v" ]; then
+            # Numbering-gap detection, mirroring orch-spawn-worker.sh's probe. A
+            # hole would silently truncate the repo set, leaving the worktrees
+            # past the hole registered but never removed while cleanup reports
+            # success. Spawn rejects such an entry with exit 5; a reader must not
+            # be more permissive than the writer.
+            gap_probe="$i"
+            while [ "$gap_probe" -le 9 ]; do
+                if [ -n "$(fm_field "$DISPATCH_FILE" "worktree-$gap_probe")" ]; then
+                    echo "error: worktree numbering gap in $DISPATCH_FILE: worktree-$i is missing but worktree-$gap_probe is present" >&2
+                    exit 8
+                fi
+                gap_probe=$((gap_probe + 1))
+            done
+            break
+        fi
         case "$v" in
             "~/"*) v="$HOME/${v#"~/"}" ;;
         esac
@@ -266,7 +284,16 @@ while [ "$j" -lt "${#WT[@]}" ]; do
     # this command silently fails when this helper is invoked from a cwd
     # that is not inside any git repo (e.g. the plugin root during T6
     # integration tests). See merge-and-cleanup.sh for the same pattern.
-    common_dir="$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)"
+    # Guard the assignment (same shape as the `git status` probe above): a bare
+    # `x="$(git ...)"` whose command fails aborts the whole script under `set -e`
+    # BEFORE the [ -z "$main_repo" ] check below can report exit 8. A worktree
+    # path that exists but is not a git repo would otherwise exit 128 with no
+    # stdout and no stderr at all, instead of the documented exit 8.
+    if ! common_dir="$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)" \
+        || [ -z "$common_dir" ]; then
+        echo "error: cannot locate main repo checkout for worktree $wt (not a git work tree)" >&2
+        exit 8
+    fi
     case "$common_dir" in
         /*) ;;
         *) common_dir="$(cd "$wt" && cd "$common_dir" && pwd)" ;;

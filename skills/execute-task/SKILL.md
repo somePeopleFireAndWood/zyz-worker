@@ -151,7 +151,7 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 
 1. Create or identify a task id.
 2. Create a task directory, preferably `.zyz-worker/tasks/<task-id>/`.
-3. Create a status file from `templates/task-status.md`. This is the single mandatory overall task status file.
+3. Create a status file from `templates/task-status.md`, named `status.md` inside the task directory. This is the single mandatory overall task status file. The filename `status.md` is load-bearing: the watchdog layer resolves the overall status file as `<task-dir>/status.md`, so a differently-named file leaves L1/L3/L4 freshness enforcement silently inert (see `## Watchdog Enforcement`).
 4. Write the task id (a single line) into the pointer file `.zyz-worker/current-task` at the project root. This pointer is what the plugin's watchdog hooks and monitor use to locate the active task; without it the entire watchdog layer silently no-ops (see `## Watchdog Enforcement`). If the task directory is not `.zyz-worker/tasks/<task-id>/`, write the directory's path (relative to project root, or absolute) instead of the bare id.
 5. Record the task name, phase, known inputs, open questions, and current assumptions.
 6. Record the user's full, final goal in the status file `## Total Goal` so the overall target cannot drift later (see Total Goal Fidelity).
@@ -277,6 +277,7 @@ The two rules above — "restart silent roles" and "keep the status file current
 Main-agent obligations toward the watchdog:
 
 - Write the `.zyz-worker/current-task` pointer at §1 Start Task (and update it if the active task changes). No pointer → no watchdog.
+- Name the overall status file `status.md` inside the task directory. The watchdog resolves it as `<task-dir>/status.md` and reads its `Current Phase` label; any other filename makes the freshness layers (L1/L3/L4) no-op silently.
 - Treat any `[zyz-worker watchdog]` notification or injected context as an actionable instruction, not noise: re-dispatch the named role with the latest design and status summary, or flush the status file, immediately — do not defer to the next delivery milestone.
 - Keep the status file's `Current Phase` field accurate; the watchdog only enforces during active execution phases and deliberately stays quiet during design and awaiting-confirmation (where waiting on the user is correct).
 - The runtime markers under `<task-dir>/runtime/` are watchdog bookkeeping, not task state. Do not hand-edit them; they may be deleted with the task directory after delivery.

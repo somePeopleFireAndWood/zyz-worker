@@ -71,6 +71,14 @@ zyz_json_ok() {
     return 1
 }
 
+# NOTE on caching: memoizing this function in a shell variable does NOT work and
+# has been tried. Every call site reads it as `x="$(zyz_get foo)"`, and command
+# substitution runs in a SUBSHELL — any cache the function writes dies with that
+# subshell and never reaches the next call. Measured A/B showed no improvement,
+# only noise. To actually cut the per-tool-call jq cost, a caller must extract
+# all the fields it needs in ONE pass (a single jq/python3 emitting several
+# values) rather than calling zyz_get repeatedly; do that in the hook script, not
+# behind this interface.
 zyz_get() {
     [ -n "${ZYZ_HOOK_INPUT:-}" ] || return 0
     if command -v jq >/dev/null 2>&1; then
@@ -143,7 +151,19 @@ zyz_phase_of() {
 }
 
 zyz_phase_active() {
-    # $1 = phase string. 0 when the phase is an active execution phase.
+    # $1 = phase string (already lowercased and space-stripped by zyz_phase_of).
+    # Returns 0 only for a genuine active EXECUTION phase.
+    #
+    # Any phase naming `design` is quiet, and this exclusion must come FIRST:
+    # `*review*` alone would match `design review` / `designreview`, making the
+    # watchdog nag and — worse — making the L4 stop gate block the main agent
+    # from idling at §2 step 8, the one gate the workflow mandates waiting at
+    # indefinitely for human approval. The gate would push for action exactly
+    # where the prompts promise silence. Both SKILL.md `## Watchdog Enforcement`
+    # and the main-agent prompt promise the watchdog stays quiet during design.
+    case "${1:-}" in
+        *design*) return 1 ;;
+    esac
     case "${1:-}" in
         *implement*|*testing*|*review*|*deliver*) return 0 ;;
     esac
@@ -243,6 +263,17 @@ zyz_scope_negated() {
     return 1
 }
 
+zyz_scope_strip_quotes() {
+    # $1 = prompt text. Blanks out quoted spans so a prompt that QUOTES a
+    # capping phrase (docs, tests, changelog entries about this very guard —
+    # routine work in this repo) is not read as issuing one. Single quotes are
+    # only treated as quoting when the opener follows whitespace/punctuation, so
+    # contractions ("don't") cannot pair up and swallow real instruction text.
+    printf '%s' "${1:-}" \
+        | sed -E -e 's/"[^"]*"/ /g' -e 's/`[^`]*`/ /g' \
+                 -e "s/(^|[[:space:]([{:,])'[^']*'/\1 /g" 2>/dev/null
+}
+
 zyz_scope_cap_hit() {
     # $1 = dispatch prompt text. Prints the first scope-capping phrase found
     # (so the deny reason can quote it), or nothing. Input is lowercased, so
@@ -250,8 +281,16 @@ zyz_scope_cap_hit() {
     local p pat m
     p="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' 2>/dev/null | tr '\n' ' ' 2>/dev/null)"
     [ -n "$p" ] || return 0
-    # A prompt that explicitly forbids truncation is never a cap.
+    # A prompt that explicitly forbids truncation is never a cap. Negation is
+    # checked on the FULL text (before quote-stripping) so a quoted negation
+    # keeps its veto.
     zyz_scope_negated "$p" && return 0
+    # Caps are matched against the quote-stripped copy. Known tradeoff: a prompt
+    # that is ENTIRELY a quoted cap now passes — acceptable, since a dispatch
+    # whose whole body is one quoted string is not a plausible instruction,
+    # whereas writing docs/tests about this guard is routine here.
+    p="$(zyz_scope_strip_quotes "$p")"
+    [ -n "$p" ] || return 0
     while IFS= read -r pat; do
         [ -n "$pat" ] || continue
         m="$(printf '%s' "$p" | grep -oE "$pat" 2>/dev/null | head -n1)"
@@ -260,10 +299,10 @@ zyz_scope_cap_hit() {
             return 0
         fi
     done <<'ZYZ_CAP_PATTERNS'
-(only|just) (the )?(top|most severe|worst) [a-z0-9]+ ?(findings|issues|problems|items)?
-(top|most severe|worst) [0-9]+ ?(findings|issues|problems|items)? ?(is|are|would be)? ?(enough|fine|ok|okay|sufficient)
-(limit(ed)?|cap(ped)?|restrict(ed)?|hold|keep|stop) (it |yourself |them |the (report|review|findings|list) )?(to|at|after) (just |only )?[0-9]+ ?(findings|issues|problems|items)?
-(no more than|at most|up to) [0-9]+ ?(findings|issues|problems|items)
+(only|just) (the )?(top|most severe|worst) [a-z0-9]+ ?(findings|issues|problems)
+(top|most severe|worst) [0-9]+ ?(findings|issues|problems) ?(is|are|would be)? ?(enough|fine|ok|okay|sufficient)
+(limit(ed)?|cap(ped)?|restrict(ed)?|hold|keep|stop) (it |yourself |them |the (report|review|findings|list) )?(to|at|after) (just |only )?[0-9]+ ?(findings|issues|problems)
+(no more than|at most|up to) [0-9]+ ?(findings|issues|problems)
 (just|only) (give (me )?|report |return |send |the )*(overall |final |high.level |top.level )?(verdict|conclusion|summary|result)( is (enough|fine|ok))?
 (verdict|conclusion|summary)(-| )only
 one.(line|sentence) (verdict|conclusion|summary|answer|result)

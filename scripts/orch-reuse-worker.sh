@@ -72,8 +72,10 @@
 #          not `completed` / reusing worktree but the old worktree path is gone /
 #          reusing tmux/both but the old dispatch.md lacks pane coordinates
 #          (shell-pid/pane-id, needed to bind the same-claude reuse) / new runtime
-#          dir already exists / (worktree-scope) the new tmux session path/name
-#          already taken in the runtime sense.
+#          dir already exists.
+#          NOTE: the (worktree-scope) "new tmux session name already taken" case
+#          is NOT in this class — it needs tmux to test, runs AFTER the dependency
+#          check, and exits 6 (see the exit-6 line below), not 5.
 #        - tmux-DEPENDENT (validated AFTER the dependency check): reusing tmux but
 #          the old session is not alive (`tmux has-session`).
 #     6  new tmux session creation failed / (worktree-scope) session name conflict
@@ -256,7 +258,22 @@ if [ -f "$OLD_DISPATCH" ]; then
     i=2
     while :; do
         wv="$(fm_field "$OLD_DISPATCH" "worktree-$i")"
-        [ -n "$wv" ] || break
+        if [ -z "$wv" ]; then
+            # Numbering-gap detection, mirroring orch-spawn-worker.sh's probe. A
+            # hole would silently truncate the inherited worktree set, so the new
+            # task would take over only part of the old container while reuse
+            # reports success. Spawn rejects such an entry with exit 5; a reader
+            # must not be more permissive than the writer.
+            gap_probe="$i"
+            while [ "$gap_probe" -le 9 ]; do
+                if [ -n "$(fm_field "$OLD_DISPATCH" "worktree-$gap_probe")" ]; then
+                    echo "error: worktree numbering gap in $OLD_DISPATCH: worktree-$i is missing but worktree-$gap_probe is present" >&2
+                    exit 5
+                fi
+                gap_probe=$((gap_probe + 1))
+            done
+            break
+        fi
         OLD_WT+=("$(expand_tilde "$wv")")
         OLD_SR+=("$(expand_tilde "$(fm_field "$OLD_DISPATCH" "source-repo-$i")")")
         OLD_BR+=("$(fm_field "$OLD_DISPATCH" "branch-$i")")

@@ -99,7 +99,14 @@ if [ -n "$stale_roles" ]; then
 $stale_roles
 EOF
     if [ -n "$detail" ]; then
-        reason="Dispatched role(s) look dead or stuck with no clean finish: ${detail}They may have been killed by an API error without any SubagentStop. Check their results; re-dispatch each unfinished role with the latest design and status summary, or mark it finished in the status file if its work actually completed."
+        # The instruction MUST name an action that actually clears the trigger.
+        # This gate reads only the runtime markers — never status.md — so telling
+        # the agent to "mark it finished in the status file" was unsatisfiable:
+        # it complied, the marker stayed, and the gate re-blocked until the
+        # cooldown or the platform block cap timed out. A .start is cleared by a
+        # clean SubagentStop, which by definition does not happen on an API-error
+        # death, so the agent needs the explicit escape below.
+        reason="Dispatched role(s) look dead or stuck with no clean finish: ${detail}They may have been killed by an API error without any SubagentStop. Do one of: (a) re-dispatch each unfinished role with the latest design and status summary, or (b) if its work actually completed, record that in the status file AND clear its stale marker with: rm -f '${root}/runtime/agents/'<key>.start '${root}/runtime/agents/'<key>.heartbeat  (<key> is the name shown above). This gate reads only those runtime markers, so a status-file note alone will not clear it."
     fi
 fi
 

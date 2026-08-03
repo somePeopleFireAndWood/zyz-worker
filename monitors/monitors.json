@@ -2,7 +2,7 @@
   {
     "name": "zyz-worker-watchdog",
     "command": "\"${CLAUDE_PLUGIN_ROOT}\"/monitors/watchdog.sh \"${CLAUDE_PROJECT_DIR}\"",
-    "description": "execute-task watchdog: reports silent/dead subagent roles and stale task status files so the main agent intervenes",
-    "when": "on-skill-invoke:execute-task"
+    "description": "execute-task watchdog: reports silent/dead subagent roles and stale task status files so the main agent intervenes. Armed with when=always because on-skill-invoke matches the EMITTED skill name exactly, and a plugin-loaded skill emits the qualified form (zyz-worker:execute-task) while the same skill used in project mode emits the bare form (execute-task) — one literal cannot cover both. watchdog.sh is itself gated on the .zyz-worker/current-task pointer, so arming it always is equivalent in effect and costs one sleeping process.",
+    "when": "always"
   }
 ]

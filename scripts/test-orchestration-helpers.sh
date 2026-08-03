@@ -1563,6 +1563,22 @@ run_TR_reuse_neg() {
         mkdir -p "$old_wt9"
         trneg_write_master_entry "$list9" newtask ready oldtask tmux true
         trneg_write_master_entry "$list9" oldtask completed "" "" "" "$old_wt9"
+        # The OLD task's dispatch.md must carry the pane coordinates
+        # (shell-pid / tmux-pane-id): the CC-impl-1 guard asserted in case (7b)
+        # above is ALSO a 5-tmux-free precondition and runs BEFORE the dep gate,
+        # so without it this fixture would exit 5 on THAT guard and never reach
+        # the dep gate this case is about.  A well-formed fixture must therefore
+        # satisfy every tmux-free precondition, not just old-task-completed.
+        mkdir -p "$list9/runtime/oldtask"
+        {
+            echo "---"
+            echo "task-id: oldtask"
+            echo "tmux-session: zyz-task-oldtask"
+            echo "tmux-pane-id: %0"
+            echo "shell-pid: 1"
+            echo "worktree: $old_wt9"
+            echo "---"
+        } >"$list9/runtime/oldtask/dispatch.md"
         local rc9
         PATH="$stripped_path" bash "$reuse" newtask "$list9" </dev/null >/dev/null 2>&1
         rc9=$?
@@ -4859,6 +4875,135 @@ $(printf '%s\n' "$diff_out" | sed 's/^/      | /')"
     fi
 }
 
+# ---------------------------------------------------------------------------
+# CONSOL. Consolidation-pass regression guards. Each pins a bug that was found
+# by audit and verified by execution; all are pure file reads (no tmux, no git),
+# so this group runs unconditionally.
+#
+#  (a) approved-token boundary. orch-merge-and-cleanup.sh bounded its `approved`
+#      token with a class omitting `-`, so `cleanup-approved` (and
+#      `not-approved`) cleared the gate — the narrow cleanup token alone could
+#      trigger merge + push + the terminal `state: completed`. Only a real
+#      `approved` may pass; the near-miss tokens must exit 10.
+#  (b) heartbeat-threshold env validation. A non-numeric ZYZ_HEARTBEAT_* value
+#      reached an arithmetic context and aborted the helper with exit 1 (bash
+#      `set -u` reads the string as a variable name) — an undocumented code
+#      that silently blinded L1's per-tick poll of every worker.
+#  (c) worktree-numbering-gap detection in the READERS. Spawn rejects a hole
+#      with exit 5, but the readers broke at the first empty worktree-N and
+#      silently truncated the repo set (merge reported success having merged
+#      only the repos before the hole). A reader must not be more permissive
+#      than the writer.
+# ---------------------------------------------------------------------------
+run_CONSOL() {
+    say_header "CONSOL consolidation-pass regression guards"
+
+    local root
+    root="$(mktemp -d "${TMPDIR:-/tmp}/zyz-consol.XXXXXX")"
+    trap 'rm -rf "$root"' EXIT
+
+    # --- (a) approved-token boundary ------------------------------------
+    local mac="$REPO_ROOT/scripts/orch-merge-and-cleanup.sh"
+    local tok
+    for tok in cleanup-approved not-approved; do
+        local ld="$root/gate-$tok"
+        mkdir -p "$ld/tasks"
+        {
+            echo "---"; echo "task-id: foo"; echo "source-repo: $root/norepo"
+            echo "state: in-progress"; echo "branch: task/foo"; echo "base: main"
+            echo "worktree: $root/nowt"; echo "tmux-session: zyz-task-foo"; echo "---"
+            echo ""; echo "# foo"; echo ""; echo "## Pending Merge Approval"; echo ""; echo "$tok"
+        } >"$ld/tasks/foo.md"
+        if [ -x "$mac" ]; then
+            run_and_check_exit 10 \
+                "CONSOL(a) '$tok' alone must NOT satisfy the 'approved' gate" \
+                bash "$mac" foo "$ld" main
+        else
+            skip "CONSOL(a) '$tok' alone must NOT satisfy the 'approved' gate (script missing)"
+        fi
+    done
+
+    # --- (b) malformed threshold env must not exit 1 ---------------------
+    local chk="$REPO_ROOT/scripts/orch-check-worker.sh"
+    local ld2="$root/thresh"
+    mkdir -p "$ld2/tasks" "$ld2/runtime/foo"
+    {
+        echo "---"; echo "task-id: foo"; echo "source-repo: $root/norepo"
+        echo "state: in-progress"; echo "worktree: $root/nowt"
+        echo "tmux-session: zyz-task-foo"; echo "---"; echo ""; echo "# foo"
+    } >"$ld2/tasks/foo.md"
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$ld2/runtime/foo/heartbeat"
+    if [ -x "$chk" ] && command -v tmux >/dev/null 2>&1; then
+        local rc_b
+        ZYZ_HEARTBEAT_STALE_SEC=abc bash "$chk" foo "$ld2" </dev/null >/dev/null 2>&1
+        rc_b=$?
+        if [ "$rc_b" -eq 0 ]; then
+            pass "CONSOL(b) malformed ZYZ_HEARTBEAT_STALE_SEC falls back to default (exit 0, not 1)"
+        else
+            fail "CONSOL(b) malformed ZYZ_HEARTBEAT_STALE_SEC gave exit=$rc_b, expected 0 (an unvalidated value reaching arithmetic aborts under set -u)"
+        fi
+        ZYZ_HEARTBEAT_WAITING_USER_SEC=xyz bash "$chk" foo "$ld2" </dev/null >/dev/null 2>&1
+        rc_b=$?
+        if [ "$rc_b" -eq 0 ]; then
+            pass "CONSOL(b) malformed ZYZ_HEARTBEAT_WAITING_USER_SEC falls back to default (exit 0, not 1)"
+        else
+            fail "CONSOL(b) malformed ZYZ_HEARTBEAT_WAITING_USER_SEC gave exit=$rc_b, expected 0"
+        fi
+    else
+        skip "CONSOL(b) malformed ZYZ_HEARTBEAT_STALE_SEC falls back to default (orch-check-worker.sh or tmux unavailable)"
+        skip "CONSOL(b) malformed ZYZ_HEARTBEAT_WAITING_USER_SEC falls back to default (orch-check-worker.sh or tmux unavailable)"
+    fi
+
+    # --- (c) numbering-gap detection in the readers ----------------------
+    # dispatch.md declares worktree + worktree-3 but NO worktree-2. Readers must
+    # refuse rather than silently merging/cleaning only repo 1.
+    local ld3="$root/gap"
+    mkdir -p "$ld3/tasks" "$ld3/runtime/foo"
+    {
+        echo "---"; echo "task-id: foo"; echo "tmux-session: zyz-task-foo"
+        echo "worktree: $root/wt1"; echo "source-repo: $root/r1"
+        echo "branch: task/foo"; echo "base: main"
+        echo "worktree-3: $root/wt3"; echo "source-repo-3: $root/r3"
+        echo "branch-3: task/foo"; echo "base-3: main"; echo "---"
+    } >"$ld3/runtime/foo/dispatch.md"
+    {
+        echo "---"; echo "task-id: foo"; echo "source-repo: $root/r1"
+        echo "state: in-progress"; echo "branch: task/foo"; echo "base: main"
+        echo "worktree: $root/wt1"; echo "tmux-session: zyz-task-foo"; echo "---"
+        echo ""; echo "# foo"; echo ""; echo "## Pending Merge Approval"; echo ""
+        echo "merge"; echo "approved"
+    } >"$ld3/tasks/foo.md"
+    mkdir -p "$root/wt1" "$root/wt3"
+
+    local gapscript gapname gapexit
+    for gapname in orch-merge:11 orch-merge-and-cleanup:11 orch-cleanup-worker:8; do
+        gapscript="$REPO_ROOT/scripts/${gapname%%:*}.sh"
+        gapexit="${gapname##*:}"
+        if [ ! -x "$gapscript" ]; then
+            skip "CONSOL(c) ${gapname%%:*}.sh refuses a worktree-numbering gap (script missing)"
+            continue
+        fi
+        local rc_c out_c
+        if [ "${gapname%%:*}" = "orch-cleanup-worker" ]; then
+            out_c="$(bash "$gapscript" foo "$ld3" --force </dev/null 2>&1 >/dev/null || true)"
+            bash "$gapscript" foo "$ld3" --force </dev/null >/dev/null 2>&1
+            rc_c=$?
+        else
+            out_c="$(bash "$gapscript" foo "$ld3" main </dev/null 2>&1 >/dev/null || true)"
+            bash "$gapscript" foo "$ld3" main </dev/null >/dev/null 2>&1
+            rc_c=$?
+        fi
+        if [ "$rc_c" -eq "$gapexit" ] && printf '%s' "$out_c" | grep -qi 'numbering gap'; then
+            pass "CONSOL(c) ${gapname%%:*}.sh refuses a worktree-numbering gap (exit $gapexit + diagnostic)"
+        else
+            fail "CONSOL(c) ${gapname%%:*}.sh did NOT refuse a worktree-numbering gap: got exit=$rc_c (expected $gapexit), stderr: $out_c"
+        fi
+    done
+
+    trap - EXIT
+    rm -rf "$root"
+}
+
 run_T10() {
     say_header "T10  agents/ <-> subagents/ mirror body-equality (test-gate S1)"
 
@@ -4868,6 +5013,13 @@ run_T10() {
     t10_mirror_diff "agents/review-agent.md" \
                     "subagents/review-agent.md" \
                     "review-agent"
+    # test-agent was the one role pair left unguarded (the other three are
+    # covered here), so a bullet added on one side could silently drift on the
+    # other.  Same baseline shape as the implementation/review pairs, so the
+    # existing normalizer applies unchanged.
+    t10_mirror_diff "agents/test-agent.md" \
+                    "subagents/test-agent.md" \
+                    "test-agent"
 
     # ---- B8 (0.6.5, design F7): extend the mirror body-diff to the L2 driver
     #      pair so the new `relay-confirmation` section cannot drift between the
@@ -7029,6 +7181,7 @@ run_T11b_multi
 run_cleanup_multi
 run_reuse_multi
 run_gh_scope_multi
+run_CONSOL
 
 echo
 echo "============================================================"

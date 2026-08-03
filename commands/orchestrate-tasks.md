@@ -32,10 +32,13 @@ Helper scripts (the orchestrator calls these — do not re-implement them):
 
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-scan-tasks.sh <list-dir>`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-spawn-worker.sh <task-id> <list-dir>` (builds the container only — one worktree per declared repo + a single tmux session + heartbeat + dispatch.md Phase-1 incl. the numbered `worktree-N`/`source-repo-N`/`branch-N`/`base-N` group for a multi-repo task; never starts claude)
+- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-reuse-worker.sh <task-id> <list-dir>` (used instead of spawn when the master entry declares `reuse-from`: associates a completed task's tmux session and/or whole worktree set to this task; also never starts claude)
+- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-build-env.sh` (prints the Go build I/O optimization snippet that spawn / worktree-scope reuse inject into the worker pane; not called directly by the orchestrator)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-check-worker.sh <task-id> <list-dir>`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-heartbeat-daemon.sh <heartbeat-file> <interval-sec>` (run inside the worker's tmux pane; not invoked directly by the orchestrator)
 - `${CLAUDE_PLUGIN_ROOT}/scripts/orch-cleanup-worker.sh <task-id> <list-dir> [--force]`
-- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`
+- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-merge.sh <task-id> <list-dir> <base-branch>` (the `merge` / `merge: <base>` token: merge + push only — never writes `state`, never cleans up)
+- `${CLAUDE_PLUGIN_ROOT}/scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>` (the legacy `approved` token: merge + `state: completed` + cleanup, atomic)
 
 Important boundaries:
 
@@ -44,6 +47,6 @@ Important boundaries:
 - The master list directory `<list-dir>` is the single source of truth. Every orchestrator decision must be derivable from disk content.
 - Only one orchestrator at a time per `<list-dir>` (enforced via `flock` on `<list-dir>/.orchestrator.lock`).
 - Before editing a master entry in an external editor, the user MUST `Ctrl-C` the orchestrator so the lock releases.
-- Merge and worktree cleanup require explicit user approval (`approved` token in `## Pending Merge Approval`; `cleanup-approved` token in `## Notes` for stale workers). For a multi-repo task these act over every repo in the worktree set.
+- Merge, state change, and worktree cleanup all require an explicit user token in `## Pending Merge Approval` — the orchestrator never initiates one on its own. Tokens: `confirmed` (relay the confirmation to the worker, which writes `phase=done`; the orchestrator then mirrors that into `state: completed` — it never writes `completed` directly), `merge` / `merge: <base>` (merge + push, no state change), legacy `approved` (atomic merge + completed + cleanup; short-circuits any other token present the same tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>`. Stale-worker cleanup additionally requires `cleanup-approved` in `## Notes`. For a multi-repo task these act over every repo in the worktree set.
 - A bare `/orchestrate-tasks <list-dir>` auto-polls by default: each tick self-schedules the next via in-session `ScheduleWakeup`. Wrapping with `/loop` (`/loop /orchestrate-tasks <list-dir>`) is an optional explicit alternative. Set `ZYZ_ORCH_ONCE=1` to run a single tick and return without self-scheduling (it forces single-shot even under `/loop`).
 - Use existing installed skills, plugins, and tools when they improve output quality, but never require the user to install missing optional capabilities.

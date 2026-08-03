@@ -58,6 +58,16 @@ root="$(zyz_task_root "$base")"
 status_file="$root/status.md"
 [ -f "$status_file" ] || exit 0
 
+# Defer to post-agent-flush.sh on an Agent return. Both hooks are sync
+# PostToolUse and both read this same status-file mtime, so on a stale-status
+# Agent return they BOTH injected the same "persist the status file" instruction
+# into one turn (verified) — their cooldowns are independent, so neither
+# suppressed the other. post-agent-flush.sh owns that moment: its message is
+# more specific (it names the just-received subagent result and says to persist
+# it before dispatching further work) and its threshold is tighter. Everything
+# else still gets this hook's reminder.
+[ "$(zyz_get tool_name)" = "Agent" ] && exit 0
+
 phase="$(zyz_phase_of "$status_file")"
 zyz_phase_active "$phase" || exit 0
 

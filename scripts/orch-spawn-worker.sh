@@ -83,6 +83,9 @@ fi
 fm_field() {
     local file="$1"
     local key="$2"
+    # Guard an absent/unreadable file: awk would exit non-zero and, under
+    # `set -e`, kill the caller. Callers treat a missing field as empty.
+    [ -f "$file" ] && [ -r "$file" ] || { printf ''; return 0; }
     awk -v k="$key" '
         BEGIN { in_fm = 0; fence = 0 }
         /^---[[:space:]]*$/ {
@@ -344,12 +347,31 @@ fi
 # `worktrees:` line use ':' as the path separator, so no worktree path may
 # contain a colon. The default sibling layout never contains one; this guards
 # user-supplied worktree-N: overrides.
+#
+# The same loop also rejects a single quote. Every `tmux send-keys` payload below
+# wraps these values in single quotes ("... '$WORKTREE' ..."), so a `'` in the
+# value closes the quote and the remainder is interpreted as shell by the pane.
+# The value is user-written (their own master entry), so this is robustness, not
+# a privilege boundary — but orch-build-env.sh already rejects `'` in
+# ZYZ_GO_TMPFS_DIR for exactly this reason, so spawn matches that guard.
 n=1
 while [ "$n" -le "$REPO_COUNT" ]; do
+    if [ "$n" -ge 2 ]; then wpfx="repo $n "; else wpfx=""; fi
     case "${WORKTREES[$n]}" in
         *:*)
-            if [ "$n" -ge 2 ]; then wpfx="repo $n "; else wpfx=""; fi
             echo "error: ${wpfx}worktree path must not contain ':': ${WORKTREES[$n]}" >&2
+            exit 5
+            ;;
+    esac
+    case "${WORKTREES[$n]}" in
+        *\'*)
+            echo "error: ${wpfx}worktree path must not contain a single quote: ${WORKTREES[$n]}" >&2
+            exit 5
+            ;;
+    esac
+    case "${BRANCHES[$n]}" in
+        *\'*)
+            echo "error: ${wpfx}branch must not contain a single quote: ${BRANCHES[$n]}" >&2
             exit 5
             ;;
     esac

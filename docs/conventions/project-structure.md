@@ -58,6 +58,8 @@ The symlinks let Claude Code see the same files in two places: as project-level 
 
 Root-level subagent definitions consumed by Claude Code when this repository is loaded as a plugin. Each agent is a Markdown file with YAML frontmatter.
 
+Implemented: the three execute-task roles (`implementation-agent`, `test-agent`, `review-agent`) plus the orchestration skill's L2 per-worker pane driver (`orch-driver-agent`). Every file here has a body-identical mirror in `subagents/`.
+
 ### `commands/`
 
 Root-level slash command definitions consumed by Claude Code when this repository is loaded as a plugin. Command files should reference plugin-internal resources via `${CLAUDE_PLUGIN_ROOT}/...` so they resolve regardless of the current working directory.
@@ -99,11 +101,11 @@ Hook definitions and hook scripts belong here when the project needs lifecycle a
 
 Hooks should be small, deterministic, and documented with their trigger point, inputs, outputs, and failure mode.
 
-Implemented: `hooks/hooks.json` registers the execute-task watchdog layer (tool-call heartbeats, status-freshness reminders, subagent exit gate, main-agent stop gate) backed by scripts in `hooks/scripts/`. All watchdog hooks fail open and no-op without a `.zyz-worker/current-task` pointer. Each script carries an in-file contract block and is documented in `hooks/README.md`.
+Implemented: `hooks/hooks.json` registers the execute-task watchdog layer (tool-call heartbeats, status-freshness reminders, a pre-dispatch scope guard, subagent exit gate, main-agent stop gate) backed by scripts in `hooks/scripts/`. All watchdog hooks fail open and no-op without a `.zyz-worker/current-task` pointer. Each script carries an in-file contract block and is documented in `hooks/README.md`; the layer's role in the workflow is summarized in [../architecture.md](../architecture.md).
 
 ### `monitors/`
 
-Plugin background monitors. `monitors/monitors.json` declares long-lived processes whose stdout lines are delivered to the main agent as notifications. Implemented: `watchdog.sh`, started on the first execute-task invocation in a session; it reports silent/dead subagent roles and stale status files so the main agent intervenes without having to remember to poll.
+Plugin background monitors. `monitors/monitors.json` declares long-lived processes whose stdout lines are delivered to the main agent as notifications. Implemented: `watchdog.sh`, armed with `when: "always"` (session start) and self-gated on the `.zyz-worker/current-task` pointer; it reports silent/dead subagent roles and stale status files so the main agent intervenes without having to remember to poll. Do not narrow this to `on-skill-invoke:<skill>` — that is matched as an exact string against the emitted skill name, which is qualified (`zyz-worker:execute-task`) under a plugin install but bare (`execute-task`) in project mode, so no single literal arms in both.
 
 ### `scripts/`
 
@@ -111,7 +113,9 @@ Repository-local automation belongs here. Good candidates include validation, fo
 
 Scripts should be safe to run repeatedly and should not depend on user-specific absolute paths unless documented.
 
-**Orchestration helpers (`scripts/orch-*.sh`).** The `orchestration-scheduling-task` skill calls a small fixed set of bash helpers — `orch-scan-tasks.sh`, `orch-spawn-worker.sh`, `orch-reuse-worker.sh`, `orch-build-env.sh`, `orch-check-worker.sh`, `orch-heartbeat-daemon.sh`, `orch-cleanup-worker.sh`, `orch-merge-and-cleanup.sh`. They live in this directory and follow these conventions:
+Also implemented here: `pack.sh` (builds `dist/zyz-worker-<version>.zip`, using `git ls-files` as the sole inclusion list and `.claude-plugin/plugin.json` as the version source) and the `test-*.sh` suites (see the test-strategy table in [../architecture.md](../architecture.md)).
+
+**Orchestration helpers (`scripts/orch-*.sh`).** The `orchestration-scheduling-task` skill calls a small fixed set of bash helpers — `orch-scan-tasks.sh`, `orch-spawn-worker.sh`, `orch-reuse-worker.sh`, `orch-build-env.sh`, `orch-check-worker.sh`, `orch-heartbeat-daemon.sh`, `orch-cleanup-worker.sh`, `orch-merge.sh`, `orch-merge-and-cleanup.sh`. They live in this directory and follow these conventions:
 
 - `#!/usr/bin/env bash` + `set -euo pipefail` + an in-file contract block at the top.
 - All `task-id` inputs are validated against `^[A-Za-z0-9_-]+$`; invalid → exit 2.

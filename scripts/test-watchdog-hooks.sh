@@ -36,7 +36,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.14.0"
+EXPECTED_VERSION="0.15.0"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -90,11 +90,29 @@ if grep -q 'CLAUDE_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null; then
 else
     fail "T2 hooks.json uses \${CLAUDE_PLUGIN_ROOT}"
 fi
-if grep -q 'on-skill-invoke:execute-task' monitors/monitors.json 2>/dev/null; then
-    pass "T2 monitors.json gated on execute-task"
-else
-    fail "T2 monitors.json gated on execute-task"
-fi
+# The monitor's `when` must be a value Claude Code can actually ARM.
+# Arming compares `when` as an EXACT string against the emitted skill name
+# (`a.when === "on-skill-invoke:" + s`), and a plugin-loaded skill emits the
+# QUALIFIED name (`zyz-worker:execute-task`) while the same skill used in project
+# mode emits the bare name (`execute-task`) — verified: ~/.claude.json skillUsage
+# holds BOTH forms. So no single `on-skill-invoke:` literal covers both install
+# modes, and the previously-shipped bare form armed only in project mode.
+# `when: "always"` sidesteps the coupling; watchdog.sh is itself gated on the
+# .zyz-worker/current-task pointer, so arming it always is equivalent in effect.
+# A bare `on-skill-invoke:execute-task` is explicitly rejected here — the old
+# substring grep passed for it, which is why the dead arming went unnoticed.
+mon_when="$(python3 -c 'import json;print(json.load(open("monitors/monitors.json"))[0].get("when",""))' 2>/dev/null || true)"
+case "$mon_when" in
+    always)
+        pass "T2 monitors.json when=always (arms in both plugin and project mode)" ;;
+    on-skill-invoke:*:*)
+        pass "T2 monitors.json when=$mon_when (qualified plugin-mode trigger)" ;;
+    on-skill-invoke:*)
+        fail "T2 monitors.json when=$mon_when is a BARE skill name" \
+            "a plugin-loaded skill emits the qualified 'zyz-worker:<skill>' form, so this never arms under a normal plugin install; use when=always" ;;
+    *)
+        fail "T2 monitors.json has no armable 'when' value" "got [$mon_when]" ;;
+esac
 if grep -q 'zyz-worker:.*implementation-agent\|implementation-agent' hooks/hooks.json 2>/dev/null \
     && grep -q 'test-agent' hooks/hooks.json 2>/dev/null \
     && grep -q 'review-agent' hooks/hooks.json 2>/dev/null; then
@@ -163,7 +181,16 @@ if [ -n "$SANDBOX" ]; then
     out="$(echo '{"cwd":"'"$SANDBOX"'","agent_id":"a1","agent_type":"zyz-worker:implementation-agent","stop_hook_active":false,"last_assistant_message":"'"$LONGMSG"'"}' | bash "$H/stop-gate-subagent.sh")"
     if [ -z "$out" ] && [ -f "$T/runtime/agents/a1.done" ]; then pass "T5 long final msg -> allow + .done"; else fail "T5 long final msg -> allow + .done" "$out"; fi
 
+    # Re-stamp .start/.heartbeat WITH CONTENT before backdating. The clean stop
+    # above now DELETES this role's .start/.heartbeat (that deletion is what makes
+    # a dead-role block clearable by compliance instead of only by timeout), so a
+    # bare `touch` here would recreate .start EMPTY — and stop-gate-main.sh reads
+    # the role type from its first line, so the block detail would lose the role
+    # name and the running-background-subagent skip could never match it.
     rm -f "$T/runtime/agents/a1.done" "$T/runtime/nag/stopgate.last"
+    mkdir -p "$T/runtime/agents"
+    printf '%s zyz-worker:implementation-agent\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/runtime/agents/a1.start"
+    printf '%s zyz-worker:implementation-agent\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/runtime/agents/a1.heartbeat"
     backdate 20 "$T/runtime/agents/a1.start" "$T/runtime/agents/a1.heartbeat" "$T/status.md"
     out="$(echo '{"cwd":"'"$SANDBOX"'","stop_hook_active":false,"background_tasks":[]}' | bash "$H/stop-gate-main.sh")"
     if printf '%s' "$out" | grep -q '"decision":"block"' && printf '%s' "$out" | grep -q 'a1'; then
@@ -171,15 +198,22 @@ if [ -n "$SANDBOX" ]; then
     else
         fail "T5 dead role -> main stop blocked, role named" "$out"
     fi
+    # These two cases test the DEAD-ROLE branch only, so isolate them from the
+    # status-stale branch. `backdate 20` puts status.md at exactly 1200s, and the
+    # gate fires on age STRICTLY > ZYZ_STOP_STATUS_STALE_SEC (default 1200) — so
+    # whether the status-stale text also appears depends on how many seconds the
+    # suite has been running. That knife-edge made these assertions flaky: green
+    # in isolation, red inside a longer back-to-back sweep. Pinning the status
+    # threshold out of range keeps the assertion about the role branch alone.
     rm -f "$T/runtime/nag/stopgate.last"
-    out="$(echo '{"cwd":"'"$SANDBOX"'","stop_hook_active":false,"background_tasks":[{"id":"1","type":"subagent","status":"running","agent_type":"zyz-worker:implementation-agent"}]}' | bash "$H/stop-gate-main.sh")"
+    out="$(echo '{"cwd":"'"$SANDBOX"'","stop_hook_active":false,"background_tasks":[{"id":"1","type":"subagent","status":"running","agent_type":"zyz-worker:implementation-agent"}]}' | ZYZ_STOP_STATUS_STALE_SEC=999999 bash "$H/stop-gate-main.sh")"
     if printf '%s' "$out" | grep -q 'a1'; then
         fail "T5 running bg subagent not flagged dead" "$out"
     else
         pass "T5 running bg subagent not flagged dead"
     fi
     rm -f "$T/runtime/nag/stopgate.last"
-    out="$(echo '{"cwd":"'"$SANDBOX"'","stop_hook_active":false,"background_tasks":[{"id":"1","type":"subagent","status":"running","agent_type":"implementation-agent"}]}' | bash "$H/stop-gate-main.sh")"
+    out="$(echo '{"cwd":"'"$SANDBOX"'","stop_hook_active":false,"background_tasks":[{"id":"1","type":"subagent","status":"running","agent_type":"implementation-agent"}]}' | ZYZ_STOP_STATUS_STALE_SEC=999999 bash "$H/stop-gate-main.sh")"
     if printf '%s' "$out" | grep -q 'a1'; then
         fail "T5 bare-name bg agent_type matches scoped .start" "$out"
     else
@@ -201,8 +235,21 @@ if [ -n "$SANDBOX" ]; then
     # -----------------------------------------------------------------------
     G="$H/dispatch-scope-guard.sh"
     sg() { # $1 subagent_type, $2 prompt
-        printf '{"cwd":"%s","tool_name":"Agent","tool_input":{"subagent_type":"%s","prompt":"%s"}}' \
-            "$SANDBOX" "$1" "$2" | bash "$G"
+        # The prompt MUST be JSON-escaped. Raw interpolation of a prompt that
+        # itself contains a double quote (which the quote-skip fixtures below do,
+        # deliberately) yields invalid JSON; the guard then fails open and the
+        # assertion passes VACUOUSLY — green for the wrong reason. Build the
+        # payload with a real JSON encoder, falling back to raw printf only if
+        # python3 is unavailable.
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -c 'import json,sys
+print(json.dumps({"cwd":sys.argv[1],"tool_name":"Agent",
+                  "tool_input":{"subagent_type":sys.argv[2],"prompt":sys.argv[3]}}))' \
+                "$SANDBOX" "$1" "$2" | bash "$G"
+        else
+            printf '{"cwd":"%s","tool_name":"Agent","tool_input":{"subagent_type":"%s","prompt":"%s"}}' \
+                "$SANDBOX" "$1" "$2" | bash "$G"
+        fi
     }
     printf -- '## Metadata\n\n- Current Phase: review\n' > "$T/status.md"
 
@@ -279,6 +326,13 @@ More than just the verdict please — full detail.
 不能只给最严重的几条，要全部登记。
 Review just the first SubTask's changes.
 Only the first 200 lines of the diff matter here.
+Add a test asserting that a dispatch saying "limit to 3 findings" is denied.
+Implement the L5 scope guard. It must deny prompts like "only the top 3 findings" and "just the overall verdict".
+Write the changelog entry describing that we now forbid '一句话结论' in recovery prompts.
+Document that "只要总结论" is rejected by the guard.
+Fix the pagination bug: the API should return no more than 3 items per page.
+The retry budget must cap it at 3 attempts.
+Update the docs: the CLI flag `--top 5 issues` is fine to keep.
 ZYZ_T7_LEGIT
     if [ "$allowed" -eq "$legit_total" ]; then
         pass "T7 all $legit_total legitimate dispatches allowed (no false positives)"
@@ -405,6 +459,121 @@ for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugi
         fail "T6 $m at $EXPECTED_VERSION"
     fi
 done
+
+# ---------------------------------------------------------------------------
+# T9  Watchdog-audit regression guards. Three defects found by audit and each
+# verified by execution before fixing; pinned here so they cannot return.
+#
+#  (a) Design phases must be QUIET. zyz_phase_active matched `*review*`, so
+#      `design review` counted as an active execution phase. That made the L4
+#      stop gate block the main agent from idling at §2 step 8 — the one gate the
+#      workflow mandates waiting at indefinitely for human approval — while both
+#      prompts promise the watchdog stays silent during design.
+#  (b) A dead role's marker must be CLEARABLE by compliance. The gate reads only
+#      the runtime markers, never status.md, so "mark it finished in the status
+#      file" was an unsatisfiable instruction: the agent complied and the gate
+#      re-blocked until a timeout. The reason string must name the marker path.
+#  (c) The min-final-length check must be locale-independent. `${#var}` counts
+#      characters under UTF-8 but bytes under LC_ALL=C, so a COMPLETE 45-char
+#      Chinese report scored 45 against a threshold of 80 and was blocked, even
+#      though the workflow explicitly supports Chinese output.
+# ---------------------------------------------------------------------------
+t9_phase="$(
+    . hooks/scripts/lib.sh 2>/dev/null || exit 0
+    for p in design designreview design-review implementation testing review delivery awaiting-confirmation done; do
+        if zyz_phase_active "$p"; then printf 'A:%s ' "$p"; else printf 'q:%s ' "$p"; fi
+    done
+)"
+t9_want='q:design q:designreview q:design-review A:implementation A:testing A:review A:delivery q:awaiting-confirmation q:done '
+if [ "$t9_phase" = "$t9_want" ]; then
+    pass "T9(a) design phases are quiet; only implementation/testing/review/delivery are active"
+else
+    fail "T9(a) zyz_phase_active classification changed" "got [$t9_phase]"
+fi
+
+if grep -q 'runtime/agents' hooks/scripts/stop-gate-main.sh 2>/dev/null \
+    && grep -q 'rm -f' hooks/scripts/stop-gate-main.sh 2>/dev/null; then
+    pass "T9(b) dead-role block reason names the marker path the agent must clear"
+else
+    fail "T9(b) dead-role block reason must name a clearing action" \
+        "this gate reads only runtime markers, so a status-file-only instruction cannot be satisfied"
+fi
+if grep -q 'rm -f' hooks/scripts/stop-gate-subagent.sh 2>/dev/null; then
+    pass "T9(b) clean SubagentStop clears .start/.heartbeat instead of only adding .done"
+else
+    fail "T9(b) clean SubagentStop must clear .start/.heartbeat" "otherwise runtime/ grows one triple per dispatch"
+fi
+
+# (d) No double-nag. status-freshness.sh and post-agent-flush.sh are both sync
+#     PostToolUse hooks reading the same status-file mtime, with independent
+#     cooldowns — so on a stale-status Agent return they both injected the same
+#     "persist the status file" instruction into one turn. status-freshness now
+#     defers on tool_name=Agent (post-agent-flush owns that moment: more
+#     specific message, tighter threshold), and still fires for every other tool.
+t9_dn="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t9dn.XXXXXX")"
+mkdir -p "$t9_dn/.zyz-worker/tasks/t1"
+printf 't1\n' > "$t9_dn/.zyz-worker/current-task"
+printf '# Task Status\n\n- Current Phase: implementation\n' > "$t9_dn/.zyz-worker/tasks/t1/status.md"
+backdate 60 "$t9_dn/.zyz-worker/tasks/t1/status.md"
+t9_dn_run() { # $1 tool_name, $2 script
+    rm -rf "$t9_dn/.zyz-worker/tasks/t1/runtime/nag"
+    printf '{"cwd":"%s","tool_name":"%s","tool_response":{"status":"completed"}}' "$t9_dn" "$1" \
+        | hooks/scripts/"$2" 2>/dev/null
+}
+t9_dn_agent_fresh="$(t9_dn_run Agent status-freshness.sh)"
+t9_dn_agent_flush="$(t9_dn_run Agent post-agent-flush.sh)"
+t9_dn_bash_fresh="$(t9_dn_run Bash status-freshness.sh)"
+if [ -z "$t9_dn_agent_fresh" ] && [ -n "$t9_dn_agent_flush" ] && [ -n "$t9_dn_bash_fresh" ]; then
+    pass "T9(d) exactly one L1 nag per tool call (post-agent-flush on Agent, status-freshness elsewhere)"
+else
+    fail "T9(d) L1 double-nag or lost nag" \
+        "agent/freshness=[${t9_dn_agent_fresh:+NAG}] agent/flush=[${t9_dn_agent_flush:+NAG}] bash/freshness=[${t9_dn_bash_fresh:+NAG}]"
+fi
+rm -rf "$t9_dn"
+
+t9_cjk='实现已完成：修改了三个文件，新增两个测试用例，全部通过。存在一个已记录的风险点待评审确认。'
+t9_sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t9.XXXXXX")"
+mkdir -p "$t9_sandbox/.zyz-worker/tasks/t1/runtime/agents"
+printf 't1\n' > "$t9_sandbox/.zyz-worker/current-task"
+printf '# Task Status\n\n- Current Phase: implementation\n' > "$t9_sandbox/.zyz-worker/tasks/t1/status.md"
+t9_check() {
+    printf 'y\n' > "$t9_sandbox/.zyz-worker/tasks/t1/runtime/agents/k.start"
+    LC_ALL="$1" printf '{"cwd":"%s","agent_id":"k","agent_type":"review-agent","last_assistant_message":"%s","stop_hook_active":false}' \
+        "$t9_sandbox" "$2" | LC_ALL="$1" hooks/scripts/stop-gate-subagent.sh 2>/dev/null
+    rm -f "$t9_sandbox/.zyz-worker/tasks/t1/runtime/agents/k".* 2>/dev/null || true
+}
+t9_utf8="$(t9_check en_US.UTF-8 "$t9_cjk")"
+t9_c="$(t9_check C "$t9_cjk")"
+t9_short="$(t9_check en_US.UTF-8 '好了')"
+if [ -z "$t9_utf8" ] && [ -z "$t9_c" ] && [ -n "$t9_short" ]; then
+    pass "T9(c) complete CJK report passes in both locales; a 2-char reply still blocks"
+else
+    fail "T9(c) min-final-length check is locale-dependent or mis-thresholded" \
+        "utf8-block=[${t9_utf8:0:40}] c-block=[${t9_c:0:40}] short-blocked=[${t9_short:+yes}]"
+fi
+rm -rf "$t9_sandbox"
+
+# ---------------------------------------------------------------------------
+# T8  zyz_get extraction shapes.
+#
+# zyz_get is the single field-extraction path every hook depends on, with two
+# interchangeable backends (jq, python3). Pin the shapes the hooks actually rely
+# on so a future change to either backend cannot silently alter what gets
+# extracted: a plain string, a nested path, an absent key (must be empty), and
+# the boolean the stop gates compare against the literal "true".
+# ---------------------------------------------------------------------------
+t8_out="$(
+    . hooks/scripts/lib.sh 2>/dev/null || exit 0
+    ZYZ_HOOK_INPUT='{"cwd":"/tmp/x","agent_id":"a1","stop_hook_active":true,"tool_input":{"prompt":"hi"}}'
+    printf 'cwd=%s|id=%s|nested=%s|absent=%s|bool=%s' \
+        "$(zyz_get cwd)" "$(zyz_get agent_id)" "$(zyz_get tool_input.prompt)" \
+        "$(zyz_get nope)" "$(zyz_get stop_hook_active)"
+)"
+if [ "$t8_out" = 'cwd=/tmp/x|id=a1|nested=hi|absent=|bool=true' ]; then
+    pass "T8 zyz_get extracts string / nested / absent / boolean shapes correctly"
+else
+    fail "T8 zyz_get extraction shapes changed" "got [$t8_out]"
+fi
 
 # ---------------------------------------------------------------------------
 echo

@@ -32,14 +32,24 @@
 #         true  => dispatch.md present and claude-pid + claude-session-id +
 #                  transcript-path are all populated (worker is bound)
 #
+#     worker-status-malformed=true
+#         Emitted ONLY when worker-status.md exists but carries no `---` fence
+#         (a bare field dump the frontmatter parser reads as all-empty). Absent
+#         otherwise — do not expect a `=false` form. Distinguishes "fence-less
+#         file" from "genuinely empty"; the orchestrator treats it as the
+#         malformed-worker-status case (cadence branch `unknown-investigate`).
+#
 #   Heartbeat thresholds:
 #     Base threshold S = max(per-task `heartbeat-stale-sec` frontmatter,
 #                            $ZYZ_HEARTBEAT_STALE_SEC, default 300).
 #     If wait-state=waiting-user → threshold = max(S, $ZYZ_HEARTBEAT_WAITING_USER_SEC, 900).
+#     Both env knobs are validated; a non-numeric value falls back to its default
+#     rather than aborting (a bare arithmetic use would exit 1 under `set -u`).
 #     fresh   : age <= threshold
 #     suspect : threshold < age <= 3 * threshold
 #     stale   : age > 3 * threshold
-#     missing : the heartbeat file does not exist
+#     missing : the heartbeat file does not exist, OR its mtime could not be read
+#               (neither `stat -c %Y` nor `stat -f %m` worked on this host)
 #
 #   Exit codes:
 #     0  always when arguments parse (including worker dead — that is a legal report)
@@ -283,7 +293,18 @@ WAITING_REASON="$(fm_field "$WORKER_STATUS_FILE" waiting-reason)"
 EXPECTED_RESUME_BY="$(fm_field "$WORKER_STATUS_FILE" expected-resume-by)"
 
 # Compute the heartbeat threshold.
+#
+# Both env knobs are validated the same way the per-task frontmatter override
+# below is. An unvalidated non-numeric value reaches an arithmetic context
+# (`THRESHOLD * 3`), where bash under `set -u` treats the string as a variable
+# NAME and aborts with "unbound variable" — exit 1, which this script's contract
+# does not define and the orchestrator has no branch for. Since L1 polls every
+# active worker through this helper on every tick, one typo'd env var would
+# silently blind the whole poll loop. Malformed values fall back to the default.
 BASE_THRESHOLD="${ZYZ_HEARTBEAT_STALE_SEC:-300}"
+case "$BASE_THRESHOLD" in
+    ''|*[!0-9]*) BASE_THRESHOLD=300 ;;
+esac
 PER_TASK_THRESHOLD="$(fm_field "$MASTER_ENTRY" heartbeat-stale-sec)"
 if [ -n "$PER_TASK_THRESHOLD" ]; then
     case "$PER_TASK_THRESHOLD" in
@@ -300,6 +321,9 @@ fi
 THRESHOLD="$BASE_THRESHOLD"
 if [ "$WAIT_STATE" = "waiting-user" ]; then
     WIDE="${ZYZ_HEARTBEAT_WAITING_USER_SEC:-900}"
+    case "$WIDE" in
+        ''|*[!0-9]*) WIDE=900 ;;
+    esac
     if [ "$WIDE" -gt "$THRESHOLD" ]; then
         THRESHOLD="$WIDE"
     fi
@@ -392,6 +416,14 @@ if [ -f "$DISPATCH_FILE" ]; then
     # basename; absence or parse failure degrades silently (`2>/dev/null||true`).
     if [ -n "$CLAUDE_PID" ] && [ -z "$CLAUDE_SID" ]; then
         POINTER="$HOME/.claude/sessions/$CLAUDE_PID.json"
+        # Diagnose a missing python3 rather than degrading invisibly. Without it
+        # the session-id never binds, so dispatch-bound stays false forever and
+        # crash recovery loses its `claude --resume` path — with no clue why.
+        # Stderr only (human channel): stdout stays a clean key=value report and
+        # the exit code stays 0, so this is not the exit-3 dependency class.
+        if [ -f "$POINTER" ] && ! command -v python3 >/dev/null 2>&1; then
+            echo "warning: python3 not found; cannot read claude-session-id from $POINTER (dispatch-bound will stay false and 'claude --resume' recovery is unavailable)" >&2
+        fi
         if [ -f "$POINTER" ]; then
             CAND_SID="$(ZYZ_POINTER="$POINTER" python3 -c 'import json, os
 try:

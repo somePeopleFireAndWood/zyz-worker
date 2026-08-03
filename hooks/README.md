@@ -36,6 +36,14 @@ Runtime bookkeeping lives under `<task-dir>/runtime/`:
 - Outputs: helper functions only (JSON field extraction, mtime, atomic
   writes, task-root resolution, additionalContext / block-decision JSON
   emission, stale-role scanning).
+- Cost note: `zyz_get` spawns one `jq` (or `python3`) per field read, and the
+  hot-path hooks read 2-3 fields per tool call. `heartbeat.sh` is registered
+  async so it stays off the critical path; `status-freshness.sh` is sync, so
+  its cost sits in the agent's loop. Do **not** try to fix this by memoizing
+  `zyz_get` in a shell variable — every call site is `x="$(zyz_get foo)"` and
+  command substitution runs in a subshell, so the cache never survives to the
+  next call (tried, measured, no gain; see the note in `lib.sh`). The working
+  approach is a single-pass extraction inside the hook script itself.
 - Failure behavior: every helper prints nothing and returns success on
   missing input; callers fail open.
 - Supported agents: all. macOS bash 3.2 + Linux compatible.
@@ -62,7 +70,10 @@ Runtime bookkeeping lives under `<task-dir>/runtime/`:
 ## scripts/status-freshness.sh — L1
 
 - Trigger point: `PostToolUse`, matcher `*`, sync (context must land next
-  to the tool result).
+  to the tool result). **Defers when `tool_name` is `Agent`** — that moment
+  belongs to `post-agent-flush.sh`, which reads the same mtime and would
+  otherwise inject a second, near-identical reminder into the same turn
+  (their cooldowns are independent, so neither suppresses the other).
 - Inputs: hook JSON on stdin; `ZYZ_STATUS_STALE_SEC` (default 600),
   `ZYZ_STATUS_NAG_COOLDOWN_SEC` (default 300).
 - Outputs: `hookSpecificOutput.additionalContext` reminding the current
@@ -108,10 +119,25 @@ passes every downstream gate looking clean.
   "分维度", "register all dimensions"). The reason tells the main agent to
   re-dispatch at full scope split into labeled steps. Blocked attempts are
   appended to `<task-dir>/runtime/scope-guard.log`.
+- Three guards against over-matching, all pinned by T7:
+  1. **Negation veto** — a prompt that forbids truncation ("do not just report
+     the verdict", "只要总结论是不够的") is never a cap. Evaluated on the FULL
+     text, before quote-stripping, so a quoted negation keeps its veto.
+  2. **Quote-stripping** — caps are matched against a copy with `"…"`,
+     `` `…` ``, and `'…'` spans blanked out, so a prompt that *quotes* a
+     capping phrase (docs, tests, changelog work about this guard — routine
+     here) is not read as *issuing* one. A `'` only opens a span after
+     whitespace or punctuation, so contractions cannot swallow real text.
+     Deliberate tradeoff: a prompt that is *entirely* a quoted cap passes.
+  3. **The cap must name a review deliverable** (`findings|issues|problems`).
+     Without this, ordinary domain requirements matched — "no more than 3
+     items per page", "cap it at 3 attempts".
 - Failure behavior: fail open (allow) on missing input/parser/pointer.
-  Matching is heuristic by nature, hence the continuation-commitment
-  exemption and the per-guard disable switch; the suite's T7 group pins 10
-  capped phrasings that must deny and 10 legitimate ones that must pass.
+  Matching is heuristic by nature, hence the exemptions above and the
+  per-guard disable switch; T7 pins 23 capped phrasings that must deny and 28
+  legitimate ones that must pass. T7's payload builder JSON-escapes the
+  prompt — raw interpolation of a fixture containing `"` yields invalid JSON,
+  the guard fails open, and the assertion passes vacuously.
 - Supported agents: main agent dispatching implementation-agent /
   test-agent / review-agent.
 
@@ -122,11 +148,19 @@ passes every downstream gate looking clean.
   without the `current-task` pointer (the gate never applies outside an
   execute-task workflow).
 - Inputs: hook JSON on stdin (`stop_hook_active`,
-  `last_assistant_message`); `ZYZ_SUBAGENT_MIN_FINAL_CHARS` (default 80).
-- Outputs: on a clean stop, stamps `runtime/agents/<key>.done`. When the
-  final message is shorter than the minimum, emits
-  `{"decision":"block","reason":...}` once, instructing the role to emit a
-  proper final report (the `.done` stamp is deferred to the next stop).
+  `last_assistant_message`); `ZYZ_SUBAGENT_MIN_FINAL_CHARS` (default 80,
+  measured in BYTES).
+- Outputs: on a clean stop, stamps `runtime/agents/<key>.done` **and deletes
+  that role's `.start`/`.heartbeat`** — clearing the stale-scan trigger rather
+  than adding a third file that suppresses it, which is what keeps `runtime/`
+  from growing a marker triple per dispatch and what makes an L4 dead-role
+  block clearable at all. When the final message is shorter than the minimum,
+  emits `{"decision":"block","reason":...}` once, instructing the role to emit
+  a proper final report (the markers are left alone until the next stop).
+- The threshold is in bytes on purpose: `${#var}` counts characters under a
+  UTF-8 locale but bytes under `LC_ALL=C`, so a complete 45-character Chinese
+  report measured 45 against a threshold of 80 and got blocked. 80 bytes is
+  ~80 ASCII characters or ~26 CJK characters — both genuinely too short.
 - Failure behavior: fail open (allow stop); never blocks when
   `stop_hook_active` is true; built-in 8-block cap applies.
 - Supported agents: zyz-worker roles (via matcher).
@@ -143,13 +177,33 @@ passes every downstream gate looking clean.
   heartbeat, and not listed as a running background subagent task) or the
   status file is badly stale. The reason names the exact roles to check.
   Rate-limited via `runtime/nag/stopgate.last`.
+- **"Active phase" excludes anything naming `design`.** `*review*` alone would
+  match `design review`, which would make this gate block the main agent from
+  idling at §2 step 8 — the one gate the workflow mandates waiting at
+  indefinitely for human approval — while the prompts promise silence during
+  design. `zyz_phase_active` applies the `design` exclusion first.
+- **The block must be satisfiable by compliance.** This gate reads only the
+  runtime markers, never `status.md`, so the reason names the exact `rm -f` of
+  the role's `.start`/`.heartbeat` alongside the re-dispatch option. An earlier
+  version said "mark it finished in the status file", which the gate could not
+  see: the agent complied, the marker stayed, and it re-blocked until the
+  cooldown or the platform block cap timed out. A `.start` is otherwise cleared
+  only by a clean `SubagentStop` — the event that does not fire on the
+  API-error death this gate exists to catch.
 - Failure behavior: fail open (allow stop).
 - Supported agents: main agent.
 
 ## ../monitors/watchdog.sh — L3
 
-See `monitors/monitors.json`: a background monitor started on the first
-execute-task invocation in a session. Scans heartbeats and status mtime
+See `monitors/monitors.json`: a background monitor armed with
+`when: "always"` (so it starts with the session) and self-gated on the
+`.zyz-worker/current-task` pointer, which makes it inert until a task is
+active. It is deliberately NOT `on-skill-invoke:execute-task`: that value is
+compared as an exact string against the emitted skill name, and the same
+skill emits `zyz-worker:execute-task` under a plugin install but bare
+`execute-task` in project mode — one literal cannot arm in both, and the
+bare form shipped for a while and never armed under a normal install.
+Scans heartbeats and status mtime
 every `ZYZ_WATCHDOG_INTERVAL_SEC` (default 60) and emits one notification
 line per finding (silent role / stale status), which wakes the main agent
 even when the session is idle. This is the layer that catches subagents

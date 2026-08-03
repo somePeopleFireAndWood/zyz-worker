@@ -51,8 +51,12 @@ fi
 
 # Parse the `version` field with a portable grep+sed pipeline. We intentionally
 # avoid `jq` here so pack.sh works on minimal hosts.
+# `|| true` is required: on a manifest with no "version" line the inner grep
+# exits 1 and, under `set -o pipefail`, the whole command substitution fails —
+# aborting with exit 1 and no message before the documented exit 4 below could
+# ever be reached.
 VERSION="$(grep -E '"version"' "$MANIFEST" | head -n1 \
-    | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+    | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
 if [ -z "${VERSION:-}" ]; then
     echo "error: cannot parse version from $MANIFEST" >&2
     exit 4
@@ -72,11 +76,12 @@ rm -f "$TARGET"
 # Operate from the repo root so the paths inside the zip are repo-relative.
 cd "$REPO_ROOT"
 
-# Dirty-tree warning (informational, not fatal). We ship what `git ls-files`
-# lists, which reflects the git index — including any staged-but-uncommitted
-# changes. Surface this to stderr so a release operator notices.
+# Dirty-tree warning (informational, not fatal). `git ls-files` decides WHICH
+# paths ship (the index), but `zip` then reads each path from the WORKING TREE —
+# so the archive carries current on-disk content, including unstaged edits, not
+# HEAD and not the staged blobs. Surface this so a release operator notices.
 if ! git diff-index --quiet HEAD --; then
-    echo "warning: working tree is dirty; zip will reflect the git index, not HEAD" >&2
+    echo "warning: working tree is dirty; the zip ships current on-disk file content (including unstaged edits), not HEAD" >&2
 fi
 
 # Use `git ls-files` as the single source of truth for what ships:
