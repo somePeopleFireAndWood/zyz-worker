@@ -326,6 +326,10 @@ More than just the verdict please — full detail.
 不能只给最严重的几条，要全部登记。
 Review just the first SubTask's changes.
 Only the first 200 lines of the diff matter here.
+Do not run this as a blockers only review.
+This must not be a critical ones only pass; cover each dimension.
+Not a high-priority only review — register every dimension.
+Do not make this a p0 only sweep.
 Add a test asserting that a dispatch saying "limit to 3 findings" is denied.
 Implement the L5 scope guard. It must deny prompts like "only the top 3 findings" and "just the overall verdict".
 Write the changelog entry describing that we now forbid '一句话结论' in recovery prompts.

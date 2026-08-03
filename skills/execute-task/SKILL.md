@@ -141,7 +141,9 @@ implementationAgent writes implementation and runs tests. It must not modify tes
 
 testAgent writes and maintains test code. It must not run tests.
 
-reviewAgent reviews design, implementation, and tests. It must not modify files directly.
+reviewAgent reviews design, implementation, and tests. It must not leave any modified file as a deliverable. It MAY, however, run tests read-only and inject throwaway mutations to measure discriminating power — this workflow grants that boundary change explicitly (it is why `agents/review-agent.md` carries `Bash`). The conditions are hard: every injected edit must be restored and the tree verified byte-identical (`git status` clean / empty diff) before the review returns, and an unverifiable restoration is reported as an incident rather than swallowed. The reason for the grant: a read-only review can check whether an argument is self-consistent but not whether its inputs were real, so auditing a report without re-deriving it co-signs the author's tool failures — and measured, reading alone caught none of the silently-empty assertions that mutation injection caught.
+
+Under this grant reviewAgent is a test-running lane like any other, so when it runs tests concurrently with an implementation lane it needs its own resource lease (§3.0.3) — never the lane's ports or test DB, or the two will silently probe each other's processes.
 
 If the platform cannot enforce these boundaries technically, enforce them procedurally by separating role outputs and clearly labeling which role is acting.
 
@@ -361,8 +363,8 @@ Phase mapping (when each phase value must be written to `worker-status.md`):
 | §2 Design (all of it, including review loops) | `design` | once on entry; on each return to main agent |
 | §3.A step 1 / §3.B step 1 — implementation-agent dispatched | `implementation` (on user approval only — never autonomous; see the design→implementation hard-gate rule) | before dispatching the subagent |
 | §3.A step 2 / §3.B step 2 — test-agent / running tests | `testing` | before dispatching / before running |
-| §3.A step 5 / §3.B step 5 — review-agent dispatched | `review` | before dispatching |
-| §3.B step 6 — review → implementation revisions loop | `review` (held by default; MAY roll back to `implementation` if it genuinely returns to substantial implementation work — rollback is allowed) | no flush |
+| §3.A step 4 / §3.B step 3.5+4 — workspace frozen, then review-agent dispatched | `review` | before dispatching |
+| §3.A step 5 / §3.B step 5 — review → implementation revisions loop | `review` (held by default; MAY roll back to `implementation` if it genuinely returns to substantial implementation work — rollback is allowed) | no flush |
 | §3.C aggregate testing | `testing` | on entry |
 | §3.C aggregate review | `review` | on entry |
 | §4 Deliver | `delivery` | on entry |

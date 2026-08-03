@@ -253,6 +253,14 @@ zyz_scope_negated() {
     printf '%s' "$p" | grep -qE "not (just|only|merely|simply) (the |a )?[a-z0-9]" && return 0
     printf '%s' "$p" | grep -qE "(more|rather) than (just|only) " && return 0
     printf '%s' "$p" | grep -qE "(is|are|would be) ?n.?o?t (enough|sufficient|fine|ok|acceptable)" && return 0
+    # SEVERITY-FILTER caps ("blockers only", "p0 only", "critical ones only")
+    # put the truncation word AFTER the noun, so the adjacency patterns above
+    # never fire on their negations. Without this, the guard denies exactly the
+    # anti-cap instruction the coverage-registration rules teach the main agent
+    # to send ("do not run this as a blockers only review"). Match a negation
+    # anywhere ahead of such a trailing `only` in the same clause.
+    printf '%s' "$p" | grep -qE "(do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t[^.;]{0,60}(blocker|critical|high.severity|high.priority|p[01]|severe)[a-z]*( (issue|finding|one|item)s?)? only" && return 0
+    printf '%s' "$p" | grep -qE "^not [^.;]{0,60}(blocker|critical|high.severity|high.priority|p[01]|severe)[a-z]*( (issue|finding|one|item)s?)? only" && return 0
     printf '%s' "$p" | grep -qE "(more than|beyond) (just|only) (the )?(verdict|conclusion|summary)" && return 0
     printf '%s' "$p" | grep -qE "(不是|不只是|不能只|别只|不要只|不止)(要|给|报|写|看)?" && return 0
     # Careful: bare 不行 also appears in the DEGRADATION idiom "实在不行就先

@@ -2602,6 +2602,8 @@ T8_SKIP_ALL() {
         "dispatch.md Phase-1 key base non-empty (a)" \
         "dispatch.md Phase-1 key plugin-root non-empty (a)" \
         "dispatch.md Phase-1 key encoded-cwd non-empty (a)" \
+        "dispatch.md worker-mcp-args key present (a-mcp)" \
+        "dispatch.md worker-mcp-args defaults to --strict-mcp-config (a-mcp)" \
         "dispatch.md tmux-window-id matches ^@[0-9]+\$ (a)" \
         "dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a)" \
         "dispatch.md shell-pid is a positive integer (a)" \
@@ -4902,8 +4904,16 @@ $(printf '%s\n' "$diff_out" | sed 's/^/      | /')"
 
 # ---------------------------------------------------------------------------
 # CONSOL. Consolidation-pass regression guards. Each pins a bug that was found
-# by audit and verified by execution; all are pure file reads (no tmux, no git),
-# so this group runs unconditionally.
+# by audit and verified by execution.
+#
+# Dependency gate: these cases assert on the helpers' FILE-level logic (token
+# boundary, threshold parsing, numbering-gap refusal), but every one of those
+# helpers runs `for dep in tmux git` FIRST and exits 3 before reaching it. An
+# earlier revision of this comment claimed the group was "pure file reads, so it
+# runs unconditionally" — that was wrong, and on a tmux-less host it turned five
+# guards into five failures that looked like real regressions. The group is
+# therefore SKIPPED without tmux+git, the same posture the rest of the suite
+# takes for helper-invoking cases.
 #
 #  (a) approved-token boundary. orch-merge-and-cleanup.sh bounded its `approved`
 #      token with a class omitting `-`, so `cleanup-approved` (and
@@ -4922,6 +4932,23 @@ $(printf '%s\n' "$diff_out" | sed 's/^/      | /')"
 # ---------------------------------------------------------------------------
 run_CONSOL() {
     say_header "CONSOL consolidation-pass regression guards"
+
+    # See the dependency-gate note above the group header: the helpers under
+    # test exit 3 on a missing tmux/git before any of the file logic these
+    # guards assert on, so without both deps the cases cannot distinguish
+    # "guard broken" from "dep missing". Skip with a stated reason instead of
+    # emitting failures that impersonate regressions.
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+        local why="tmux+git required (helpers exit 3 on the dep gate before the file logic)"
+        skip "CONSOL(a) 'cleanup-approved' alone must NOT satisfy the 'approved' gate ($why)"
+        skip "CONSOL(a) 'not-approved' alone must NOT satisfy the 'approved' gate ($why)"
+        skip "CONSOL(b) malformed ZYZ_HEARTBEAT_STALE_SEC falls back to default ($why)"
+        skip "CONSOL(b) malformed ZYZ_HEARTBEAT_WAITING_USER_SEC falls back to default ($why)"
+        skip "CONSOL(c) orch-merge.sh refuses a worktree-numbering gap ($why)"
+        skip "CONSOL(c) orch-merge-and-cleanup.sh refuses a worktree-numbering gap ($why)"
+        skip "CONSOL(c) orch-cleanup-worker.sh refuses a worktree-numbering gap ($why)"
+        return 0
+    fi
 
     local root
     root="$(mktemp -d "${TMPDIR:-/tmp}/zyz-consol.XXXXXX")"
