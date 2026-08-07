@@ -52,7 +52,7 @@ json_tool() {
 # ---------------------------------------------------------------------------
 # T1 — layout, exec bits, syntax
 # ---------------------------------------------------------------------------
-HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh"
+HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh"
 for f in $HOOK_SCRIPTS monitors/watchdog.sh hooks/hooks.json monitors/monitors.json hooks/README.md; do
     if [ -f "$f" ]; then pass "T1 exists: $f"; else fail "T1 exists: $f" "missing"; fi
 done
@@ -742,6 +742,93 @@ if [ "$t8_out" = 'cwd=/tmp/x|id=a1|nested=hi|absent=|bool=true' ]; then
     pass "T8 zyz_get extracts string / nested / absent / boolean shapes correctly"
 else
     fail "T8 zyz_get extraction shapes changed" "got [$t8_out]"
+fi
+
+# ---------------------------------------------------------------------------
+# T12  L6 checkout guard (issue #6).
+#
+# Real accident: on a SHARED worktree, an audit agent reverted its throwaway
+# mutation with `git checkout <file>` — which resets to HEAD — and deleted
+# another agent's UNCOMMITTED work in that file. Never-committed content is in
+# no git recovery mechanism, and the build stayed green. The guard denies
+# checkout/restore of a file with uncommitted modifications and the
+# state-moving git stash forms, while leaving ordinary git usage alone.
+# ---------------------------------------------------------------------------
+if json_tool && command -v git >/dev/null 2>&1; then
+    t12="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t12.XXXXXX")"
+    (
+        cd "$t12" || exit 1
+        git init -q -b main . >/dev/null 2>&1
+        mkdir -p .zyz-worker/tasks/t1
+        printf 't1\n' > .zyz-worker/current-task
+        printf -- '## Metadata\n\n- Current Phase: implementation\n' > .zyz-worker/tasks/t1/status.md
+        printf 'v1\n' > f.go; printf 'v1\n' > clean.go
+        git add . >/dev/null 2>&1
+        git -c user.email=t@t -c user.name=t commit -qm init >/dev/null 2>&1
+        printf 'UNCOMMITTED\n' >> f.go
+    ) >/dev/null 2>&1
+    t12_sg() { # $1 command -> stdout of the guard
+        python3 -c 'import json,sys
+print(json.dumps({"cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' "$t12" "$1" \
+            | bash "$REPO_ROOT/hooks/scripts/checkout-guard.sh" 2>/dev/null
+    }
+    t12_deny() {
+        if printf '%s' "$(t12_sg "$1")" | grep -q '"deny"'; then pass "T12 denies: $1"; else fail "T12 denies: $1"; fi
+    }
+    t12_allow() {
+        if [ -z "$(t12_sg "$1")" ]; then pass "T12 allows: $1"; else fail "T12 allows: $1" "$(t12_sg "$1" | head -c 120)"; fi
+    }
+    # The accident's exact shape, and its close variants:
+    t12_deny 'git checkout f.go'
+    t12_deny 'git checkout -- f.go'
+    t12_deny 'git restore f.go'
+    t12_deny 'git checkout .'
+    t12_deny 'git stash'
+    t12_deny 'git stash pop'
+    # Ordinary git usage must be untouched:
+    t12_allow 'git checkout clean.go'
+    t12_allow 'git checkout -b feature/x'
+    t12_allow 'git checkout main'
+    t12_allow 'git stash list'
+    t12_allow 'git show HEAD:f.go'
+    t12_allow 'git status'
+    # Compound command: words after a metacharacter are not checkout targets.
+    t12_allow 'git checkout clean.go && echo f.go'
+    # No task pointer -> guard does not apply (general sessions keep git freedom).
+    rm -f "$t12/.zyz-worker/current-task"
+    if [ -z "$(t12_sg 'git checkout f.go')" ]; then
+        pass "T12 no pointer -> guard no-op (general git freedom preserved)"
+    else
+        fail "T12 no pointer -> guard no-op"
+    fi
+    printf 't1\n' > "$t12/.zyz-worker/current-task"
+    # Per-guard disable switch.
+    t12_out="$(python3 -c 'import json,sys
+print(json.dumps({"cwd":sys.argv[1],"tool_input":{"command":"git checkout f.go"}}))' "$t12" \
+        | ZYZ_CHECKOUT_GUARD_DISABLE=1 bash "$REPO_ROOT/hooks/scripts/checkout-guard.sh" 2>/dev/null)"
+    if [ -z "$t12_out" ]; then
+        pass "T12 ZYZ_CHECKOUT_GUARD_DISABLE=1 -> no-op"
+    else
+        fail "T12 ZYZ_CHECKOUT_GUARD_DISABLE=1 -> no-op"
+    fi
+    # Fail open on malformed input.
+    t12_rc=0; printf 'not-json' | bash "$REPO_ROOT/hooks/scripts/checkout-guard.sh" >/dev/null 2>&1 || t12_rc=$?
+    if [ "$t12_rc" -eq 0 ]; then
+        pass "T12 malformed input -> fail open (rc 0)"
+    else
+        fail "T12 malformed input -> fail open" "rc=$t12_rc"
+    fi
+    rm -rf "$t12"
+else
+    for l in "denies: git checkout f.go" "denies: git checkout -- f.go" "denies: git restore f.go" \
+             "denies: git checkout ." "denies: git stash" "denies: git stash pop" \
+             "allows: git checkout clean.go" "allows: git checkout -b feature/x" "allows: git checkout main" \
+             "allows: git stash list" "allows: git show HEAD:f.go" "allows: git status" \
+             "allows: git checkout clean.go && echo f.go" \
+             "no pointer -> guard no-op (general git freedom preserved)" \
+             "ZYZ_CHECKOUT_GUARD_DISABLE=1 -> no-op" "malformed input -> fail open (rc 0)"; do
+        skip "T12 $l (jq/python3 or git unavailable)"
+    done
 fi
 
 # ---------------------------------------------------------------------------

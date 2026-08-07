@@ -195,6 +195,37 @@ passes every downstream gate looking clean.
 - Failure behavior: fail open (allow stop).
 - Supported agents: main agent.
 
+## scripts/checkout-guard.sh — L6
+
+The shared-worktree revert guard. Exists because of a real accident: an
+audit agent reverted its throwaway mutation with `git checkout <file>` —
+which resets to HEAD — and deleted another agent's uncommitted work in the
+same file (~5000 chars of security-guard code). Never-committed content is
+in NO git recovery mechanism, and the build stayed green because the loss
+sat behind a runtime type-assertion seam; recovery required replaying the
+author agent's transcript.
+
+- Trigger point: `PreToolUse`, matcher `^Bash$`, sync (a deny requires
+  sync). Applies only when the session has an active task pointer — general
+  (non-task) sessions keep full git freedom.
+- Inputs: hook JSON on stdin (`cwd`, `tool_input.command`);
+  `ZYZ_CHECKOUT_GUARD_DISABLE=1` disables just this guard (parsing shell
+  with shell is heuristic by nature, so a per-guard escape hatch is
+  mandatory — same policy as L5), `ZYZ_HOOKS_DISABLE=1` the whole layer.
+- Outputs: a `PreToolUse` deny when the command is (a) `git checkout` /
+  `git restore` naming a file that currently has UNCOMMITTED modifications
+  (`git status --porcelain` decides; clean files, branch names, `-b`, and
+  untracked paths all pass), or (b) a state-moving `git stash` form (bare /
+  push / save / pop / apply / drop / clear — `list`/`show` pass). The deny
+  reason carries the safe recipe: cp-backup before mutating + mv to
+  restore, `git show HEAD:<file>` to read the committed version,
+  `git diff > patch` + `git apply -R` for set-asides.
+- Failure behavior: fail open (allow) on missing input/parser/pointer,
+  git absent, non-repo cwd, or malformed JSON. Argument scanning stops at
+  the first shell metacharacter so a following command's words are never
+  misread as checkout targets.
+- Supported agents: all — the incident's command came from a subagent.
+
 ## ../monitors/watchdog.sh — L3
 
 See `monitors/monitors.json`: a background monitor armed with

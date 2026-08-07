@@ -289,6 +289,7 @@ subagents/
 │       ├── status-freshness.sh
 │       ├── post-agent-flush.sh
 │       ├── dispatch-scope-guard.sh
+│       ├── checkout-guard.sh
 │       ├── stop-gate-subagent.sh
 │       └── stop-gate-main.sh
 ├── monitors/

@@ -90,7 +90,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 所以 0.13.0 加了一层确定性兜底。**原则：提示词纪律仍是主行为，watchdog 只是兜底**；整层缺失（策略禁用 hooks、平台不支持 monitors）工作流也照常跑。
 
-### 4.2 六层
+### 4.2 七层
 
 | 层 | 载体 | 触发点 | 干什么 |
 |---|---|---|---|
@@ -100,6 +100,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 | **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层 |
 | **L4 主 agent 停止门** | `stop-gate-main.sh` | Stop | 派出的角色看起来死了、或状态文件严重过期时，阻止主 agent 就这么闲下来 |
 | **L5 派发范围守卫** | `dispatch-scope-guard.sh` | PreToolUse (`^Agent$`) | 唯一**事前**层：检查派发提示词是否在压缩角色交付范围，是则 deny（除非同一提示词承诺了补齐剩余部分）。启发式匹配，三重防过度拦截：否决式表述免疫、引号内容不算下达指令、上限必须挂在评审交付物名词上 |
+| **L6 共享树回退守卫** | `checkout-guard.sh` | PreToolUse (`^Bash$`) | 拦截会摧毁**他人未提交成果**的 git 回退：`checkout/restore` 指向有未提交改动的文件、以及移动状态的 `stash` 形态。deny 消息里给出安全替代（改前 cp 备份、`git show HEAD:<file>` 只读、`git apply -R`）。源自真实事故：变异测试回退用 checkout 连带删掉另一 agent 约 5000 字符守卫代码，且 build 全绿 |
 
 ### 4.3 关键机制
 
@@ -108,7 +109,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 - **`.start` 有、`.done` 无、心跳仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。`runtime/` 整个不存在则意味着看门狗从未上膛，此时没有任何存活证据可用。
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
 - **输出形状按事件类型区分。** `PostToolUse` / `PreToolUse` 这类注入或拦截，输出 `hookSpecificOutput` 且其中 `hookEventName` 必须与注册的事件一致（前者带 `additionalContext`，后者带 `permissionDecision`）；而 Stop / SubagentStop 两个停止门禁输出的是**不带**事件名的 `{decision:"block",reason}`——这是该事件族的约定，不是漏写。
-- **三个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5（因其匹配是启发式的，必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。
+- **四个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5、`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关 L6（两者的匹配都是启发式的——用 shell 解析 shell 无法完美——必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。
 - **阈值分层且可调。** L3 的角色静默阈值（1200s）刻意高于 L4（900s），因为 L3 无法交叉验证 `background_tasks`，而健康角色可能长时间只思考不调工具——所以 L3 的措辞是「请核实」而不是「立即重启」。全部通过 `ZYZ_*` 环境变量可调，`ZYZ_HOOKS_DISABLE=1` 关掉整层。
 - **多层管同一条不变量不是冗余，是递进升级阶梯。** 状态文件新鲜度有三层管：600s 注入提醒（纯建议）→ 1200s 停止门禁（拦住 idle）→ 1800s 后台监视器（唤醒会话）。角色存活有两层：900s 停止门禁 → 1200s 监视器。每层阈值不同、触发点不同、手段强度不同（提醒 < 阻止 < 唤醒），后一层只在前一层已经失效时才够到。看起来重复的地方，实际是「先轻后重」。
 - **两个停止门禁都不会死锁。** 二者都先检查 `stop_hook_active`：该标志为真意味着本次停止已经被拦过一次，此时直接放行。所以每次停止最多拦一次，不存在反复阻止的活锁；再叠加冷却戳限流。

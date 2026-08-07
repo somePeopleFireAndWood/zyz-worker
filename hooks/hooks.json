@@ -1,5 +1,5 @@
 {
-  "description": "zyz-worker watchdog: deterministic liveness heartbeats, status-freshness reminders, dispatch-side scope guard, subagent exit gate, and main-agent stop gate for the execute-task workflow. All hooks fail open and no-op unless the session cwd has a .zyz-worker/current-task pointer. Set ZYZ_HOOKS_DISABLE=1 to disable (ZYZ_SCOPE_GUARD_DISABLE=1 for the scope guard alone).",
+  "description": "zyz-worker watchdog: deterministic liveness heartbeats, status-freshness reminders, dispatch-side scope guard, shared-worktree checkout guard, subagent exit gate, and main-agent stop gate for the execute-task workflow. All hooks fail open and no-op unless a .zyz-worker/current-task pointer resolves. Set ZYZ_HOOKS_DISABLE=1 to disable (ZYZ_SCOPE_GUARD_DISABLE=1 for the scope guard alone; ZYZ_CHECKOUT_GUARD_DISABLE=1 for the checkout guard alone).",
   "hooks": {
     "PreToolUse": [
       {
@@ -19,6 +19,16 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/dispatch-scope-guard.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/checkout-guard.sh",
             "timeout": 15
           }
         ]

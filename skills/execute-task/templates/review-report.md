@@ -37,7 +37,7 @@ implementation-oriented dimensions are registered `n/a: design phase`.
 
 ## Injected Mutations
 
-<!-- Complementary-surface mutations you injected (your own targets, not the author's): each with target, expected-red cases, KILLED/SURVIVED — and the tree-restoration verification (git status clean / empty diff). n/a for a design-phase review. -->
+<!-- Complementary-surface mutations you injected (your own targets, not the author's): each with target, expected-red cases, KILLED/SURVIVED — and the restoration verification: per-file `cmp` against the backup copy you took BEFORE mutating. NOT "git status clean" — a shared worktree carries other agents' legitimate in-flight edits, and NEVER restore via git checkout/restore (resets to HEAD, destroys others' uncommitted work). n/a for a design-phase review. -->
 
 ## No-Op Assertion Checklist
 

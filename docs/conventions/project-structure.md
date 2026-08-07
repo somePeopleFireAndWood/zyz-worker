@@ -101,7 +101,7 @@ Hook definitions and hook scripts belong here when the project needs lifecycle a
 
 Hooks should be small, deterministic, and documented with their trigger point, inputs, outputs, and failure mode.
 
-Implemented: `hooks/hooks.json` registers the execute-task watchdog layer (tool-call heartbeats, status-freshness reminders, a pre-dispatch scope guard, subagent exit gate, main-agent stop gate) backed by scripts in `hooks/scripts/`. All watchdog hooks fail open and no-op without a `.zyz-worker/current-task` pointer. Each script carries an in-file contract block and is documented in `hooks/README.md`; the layer's role in the workflow is summarized in [../architecture.md](../architecture.md).
+Implemented: `hooks/hooks.json` registers the execute-task watchdog layer (tool-call heartbeats, status-freshness reminders, a pre-dispatch scope guard, a shared-worktree checkout guard, subagent exit gate, main-agent stop gate) backed by scripts in `hooks/scripts/`. All watchdog hooks fail open and no-op without a `.zyz-worker/current-task` pointer. Each script carries an in-file contract block and is documented in `hooks/README.md`; the layer's role in the workflow is summarized in [../architecture.md](../architecture.md).
 
 ### `monitors/`
 
