@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-10
+
+### Added — full Codex runtime compatibility
+
+- **Dual-runtime worker lifecycle.** New `scripts/orch-agent-runtime.sh` detects Claude Code or Codex, renders runtime-specific launch/resume commands, and discovers Codex sessions from rollout metadata. Spawn, reuse, and check helpers now persist generic runtime/PID/session fields while retaining the legacy Claude aliases for backward compatibility.
+- **Real Codex orchestration.** Codex workers can launch in tmux, pass the directory trust prompt, bind their session and transcript, resume after interruption, reuse existing worker containers, and receive an absolute `execute-task` Skill fallback when slash commands are unavailable.
+- **Codex-aware MCP isolation.** Interactive Codex does not accept Claude's MCP flags or `codex exec --ignore-user-config`; the worker helper now snapshots enabled Codex MCP servers and emits per-server `enabled=false` overrides for the default isolated mode, failing closed if that snapshot cannot be obtained.
+- **Codex hook and watchdog support.** Hook commands resolve `CODEX_PLUGIN_ROOT`, orchestrated `ZYZ_PLUGIN_ROOT`, or legacy `CLAUDE_PLUGIN_ROOT`; payload parsing accepts Codex tool fields; synchronous heartbeat and detached SessionStart watchdog paths cover the Codex host's current lack of Claude-style async monitor wake-ups.
+- **Codex adaptation test suite.** `scripts/test-codex-adaptation.sh` covers runtime selection, command rendering, MCP policy, session/transcript binding, recovery output, plugin-root resolution, and an opt-in real Codex/tmux/hook smoke test.
+- **Documentation and templates.** Runtime selection, generic dispatch fields, recovery behavior, Codex limitations, worker startup, and cleanup guidance now describe both Claude Code and Codex.
+
 ### Fixed — issue #6: `git checkout` on a shared worktree destroyed another agent's uncommitted work
 
 Real incident (2026-08-06): several subagents shared one worktree; an audit agent reverted its throwaway mutation with `git checkout <file>` — which resets to HEAD — and deleted another agent's uncommitted work in that file (~5000 chars of security-guard code plus supporting edits). The damage class is uniquely nasty: never-committed content is in NO git recovery mechanism (no reflog, no stash, no `fsck --lost-found`), and `go build` stayed green because the loss sat behind a runtime type-assertion seam — had that seam been written "skip if absent", the accident would have become a silent security bypass. Recovery succeeded only by replaying the author agent's transcript (`tool_use` inputs hold everything ever written, verbatim).
