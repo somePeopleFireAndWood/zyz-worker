@@ -52,7 +52,7 @@ json_tool() {
 # ---------------------------------------------------------------------------
 # T1 — layout, exec bits, syntax
 # ---------------------------------------------------------------------------
-HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh"
+HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh"
 for f in $HOOK_SCRIPTS monitors/watchdog.sh hooks/hooks.json monitors/monitors.json hooks/README.md; do
     if [ -f "$f" ]; then pass "T1 exists: $f"; else fail "T1 exists: $f" "missing"; fi
 done
@@ -78,17 +78,19 @@ if json_tool; then
 else
     skip "T2 JSON validity" "no jq/python3"
 fi
-for ev in PreToolUse PostToolUse SubagentStart SubagentStop Stop; do
+for ev in PreToolUse PostToolUse SubagentStart SubagentStop Stop SessionStart; do
     if grep -q "\"$ev\"" hooks/hooks.json 2>/dev/null; then
         pass "T2 hooks.json registers $ev"
     else
         fail "T2 hooks.json registers $ev"
     fi
 done
-if grep -q 'CLAUDE_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null; then
-    pass "T2 hooks.json uses \${CLAUDE_PLUGIN_ROOT}"
+if grep -q 'CODEX_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null \
+    && grep -q 'ZYZ_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null \
+    && grep -q 'CLAUDE_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null; then
+    pass "T2 hooks.json resolves Codex/orchestrated/Claude plugin roots"
 else
-    fail "T2 hooks.json uses \${CLAUDE_PLUGIN_ROOT}"
+    fail "T2 hooks.json resolves Codex/orchestrated/Claude plugin roots"
 fi
 # The monitor's `when` must be a value Claude Code can actually ARM.
 # Arming compares `when` as an EXACT string against the emitted skill name

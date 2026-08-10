@@ -7,28 +7,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/heartbeat.sh",
-            "timeout": 10,
-            "async": true
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/heartbeat.sh",
+            "timeout": 10
           }
         ]
       },
       {
-        "matcher": "^Agent$",
+        "matcher": "^(Agent|spawn_agent|collaboration\\.spawn_agent)$",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/dispatch-scope-guard.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/dispatch-scope-guard.sh",
             "timeout": 15
           }
         ]
       },
       {
-        "matcher": "^Bash$",
+        "matcher": "^(Bash|exec_command|functions\\.exec)$",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/checkout-guard.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/checkout-guard.sh",
             "timeout": 15
           }
         ]
@@ -40,23 +39,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/heartbeat.sh",
-            "timeout": 10,
-            "async": true
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/heartbeat.sh",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/status-freshness.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/status-freshness.sh",
             "timeout": 15
           }
         ]
       },
       {
-        "matcher": "^Agent$",
+        "matcher": "^(Agent|spawn_agent|collaboration\\.spawn_agent)$",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/post-agent-flush.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/post-agent-flush.sh",
             "timeout": 15
           }
         ]
@@ -68,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/subagent-track.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/subagent-track.sh",
             "timeout": 10
           }
         ]
@@ -80,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/stop-gate-subagent.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/stop-gate-subagent.sh",
             "timeout": 15
           }
         ]
@@ -91,8 +89,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/stop-gate-main.sh",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/stop-gate-main.sh",
             "timeout": 20
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/start-watchdog.sh",
+            "timeout": 10
           }
         ]
       }

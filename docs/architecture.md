@@ -105,7 +105,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 ### 4.3 关键机制
 
 - **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来。现已加**有界兜底**：单 base 命中（热路径不变）→ `$ZYZ_TASK_DIR` → 同仓库的兄弟 worktree（按 `status.md` mtime 取最新、跳过 `phase: done`、每次兜底命中记一行日志）。刻意**不做**无界向上遍历：默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session。
-- **「未武装」必须可见（比空转本身更深的问题）。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分——这正是整层失效一整个任务却无人察觉的原因。现在 L3 在解析失败时**报一次**（不是每 tick），明说「dead subagent 不会被上报、空闲闸门不会拦」；§1 也要求在若干次工具调用后确认 `runtime/agents/main.heartbeat` 存在（心跳是 async，第一次调用时还没写）。
+- **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求在工具调用后确认 `runtime/agents/main.heartbeat` 存在；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。
 - **`.start` 有、`.done` 无、心跳仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。`runtime/` 整个不存在则意味着看门狗从未上膛，此时没有任何存活证据可用。
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
 - **输出形状按事件类型区分。** `PostToolUse` / `PreToolUse` 这类注入或拦截，输出 `hookSpecificOutput` 且其中 `hookEventName` 必须与注册的事件一致（前者带 `additionalContext`，后者带 `permissionDecision`）；而 Stop / SubagentStop 两个停止门禁输出的是**不带**事件名的 `{decision:"block",reason}`——这是该事件族的约定，不是漏写。
@@ -113,7 +113,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 - **阈值分层且可调。** L3 的角色静默阈值（1200s）刻意高于 L4（900s），因为 L3 无法交叉验证 `background_tasks`，而健康角色可能长时间只思考不调工具——所以 L3 的措辞是「请核实」而不是「立即重启」。全部通过 `ZYZ_*` 环境变量可调，`ZYZ_HOOKS_DISABLE=1` 关掉整层。
 - **多层管同一条不变量不是冗余，是递进升级阶梯。** 状态文件新鲜度有三层管：600s 注入提醒（纯建议）→ 1200s 停止门禁（拦住 idle）→ 1800s 后台监视器（唤醒会话）。角色存活有两层：900s 停止门禁 → 1200s 监视器。每层阈值不同、触发点不同、手段强度不同（提醒 < 阻止 < 唤醒），后一层只在前一层已经失效时才够到。看起来重复的地方，实际是「先轻后重」。
 - **两个停止门禁都不会死锁。** 二者都先检查 `stop_hook_active`：该标志为真意味着本次停止已经被拦过一次，此时直接放行。所以每次停止最多拦一次，不存在反复阻止的活锁；再叠加冷却戳限流。
-- **性能只在同步层要紧。** 心跳注册为 async（不阻塞工具调用），真正落在 agent 循环里的是同步的 `status-freshness.sh`（每次工具调用一次，实测约几十毫秒量级）。成本来自 `zyz_get` 每读一个字段起一个 `jq` 进程。注意：给 `zyz_get` 加 shell 变量缓存**没有用**且已验证无效——所有调用点都写成 `x="$(zyz_get foo)"`，命令替换在**子 shell** 里执行，缓存随子 shell 一起消失。真要降本得在 hook 脚本里**一次性**取全部字段（单次 jq 输出多个值），而不是反复调 `zyz_get`。`lib.sh` 里留了注释记录这个结论，避免再走一遍弯路。
+- **同步层性能要可控。** 当前 Codex 会跳过 async hook，因此心跳与 `status-freshness.sh` 都是同步的。成本来自 `zyz_get` 每读一个字段起一个 `jq` 进程；真要降本应在 hook 脚本里一次性取全部字段，不要在命令替换子 shell 中做无效缓存。
 - **`when: always` 而不是 `on-skill-invoke:`（踩过的坑）。** 后者按**精确字符串**与「发出的 skill 名」比对，而同一个 skill 以插件加载时发出的是**带限定名**的 `zyz-worker:execute-task`、以项目模式使用时发出的是裸名 `execute-task`——一个字面量覆盖不了两种安装方式，原先写的裸名在正常插件安装下**从未 arm 过**。`watchdog.sh` 本身以指针为门，所以恒久 arm 与按需 arm 效果等价，代价只是一个休眠进程。教训：手动跑脚本只验证脚本逻辑，**不验证宿主是否真的把它挂上**。
 - **门禁的指令必须是「能被执行后清掉触发条件」的。** L4 只读 `runtime/` 标记、从不读 `status.md`，所以早期那句「在状态文件里标记它已完成」是**无法满足**的指令：照做了标记还在、门禁继续拦，只能等冷却或平台的连续拦截上限超时。现在改为：干净退出的 SubagentStop 直接**删掉** `.start`/`.heartbeat`（顺带解决 `runtime/` 每派发一次就多留一组标记的累积问题，因为 `agent_id` 每次都是新的随机值），而拦截理由里直接给出该删哪个文件的 `rm -f`。
 - **长度阈值按字节量，不按 `${#var}`。** bash 的 `${#var}` 在 UTF-8 locale 下数字符、在 `LC_ALL=C` 下数字节——同一条消息两种读数。一份完整的 45 字中文报告按字符只有 45、低于阈值 80 会被当成「太短」拦掉，而它其实有 135 字节。已改为数字节（与 locale 无关），阈值按字节校准。
@@ -195,7 +195,7 @@ L3 ←→ 文件(自己的 worktree + worker-status.md)
 
 ### 5.6 崩溃恢复的原理
 
-`dispatch.md` 把 tmux session/pane 绑定到 claude 的 session-id 与 transcript 路径。**Phase-2 字段是惰性填的**，因为 Claude Code 只在会话的**第一次 LLM 往返成功之后**才落盘 session pointer 与 transcript——启动时不写。所以「claude 进程已存在但 session-id 还查不到」是正常瞬态，不是错误。
+`dispatch.md` 把 tmux session/pane 绑定到选定 agent runtime 的 session-id 与 transcript 路径。**Phase-2 字段惰性填充**：Claude 从 PID pointer + `~/.claude/projects` 发现，Codex 从 `~/.codex/sessions/**/rollout-*.jsonl` 首行 `session_meta` 按物理 cwd 和 spawn 时间发现。generic 字段是 `agent-pid` / `agent-session-id`，同时保留 Claude 命名别名以兼容旧数据。
 
 四种恢复情形按 `session-alive` × `dispatch-bound` 两个信号区分：session 活着就 attach；session 死了但绑定完整就 `claude --resume`（**必须带 `--plugin-dir`**，否则 transcript 恢复了但插件没注册，`/execute-task` 会变成 Unknown command）；只有 Phase-1 则无可恢复状态，清理重派；`dispatch.md` 整个缺失则看 session 是否还活着来判断。
 
@@ -206,6 +206,8 @@ L1 每 tick 按 7 分支决策树选下次唤醒间隔（120s 逼近完工 / 180
 ## 六、多端与打包
 
 同一套根级资产供两端复用，各端只有自己的清单：Claude Code 读 `.claude-plugin/plugin.json` 并在根级找 `agents/` `commands/` `skills/` `hooks/`；Codex 读 `.codex-plugin/plugin.json` 并只用根级 `skills/`。`.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，让本仓库既能当插件加载、也能直接当项目使用。
+
+Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex resume`，Claude 使用 `claude --plugin-dir` / `claude --resume`。hooks 命令按 `CODEX_PLUGIN_ROOT` → orchestrated `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` 解析（Codex 0.147.0 会把裸 `./hooks` 相对 worker cwd 解析），并同时匹配两端工具名；Codex `SessionStart` 同步 hook 只负责快速拉起脱离的诊断 scanner，不宣称具有 Claude monitor 的会话唤醒能力。
 
 `scripts/pack.sh` 以 `git ls-files` 为唯一装箱清单（天然排除未跟踪与 gitignore 的内容），版本号取自 `.claude-plugin/plugin.json`。
 

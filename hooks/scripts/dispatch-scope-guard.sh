@@ -53,19 +53,22 @@ ZYZ_HOOK_INPUT="$(cat 2>/dev/null || true)"
 [ -n "$ZYZ_HOOK_INPUT" ] || exit 0
 
 base="$(zyz_get cwd)"
+[ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
-[ -n "$base" ] || exit 0
+[ -n "$base" ] || base="$PWD"
 
 root="$(zyz_task_root "$base")"
 [ -n "$root" ] || exit 0
 
 target="$(zyz_role_of "$(zyz_get tool_input.subagent_type)")"
+[ -n "$target" ] || target="$(zyz_role_of "$(zyz_get tool_input.task_name)")"
 case "$target" in
     implementation-agent|test-agent|review-agent) ;;
     *) exit 0 ;;
 esac
 
 prompt="$(zyz_get tool_input.prompt)"
+[ -n "$prompt" ] || prompt="$(zyz_get tool_input.message)"
 [ -n "$prompt" ] || exit 0
 
 hit="$(zyz_scope_cap_hit "$prompt")"

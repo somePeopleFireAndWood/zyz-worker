@@ -19,6 +19,18 @@ the session cwd contains a `.zyz-worker/current-task` pointer (first line:
 task id, or a task-directory path) resolving to an existing task directory.
 The main agent writes that pointer at workflow §1 Start Task.
 
+The manifest resolves hook scripts through `CODEX_PLUGIN_ROOT`, then the
+orchestrated `ZYZ_PLUGIN_ROOT`, then `CLAUDE_PLUGIN_ROOT`. A bare `./hooks`
+path is not sufficient: Codex 0.147.0 resolves it from the worker cwd. Tool
+matchers accept both Claude names (`Agent`, `Bash`) and
+Codex names (`spawn_agent`/`collaboration.spawn_agent`,
+`exec_command`/`functions.exec`). Hook scripts resolve the base directory from
+input `cwd`, then `CODEX_PROJECT_DIR`, `CLAUDE_PROJECT_DIR`, and `$PWD`. Codex
+has no Claude monitor manifest lifecycle or async-hook notification channel, so
+`SessionStart` synchronously runs `start-watchdog.sh`; that short helper detaches
+the shared scanner to a per-thread temp log. Codex L0/L1/Stop hooks remain the
+in-session enforcement path.
+
 Set `ZYZ_HOOKS_DISABLE=1` to disable the entire layer.
 
 Runtime bookkeeping lives under `<task-dir>/runtime/`:
@@ -37,9 +49,9 @@ Runtime bookkeeping lives under `<task-dir>/runtime/`:
   writes, task-root resolution, additionalContext / block-decision JSON
   emission, stale-role scanning).
 - Cost note: `zyz_get` spawns one `jq` (or `python3`) per field read, and the
-  hot-path hooks read 2-3 fields per tool call. `heartbeat.sh` is registered
-  async so it stays off the critical path; `status-freshness.sh` is sync, so
-  its cost sits in the agent's loop. Do **not** try to fix this by memoizing
+  hot-path hooks read 2-3 fields per tool call. Heartbeats are synchronous
+  because current Codex versions skip async hooks; `status-freshness.sh` is
+  also sync. Do **not** try to fix this by memoizing
   `zyz_get` in a shell variable — every call site is `x="$(zyz_get foo)"` and
   command substitution runs in a subshell, so the cache never survives to the
   next call (tried, measured, no gain; see the note in `lib.sh`). The working
@@ -50,7 +62,7 @@ Runtime bookkeeping lives under `<task-dir>/runtime/`:
 
 ## scripts/heartbeat.sh — L0
 
-- Trigger point: `PreToolUse` + `PostToolUse`, matcher `*`, async.
+- Trigger point: `PreToolUse` + `PostToolUse`, matcher `*`, synchronous for cross-runtime compatibility.
   Fires in the main agent and inside every subagent.
 - Inputs: hook JSON on stdin (`cwd`, `agent_id?`, `agent_type?`);
   `CLAUDE_PROJECT_DIR` fallback.

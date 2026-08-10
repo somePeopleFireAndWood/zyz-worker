@@ -1,5 +1,6 @@
 ---
 task-id: <task-id>                # immutable; matches the filename without `.md`
+agent-runtime:                    # optional claude | codex; empty = host auto-detection
 project: <project-name>           # user-maintained; label only; default = basename(primary source-repo) when omitted
 source-repo: ~/workspace/<repo>   # repo 1 = PRIMARY; required; supports ~/; absolute or ~/ form.
                                   # Multi-repo tasks add contiguous source-repo-2, source-repo-3, …
@@ -37,6 +38,7 @@ reuse-claude: true                # true (default) | false; only meaningful when
                                   # restart; the new task's runtime is handed to it via an in-band
                                   # config block). false = restart claude in the reused session.
                                   # IGNORED under worktree scope (always a new claude).
+reuse-agent: true                 # generic authoritative spelling; reuse-claude is legacy fallback
                                   # WARNING: a reuse task SHARES its container with the reuse-from
                                   # task — cleanup of either destroys the shared session and worktree
                                   # set (all repos). Ensure all sharers are completed before cleaning up.

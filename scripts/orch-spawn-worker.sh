@@ -2,8 +2,8 @@
 #
 # orch-spawn-worker.sh — create the worktree + tmux session + in-pane heartbeat
 # daemon for a single task, and write the Phase-1 dispatch.md. That is ALL it
-# does: it builds the container. It NEVER starts claude. Starting the worker
-# (claude + /execute-task, with confirmation-page handling and readiness
+# does: it builds the container. It NEVER starts the agent runtime. Starting the
+# worker (Claude Code or Codex + execute-task, with runtime-specific readiness
 # probing) is the exclusive job of the L2 driver subagent.
 #
 # Contract:
@@ -22,7 +22,7 @@
 #     - Sends an in-pane background command to start the heartbeat daemon.
 #     - Sends env-var exports into the pane.
 #     - Writes <list-dir>/runtime/<task-id>/dispatch.md (Phase-1).
-#     Does NOT start claude (that is the L2 driver subagent's job).
+#     Does NOT start the agent (that is the L2 driver subagent's job).
 #
 #   Output (stdout):
 #     session-name=<tmux-session>
@@ -219,9 +219,41 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # misconfiguration regardless of how the worker is started. We only warn (not
 # exit) because a heterogenous install layout could legitimately put skills
 # elsewhere.
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PLUGIN_ROOT="${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 if [ ! -d "$PLUGIN_ROOT/skills/execute-task" ]; then
     echo "warn: PLUGIN_ROOT=$PLUGIN_ROOT does not contain skills/execute-task" >&2
+fi
+
+# Resolve the worker runtime once, before any container side effects.  Codex
+# sessions export CODEX_THREAD_ID/CODEX_CI; Claude Code exports its project/
+# entrypoint variables.  ZYZ_AGENT_RUNTIME=claude|codex is the explicit escape
+# hatch and the resolved value is persisted in dispatch.md.
+RUNTIME_ADAPTER="$SCRIPT_DIR/orch-agent-runtime.sh"
+if [ ! -x "$RUNTIME_ADAPTER" ]; then
+    echo "error: missing runtime adapter: $RUNTIME_ADAPTER" >&2
+    exit 3
+fi
+REQUESTED_RUNTIME="$(fm_field "$MASTER_ENTRY" agent-runtime)"
+if [ -n "$REQUESTED_RUNTIME" ]; then
+    case "$REQUESTED_RUNTIME" in
+        claude|codex) AGENT_RUNTIME="$REQUESTED_RUNTIME" ;;
+        *) echo "error: invalid agent-runtime (must be claude|codex): '$REQUESTED_RUNTIME'" >&2; exit 5 ;;
+    esac
+else
+    AGENT_RUNTIME="$("$RUNTIME_ADAPTER" detect)"
+fi
+if ! command -v "$AGENT_RUNTIME" >/dev/null 2>&1; then
+    echo "error: selected agent runtime is not installed: $AGENT_RUNTIME" >&2
+    exit 3
+fi
+
+if ! WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" "$AGENT_RUNTIME")"; then
+    if [ "$AGENT_RUNTIME" = "codex" ]; then
+        echo "error: cannot construct fail-closed Codex MCP overrides" >&2
+        exit 3
+    fi
+    echo "warning: MCP helper failed; defaulting Claude worker to --strict-mcp-config" >&2
+    WORKER_MCP_ARGS="--strict-mcp-config"
 fi
 
 # Read frontmatter; apply defaults.
@@ -469,7 +501,7 @@ last-flush: $NOW_ISO
 
 ## Next Action
 
-Start the worker: attach to tmux session $TMUX_SESSION, then run claude + /execute-task.
+Start the worker: attach to tmux session $TMUX_SESSION, then run $AGENT_RUNTIME + execute-task.
 EOF
 mv -f "$TMP_STATUS" "$WORKER_STATUS_FILE"
 
@@ -499,10 +531,10 @@ DAEMON_SCRIPT="$SCRIPT_DIR/orch-heartbeat-daemon.sh"
 tmux send-keys -t "$TMUX_SESSION" \
     "ZYZ_TMUX_SESSION='$TMUX_SESSION' '$DAEMON_SCRIPT' '$HEARTBEAT_FILE' 30 >/dev/null 2>&1 &" Enter
 
-# Step 9: export env vars into the pane so the worker (claude + execute-task)
+# Step 9: export env vars into the pane so the worker agent + execute-task
 # sees them when started.
 tmux send-keys -t "$TMUX_SESSION" \
-    "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
+    "export ZYZ_AGENT_RUNTIME='$AGENT_RUNTIME' ZYZ_PLUGIN_ROOT='$PLUGIN_ROOT' ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
     Enter
 
 # Step 9a: multi-repo only — export ZYZ_WORKTREES (colon-separated, primary
@@ -523,7 +555,7 @@ if [ "$REPO_COUNT" -ge 2 ]; then
 fi
 
 # Step 9b: inject Go build I/O optimization (GOTMPDIR tmpfs + GOFLAGS=-p=N) into
-# the pane BEFORE the L2 driver starts claude, so claude's `go build` children
+# the pane BEFORE the L2 driver starts the agent, so its `go build` children
 # inherit it. orch-build-env.sh bakes the candidate values and the snippet's own
 # in-pane guards handle no-clobber + auto-degrade. Non-blocking: if the helper is
 # missing or errors, BUILD_ENV_LINE is empty and we simply skip injection.
@@ -594,10 +626,6 @@ TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 # this feature removes — and nothing downstream could tell that apart from a
 # deliberate `inherit`. Degrade to the safe default (`--strict-mcp-config`,
 # zero MCP) and warn, matching the helper's own invalid-path behavior.
-if ! WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null)"; then
-    echo "warning: orch-worker-mcp-args.sh missing or failed; defaulting to --strict-mcp-config (zero MCP). Set ZYZ_WORKER_MCP=inherit explicitly if the worker needs the host's MCP servers." >&2
-    WORKER_MCP_ARGS="--strict-mcp-config"
-fi
 cat > "$TMP_DISPATCH" <<EOF
 ---
 task-id: $TASK_ID
@@ -612,11 +640,16 @@ branch: $BRANCH
 base: $BASE$NUMBERED_FIELDS
 plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
+agent-runtime: $AGENT_RUNTIME
+worker-runtime-args: $WORKER_MCP_ARGS
 worker-mcp-args: $WORKER_MCP_ARGS
 reuse-from:
 reuse-scope:
+reuse-agent-effective:
 reuse-claude-effective:
 heartbeat-window-id:
+agent-pid:
+agent-session-id:
 claude-pid:
 claude-session-id:
 transcript-path:
@@ -627,11 +660,11 @@ first-seen-iso:
 
 ## Recovery
 
-(awaiting claude startup; orch-check-worker.sh populates this on the first poll where claude has registered AND first LLM round-trip has produced a transcript)
+(awaiting $AGENT_RUNTIME startup; orch-check-worker.sh populates this after the runtime has registered a persisted session)
 EOF
 mv -f "$TMP_DISPATCH" "$DISPATCH_FILE"
 
-# Step 11: stdout report. spawn never starts claude — that is the L2 driver's
+# Step 11: stdout report. spawn never starts the agent — that is the L2 driver's
 # job. spawn's job ends here, with the container built and dispatch.md written.
 # Single-repo output is byte-identical (session-name= / worktree= / source-repo=
 # = primary). Multi-repo appends worktree-N= / source-repo-N= for N=2..REPO_COUNT
@@ -640,6 +673,7 @@ mv -f "$TMP_DISPATCH" "$DISPATCH_FILE"
 printf 'session-name=%s\n' "$TMUX_SESSION"
 printf 'worktree=%s\n' "$WORKTREE"
 printf 'source-repo=%s\n' "$SOURCE_REPO"
+printf 'agent-runtime=%s\n' "$AGENT_RUNTIME"
 if [ "$REPO_COUNT" -ge 2 ]; then
     n=2
     while [ "$n" -le "$REPO_COUNT" ]; do

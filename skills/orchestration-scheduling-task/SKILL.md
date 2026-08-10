@@ -5,9 +5,11 @@ description: Use when the user wants to drive a master task list — analyze dep
 
 # Orchestration Scheduling Task
 
-Use this skill to drive a master list of development tasks. The orchestrator scans the list, analyzes dependencies, dispatches isolated workers (each in its own tmux session + git worktree(s), each running the `execute-task` skill), aggregates worker state through files, and gates merges on explicit user approval. A worker gets one worktree per repo it touches — one for single-repo tasks, several (sibling directories) for a task that spans repos — all inside a single tmux session and a single `claude` process.
+Use this skill to drive a master list of development tasks. The orchestrator scans the list, analyzes dependencies, dispatches isolated workers (each in its own tmux session + git worktree(s), each running the `execute-task` skill), aggregates worker state through files, and gates merges on explicit user approval. A worker gets one worktree per repo it touches, all inside a single tmux session and one selected agent runtime (`claude` or `codex`).
 
-The orchestrator does **not** execute tasks itself. It schedules, dispatches, polls, and reports. Each task is executed by a worker — a separate `claude` process inside a dedicated tmux session that runs `/execute-task`.
+The orchestrator does **not** execute tasks itself. It schedules, dispatches, polls, and reports. Each task is executed by a separate Claude Code or Codex process inside a dedicated tmux session. Claude invokes `/zyz-worker:execute-task`; Codex follows the installed Skill or the absolute `skills/execute-task/SKILL.md` fallback supplied by the runtime adapter.
+
+Runtime selection is `ZYZ_AGENT_RUNTIME=claude|codex|auto` (default `auto`). Agent environments auto-detect from `CODEX_THREAD_ID`/`CODEX_CI` or Claude variables; a non-agent shell defaults to Claude for backwards compatibility. A task entry may set `agent-runtime: claude|codex`. Generic dispatch fields (`agent-runtime`, `agent-pid`, `agent-session-id`, `worker-runtime-args`, `reuse-agent-effective`) are authoritative; legacy Claude-named aliases remain readable and writable for existing task data.
 
 This skill builds on top of the zyz-worker convention that long-running task state lives in files, not in conversation context. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md). All cross-process communication between orchestrator and worker happens through files in the master list directory; nothing is exchanged in memory.
 

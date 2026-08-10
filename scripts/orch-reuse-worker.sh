@@ -11,7 +11,9 @@
 # The new task declares its reuse intent in its OWN master-entry frontmatter:
 #   reuse-from: <old-task-id>   present => reuse; same <list-dir>, must be completed
 #   reuse-scope: worktree|tmux|both
-#   reuse-claude: true|false    (only meaningful when reusing tmux)
+#   reuse-agent: true|false     (only meaningful when reusing tmux)
+#   reuse-claude: true|false    legacy alias for reuse-agent
+#   agent-runtime: claude|codex optional runtime override
 #
 # Scope -> container action matrix (see design §Proposed Design):
 #   worktree                  : reuse old worktree, NEW tmux session zyz-task-<new-id>,
@@ -106,6 +108,8 @@ fi
 
 TASK_ID="$1"
 LIST_DIR="$2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_ADAPTER="$SCRIPT_DIR/orch-agent-runtime.sh"
 
 # task-id whitelist. This also structurally forbids a `reuse-from` that is an
 # absolute path or crosses lists: the old entry path is computed from the same
@@ -170,7 +174,9 @@ expand_tilde() {
 # ─── Read the NEW task's reuse intent ────────────────────────────────────────
 REUSE_FROM="$(fm_field "$MASTER_ENTRY" reuse-from)"
 REUSE_SCOPE="$(fm_field "$MASTER_ENTRY" reuse-scope)"
-REUSE_CLAUDE="$(fm_field "$MASTER_ENTRY" reuse-claude)"
+REUSE_AGENT="$(fm_field "$MASTER_ENTRY" reuse-agent)"
+[ -z "$REUSE_AGENT" ] && REUSE_AGENT="$(fm_field "$MASTER_ENTRY" reuse-claude)"
+REQUESTED_RUNTIME="$(fm_field "$MASTER_ENTRY" agent-runtime)"
 
 # ─── 5-tmux-free preconditions (validated BEFORE the tmux/git dependency check
 #     so they fire on a tmux-less host, mirroring spawn's source-repo ordering) ─
@@ -238,6 +244,8 @@ OLD_BRANCH="$(fm_field "$OLD_DISPATCH" branch)"
 OLD_BASE="$(fm_field "$OLD_DISPATCH" base)"
 [ -z "$OLD_BASE" ] && OLD_BASE="$(fm_field "$OLD_ENTRY" base)"
 OLD_PLUGIN_ROOT="$(fm_field "$OLD_DISPATCH" plugin-root)"
+OLD_AGENT_RUNTIME="$(fm_field "$OLD_DISPATCH" agent-runtime)"
+[ -z "$OLD_AGENT_RUNTIME" ] && OLD_AGENT_RUNTIME="claude"
 
 # ─── Old worktree SET (D4) ───────────────────────────────────────────────────
 #
@@ -348,27 +356,45 @@ if [ -e "$RUNTIME_DIR" ]; then
     exit 5
 fi
 
-# ─── reuse-claude-effective + the new task's tmux session / worktree resolution ─
+# ─── reuse-agent-effective + the new task's runtime/container resolution ──
 #
-# reuse-claude-effective:
-#   worktree scope     -> n/a   (always a new session => new claude; reuse-claude
+# reuse-agent-effective:
+#   worktree scope     -> n/a   (always a new session => new agent; reuse-agent
 #                                 is ignored, even when explicitly false)
-#   tmux/both scope    -> reuse-claude (default true)
+#   tmux/both scope    -> reuse-agent (default true)
 case "$REUSE_SCOPE" in
     worktree)
-        REUSE_CLAUDE_EFFECTIVE="n/a"
+        REUSE_AGENT_EFFECTIVE="n/a"
         ;;
     tmux|both)
-        if [ -z "$REUSE_CLAUDE" ]; then
-            REUSE_CLAUDE_EFFECTIVE="true"
+        if [ -z "$REUSE_AGENT" ]; then
+            REUSE_AGENT_EFFECTIVE="true"
         else
-            case "$REUSE_CLAUDE" in
-                true|false) REUSE_CLAUDE_EFFECTIVE="$REUSE_CLAUDE" ;;
-                *) REUSE_CLAUDE_EFFECTIVE="true" ;;
+            case "$REUSE_AGENT" in
+                true|false) REUSE_AGENT_EFFECTIVE="$REUSE_AGENT" ;;
+                *) REUSE_AGENT_EFFECTIVE="true" ;;
             esac
         fi
         ;;
 esac
+
+if [ -n "$REQUESTED_RUNTIME" ]; then
+    case "$REQUESTED_RUNTIME" in
+        claude|codex) AGENT_RUNTIME="$REQUESTED_RUNTIME" ;;
+        *) echo "error: invalid agent-runtime (must be claude|codex): '$REQUESTED_RUNTIME'" >&2; exit 5 ;;
+    esac
+else
+    AGENT_RUNTIME="$("$RUNTIME_ADAPTER" detect)"
+fi
+
+if ! WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" "$AGENT_RUNTIME")"; then
+    if [ "$AGENT_RUNTIME" = "codex" ]; then
+        echo "error: cannot construct fail-closed Codex MCP overrides" >&2
+        exit 3
+    fi
+    echo "warning: MCP helper failed; defaulting Claude worker to --strict-mcp-config" >&2
+    WORKER_MCP_ARGS="--strict-mcp-config"
+fi
 
 # The NEW task's session name and worktree:
 #   worktree scope : new session zyz-task-<new-id> (or the entry override),
@@ -418,6 +444,11 @@ for dep in tmux git; do
     fi
 done
 
+if [ "$REUSE_AGENT_EFFECTIVE" = "true" ] && [ "$AGENT_RUNTIME" != "$OLD_AGENT_RUNTIME" ]; then
+    echo "error: cannot reuse live $OLD_AGENT_RUNTIME process as $AGENT_RUNTIME; set agent-runtime=$OLD_AGENT_RUNTIME or reuse-agent=false" >&2
+    exit 5
+fi
+
 # ─── 5-tmux-dep precondition: reusing tmux -> old session must be alive ───────
 case "$REUSE_SCOPE" in
     tmux|both)
@@ -428,15 +459,12 @@ case "$REUSE_SCOPE" in
         ;;
 esac
 
-# Resolve where this script lives so we can address sibling helpers (the
-# heartbeat daemon) by absolute path even when invoked from a different cwd.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAEMON_SCRIPT="$SCRIPT_DIR/orch-heartbeat-daemon.sh"
 
 # Resolve the plugin root. Prefer the old dispatch.md value (the reused container
 # was launched with it) so `claude --plugin-dir <plugin-root>` on recovery stays
 # consistent; fall back to CLAUDE_PLUGIN_ROOT / the script's parent.
-PLUGIN_ROOT="${OLD_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
+PLUGIN_ROOT="${OLD_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}}"
 if [ ! -d "$PLUGIN_ROOT/skills/execute-task" ]; then
     echo "warn: PLUGIN_ROOT=$PLUGIN_ROOT does not contain skills/execute-task" >&2
 fi
@@ -475,7 +503,7 @@ last-flush: $NOW_ISO
 
 ## Next Action
 
-Start the worker: drive tmux session $TMUX_SESSION (reuse-dispatch), then run claude (or reuse the running claude) + /execute-task.
+Start the worker: drive tmux session $TMUX_SESSION (reuse-dispatch), then run $AGENT_RUNTIME (or reuse the running agent) + execute-task.
 EOF
 mv -f "$TMP_STATUS" "$WORKER_STATUS_FILE"
 
@@ -508,18 +536,19 @@ case "$REUSE_SCOPE" in
         # Export env into the new pane so the freshly-launched claude inherits
         # the new task's paths (a clean handshake; no in-band block needed for
         # worktree scope). The L2 reuse-dispatch driver still launches claude.
+        # Keep these as short lines: macOS tty canonical input truncates a
+        # sufficiently long synthetic command, and temp paths can be verbose.
         tmux send-keys -t "$TMUX_SESSION" \
-            "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" \
-            Enter
+            "export ZYZ_AGENT_RUNTIME='$AGENT_RUNTIME' ZYZ_PLUGIN_ROOT='$PLUGIN_ROOT'" Enter
+        tmux send-keys -t "$TMUX_SESSION" \
+            "export ZYZ_WORKER_STATUS_FILE='$WORKER_STATUS_FILE' ZYZ_TASK_ID='$TASK_ID' ZYZ_QUESTION_FILE='$QUESTION_FILE' ZYZ_ANSWER_FILE='$ANSWER_FILE' ZYZ_HEARTBEAT_FILE='$HEARTBEAT_FILE'" Enter
         # Multi-repo (>=2 worktree set): export ZYZ_WORKTREES so the reused
         # worker has write scope over the whole inherited set (01-D4-6, mirrors
         # spawn's Step 9 multi-repo export). Emitted as a SEPARATE export ONLY
         # when the set has >=2 worktrees, so the single-worktree case above is
         # byte-identical (variable absent = single-worktree behavior).
         if [ -n "$ZYZ_WORKTREES" ]; then
-            tmux send-keys -t "$TMUX_SESSION" \
-                "export ZYZ_WORKTREES='$ZYZ_WORKTREES'" \
-                Enter
+            tmux send-keys -t "$TMUX_SESSION" "export ZYZ_WORKTREES='$ZYZ_WORKTREES'" Enter
         fi
         # Inject Go build I/O optimization (worktree scope ONLY: new session/new
         # pane/new claude, same shape as spawn). The tmux|both branches reuse an
@@ -575,12 +604,12 @@ fi
 # reuse-aware note (shared session, attach-only, no independent --resume); the
 # definitive reuse-aware body is regenerated by orch-check-worker.sh once the
 # Phase-2 trio completes.
-if [ "$REUSE_FROM" != "" ] && [ "$REUSE_CLAUDE_EFFECTIVE" = "true" ]; then
-    RECOVERY_BODY="This task REUSES a shared claude session from task \`$REUSE_FROM\` (reuse-scope=$REUSE_SCOPE, same claude process). Recovery: ONLY \`tmux attach -t $TMUX_SESSION\`. Do NOT run an independent \`claude --resume\` for this task — its session-id, once bound, points at the shared (old+new merged) session, and resuming it from two dispatch.md files is a known footgun.
+if [ "$REUSE_FROM" != "" ] && [ "$REUSE_AGENT_EFFECTIVE" = "true" ]; then
+    RECOVERY_BODY="This task REUSES a shared $AGENT_RUNTIME session from task \`$REUSE_FROM\` (reuse-scope=$REUSE_SCOPE, same agent process). Recovery: ONLY \`tmux attach -t $TMUX_SESSION\`. Do NOT independently resume this task — its session-id, once bound, points at the shared (old+new merged) session, and resuming it from two dispatch.md files is a known footgun.
 
-(orch-check-worker.sh will regenerate this reuse-aware note once claude has registered AND the first LLM round-trip has produced a transcript.)"
+(orch-check-worker.sh will regenerate this reuse-aware note once the agent has registered a persisted session.)"
 else
-    RECOVERY_BODY="(awaiting claude startup; orch-check-worker.sh populates this on the first poll where claude has registered AND first LLM round-trip has produced a transcript)"
+    RECOVERY_BODY="(awaiting $AGENT_RUNTIME startup; orch-check-worker.sh populates this after the runtime has registered a persisted session)"
 fi
 
 # Build the numbered field group (repos 2..N) inherited from the old worktree
@@ -613,10 +642,6 @@ TMP_DISPATCH="$DISPATCH_FILE.tmp.$$"
 # Fail CLOSED, same reasoning as spawn's call site: an empty value renders as
 # `inherit`, so a missing/non-executable helper would silently restore full MCP
 # inheritance and be indistinguishable from a deliberate `inherit`.
-if ! WORKER_MCP_ARGS="$("$SCRIPT_DIR/orch-worker-mcp-args.sh" 2>/dev/null)"; then
-    echo "warning: orch-worker-mcp-args.sh missing or failed; defaulting to --strict-mcp-config (zero MCP). Set ZYZ_WORKER_MCP=inherit explicitly if the worker needs the host's MCP servers." >&2
-    WORKER_MCP_ARGS="--strict-mcp-config"
-fi
 cat > "$TMP_DISPATCH" <<EOF
 ---
 task-id: $TASK_ID
@@ -631,11 +656,16 @@ branch: $BRANCH
 base: $BASE
 ${NUMBERED_GROUP}plugin-root: $PLUGIN_ROOT
 encoded-cwd: $ENCODED_CWD
+agent-runtime: $AGENT_RUNTIME
+worker-runtime-args: $WORKER_MCP_ARGS
 worker-mcp-args: $WORKER_MCP_ARGS
 reuse-from: $REUSE_FROM
 reuse-scope: $REUSE_SCOPE
-reuse-claude-effective: $REUSE_CLAUDE_EFFECTIVE
+reuse-agent-effective: $REUSE_AGENT_EFFECTIVE
+reuse-claude-effective: $REUSE_AGENT_EFFECTIVE
 heartbeat-window-id: $HEARTBEAT_WINDOW_ID
+agent-pid:
+agent-session-id:
 claude-pid:
 claude-session-id:
 transcript-path:
@@ -657,7 +687,9 @@ printf 'session-name=%s\n' "$TMUX_SESSION"
 printf 'worktree=%s\n' "$WORKTREE"
 printf 'reuse-from=%s\n' "$REUSE_FROM"
 printf 'reuse-scope=%s\n' "$REUSE_SCOPE"
-printf 'reuse-claude-effective=%s\n' "$REUSE_CLAUDE_EFFECTIVE"
+printf 'agent-runtime=%s\n' "$AGENT_RUNTIME"
+printf 'reuse-agent-effective=%s\n' "$REUSE_AGENT_EFFECTIVE"
+printf 'reuse-claude-effective=%s\n' "$REUSE_AGENT_EFFECTIVE"
 printf 'heartbeat-window-id=%s\n' "$HEARTBEAT_WINDOW_ID"
 
 exit 0

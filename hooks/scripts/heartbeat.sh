@@ -41,9 +41,17 @@ zyz_json_ok || exit 0
 ZYZ_HOOK_INPUT="$(cat 2>/dev/null || true)"
 [ -n "$ZYZ_HOOK_INPUT" ] || exit 0
 
+# Opt-in protocol diagnostics for cross-runtime smoke tests. Never enabled by
+# the plugin itself; callers must provide an explicit file path.
+if [ -n "${ZYZ_HOOK_DEBUG_FILE:-}" ]; then
+    umask 077
+    printf '%s\n' "$ZYZ_HOOK_INPUT" >> "$ZYZ_HOOK_DEBUG_FILE" 2>/dev/null || true
+fi
+
 base="$(zyz_get cwd)"
+[ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
-[ -n "$base" ] || exit 0
+[ -n "$base" ] || base="$PWD"
 
 root="$(zyz_task_root "$base")"
 [ -n "$root" ] || exit 0

@@ -5,7 +5,7 @@ tmux-session: <session name>      # e.g. zyz-task-<task-id>
 tmux-window-id: <e.g. @4>         # snapshot at spawn time; may go stale if the
                                   # user manually adds/removes windows
 tmux-pane-id: <e.g. %6>           # snapshot at spawn time; may go stale
-shell-pid: <int>                  # pane shell pid; parent of the claude process
+shell-pid: <int>                  # pane shell pid; parent of the selected agent process
 worktree: <absolute path>         # repo 1 (PRIMARY) worktree = the tmux pane cwd. Multi-repo tasks
                                   # add worktree-2, worktree-3, … (one per repo); see the numbered
                                   # group below. Single-repo tasks have this line only.
@@ -26,7 +26,9 @@ encoded-cwd: <claude-projects-dir form of pwd -P of worktree>
                                   # "-" squeezed; matches ~/.claude/projects/<dir>.
                                   # Diagnostics only — transcript discovery is by
                                   # session-id (see Phase-2 note below).
-worker-mcp-args: <cli args or empty>
+agent-runtime: <claude|codex>     # Phase-1 selected worker runtime
+worker-runtime-args: <cli args or empty> # Phase-1 runtime-specific config isolation args
+worker-mcp-args: <cli args or empty>     # legacy alias of worker-runtime-args
                                   # Phase-1; MCP-inheritance snapshot from
                                   # orch-worker-mcp-args.sh (ZYZ_WORKER_MCP policy),
                                   # taken once at container build time. The L2 driver
@@ -35,8 +37,10 @@ worker-mcp-args: <cli args or empty>
                                   # command embeds it — so a crash-resumed worker
                                   # keeps the same MCP policy instead of silently
                                   # re-inheriting the host's full mcpServers.
-                                  # Default policy `none` renders `--strict-mcp-config`
-                                  # (zero MCP servers); `inherit` renders empty.
+                                  # `none`: Claude renders --strict-mcp-config;
+                                  # Codex renders explicit enabled=false overrides
+                                  # for the dispatch-time MCP server snapshot.
+                                  # `inherit` renders empty.
 reuse-from:                       # Phase-1; empty = plain spawn (orch-spawn-worker.sh),
                                   # non-empty = the old task-id whose container this task
                                   # reuses (orch-reuse-worker.sh). Snapshot of the new task's
@@ -47,14 +51,17 @@ reuse-scope:                      # Phase-1; worktree | tmux | both | (empty for
 reuse-claude-effective:           # Phase-1; true | false | n/a (n/a under worktree scope, where
                                   # it is always a new claude). Drives the reuse-aware
                                   # `## Recovery` body below and the L2 reuse-dispatch branch.
+reuse-agent-effective:            # generic authoritative alias; same value as above
 heartbeat-window-id:              # Phase-1; the tmux window id of the same-session new-window
                                   # heartbeat daemon (same-claude reuse only); empty for plain
                                   # spawn / new-session reuse. DIAGNOSTICS ONLY — cleanup kills
                                   # the whole session and orch-heartbeat-daemon.sh's
                                   # `tmux has-session` watchdog tears this window's daemon down
                                   # with it. Do NOT derive kill logic from this field.
-claude-pid:                       # Phase-2; filled by orch-check-worker.sh
-claude-session-id:                # Phase-2; filled by orch-check-worker.sh
+agent-pid:                        # Phase-2; filled by orch-check-worker.sh
+agent-session-id:                 # Phase-2; filled by orch-check-worker.sh
+claude-pid:                       # Phase-2 legacy alias of agent-pid
+claude-session-id:                # Phase-2 legacy alias of agent-session-id
 transcript-path:                  # Phase-2; filled by orch-check-worker.sh
 first-seen-iso:                   # Phase-2; set when the trio above first completes
 ---

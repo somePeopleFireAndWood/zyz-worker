@@ -17,6 +17,7 @@ driver-intent: first-dispatch      # first-dispatch | intervene | relay-confirma
                                    # restart-claude, or new-session — see the driver agent.
 claude-started: false              # true | false; set true IMMEDIATELY after the
                                    # readiness probe passes (do not wait for end-of-tick)
+agent-started: false               # generic authoritative alias for Claude or Codex
 needs-user: false                  # true | false; set true ONLY when this worker's
                                    # worker-status.md wait-state=waiting-user. NOT for
                                    # waiting-subagent / waiting-resource (those are normal

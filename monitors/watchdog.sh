@@ -56,14 +56,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # that distinguishes them), so an empty $1 falls through to CLAUDE_PROJECT_DIR
 # and then $PWD. Verified across all nine arg/env combinations — do not "fix"
 # this into a two-step form believing empty defeats the default; it does not.
-BASE="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+BASE="${1:-${CODEX_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-$PWD}}}"
 INTERVAL="${ZYZ_WATCHDOG_INTERVAL_SEC:-60}"
 ROLE_STALE="${ZYZ_WATCHDOG_ROLE_STALE_SEC:-1200}"
 HORIZON="${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}"
 STATUS_STALE="${ZYZ_WATCHDOG_STATUS_STALE_SEC:-1800}"
 COOLDOWN="${ZYZ_WATCHDOG_COOLDOWN_SEC:-900}"
 
+WATCHDOG_PID_FILE="${ZYZ_WATCHDOG_PID_FILE:-}"
+watchdog_cleanup() {
+    [ -n "$WATCHDOG_PID_FILE" ] && rm -f "$WATCHDOG_PID_FILE" 2>/dev/null || true
+}
 trap 'exit 0' TERM INT HUP
+trap watchdog_cleanup EXIT
 
 # Unarmed-visibility state. An unarmed watchdog and a healthy quiet one are
 # externally indistinguishable — that is how a whole task ran with every layer
@@ -94,6 +99,10 @@ zyz_unarmed_is_suspicious() {
 }
 
 while :; do
+    case "${ZYZ_WATCHDOG_PARENT_PID:-}" in
+        ''|*[!0-9]*) ;;
+        *) kill -0 "$ZYZ_WATCHDOG_PARENT_PID" 2>/dev/null || exit 0 ;;
+    esac
     [ -d "$BASE" ] || exit 0
     root="$(zyz_task_root "$BASE")"
     if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then

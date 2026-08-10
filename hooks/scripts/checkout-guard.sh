@@ -73,8 +73,9 @@ ZYZ_HOOK_INPUT="$(cat 2>/dev/null || true)"
 [ -n "$ZYZ_HOOK_INPUT" ] || exit 0
 
 base="$(zyz_get cwd)"
+[ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
-[ -n "$base" ] || exit 0
+[ -n "$base" ] || base="$PWD"
 
 # Same arming gate as every other layer: no active task, no guard. General
 # (non-task) sessions keep full git freedom.
@@ -82,6 +83,8 @@ root="$(zyz_task_root "$base")"
 [ -n "$root" ] || exit 0
 
 cmd="$(zyz_get tool_input.command)"
+[ -n "$cmd" ] || cmd="$(zyz_get tool_input.cmd)"
+[ -n "$cmd" ] || cmd="$(zyz_get tool_input.code)"
 [ -n "$cmd" ] || exit 0
 
 # Cheap pre-filter before any parsing.

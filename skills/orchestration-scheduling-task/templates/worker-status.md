@@ -22,7 +22,7 @@ last-flush: <iso>                 # ISO timestamp of this flush
   worker-status.md template
   =========================
 
-  Writer: the worker (the `claude` process running `execute-task` in this task's tmux session).
+  Writer: the selected Claude Code or Codex worker running `execute-task` in this task's tmux session.
   Reader: the orchestrator.
 
   Write atomically (tmpfile + rename). Never edit in place.

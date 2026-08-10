@@ -189,6 +189,7 @@ df -h "$root"
 | 模式（相对每个 `$root`） | 说明 |
 |---|---|
 | `$root/claude-*` | Claude 运行时/会话目录，正在跑的 agent 在用。 |
+| `$root/codex-*` | Codex 运行时/会话目录，正在跑的 agent 在用。 |
 | `$root/tmux-<uid>` | tmux server 的 socket 目录（`<uid>` 为当前用户 id）。 |
 | `$root/mcp-*` | MCP server 运行时 socket/目录，**永远跳过**。 |
 | `$root/ssh-*` | SSH agent-forwarding socket，删了会断掉 agent 转发。 |

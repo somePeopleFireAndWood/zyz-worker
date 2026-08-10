@@ -64,9 +64,9 @@ orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型
 
 | 值 | 效果 |
 |---|---|
-| `none`（**默认**） | 启动加 `--strict-mcp-config`：worker **零 MCP**，每个 stdio server 省 ~745 MB/worker。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
+| `none`（**默认**） | Claude 加 `--strict-mcp-config`；Codex 对 `codex mcp list --json` 中每个已启用 server 生成 `-c mcp_servers.<name>.enabled=false`。worker **零 MCP**。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
 | `inherit` | 旧行为：不加任何 flag，worker 全量继承宿主全局 `mcpServers` |
-| `<config-path>` | `--strict-mcp-config --mcp-config '<path>'`：worker 只拿该 JSON 里声明的 server（共享 server 的接入点）。路径非法时**收敛回 `none`**（fail closed，stderr 告警），绝不静默退回全量继承 |
+| `<config-path>` | Claude 用 `--strict-mcp-config --mcp-config '<path>'`。Codex 交互 CLI 暂无对等的单文件覆盖参数，因此 fail-closed 回 `none`并告警 |
 
 **共享 server 的安全边界（用 `<config-path>` 前必读）**：把一个烤了凭据的 MCP server 起成常驻进程共享给多个 worker 时——(1) **不要用 TCP 端口**（127.0.0.1 也不行：本机所有用户都能连，等于把凭据使用权开放给同机他人），socket 应放在 `$XDG_RUNTIME_DIR` 这类 0700 属主目录内，worker 侧经 stdio 桥接；(2) 凭据走 `--config <0600 文件>` 或环境变量，**不要放进 argv**（`ps` 全机可见）；(3) `XDG_RUNTIME_DIR` 不存在（cron / 非 login session）时应显式失败而非回退 TCP。收益量级：N×745MB → 1×~834MB + N×~15MB 桥进程。本插件当前只提供 `<config-path>` 这个接入点，不代起共享 server。
 
@@ -168,6 +168,16 @@ ln -s /path/to/zyz-worker ~/plugins/zyz-worker
 完成后，在 Codex 的插件界面中搜索并安装 `zyz-worker`。如果插件没有立即出现，重启或刷新 Codex 后再检查插件列表。
 
 安装后，`execute-task` Skill 会通过 `skills/execute-task/SKILL.md` 生效。
+
+在 Codex 中直接用自然语言调用 Skill，例如：
+
+```text
+使用 zyz-worker:execute-task 完成这个开发任务：<任务描述>
+```
+
+Codex 没有 Claude Code 的 slash-command 机制，因此不要输入 `/execute-task`。批量调度时，`ZYZ_AGENT_RUNTIME=auto` 会在 Codex 会话中选择 `codex`；也可显式设置 `ZYZ_AGENT_RUNTIME=codex|claude`，或在任务 frontmatter 中设置 `agent-runtime`。worker 由统一 runtime adapter 生成启动/恢复命令：Codex 使用 `codex -C ...` / `codex resume ...`，Claude 使用 `claude --plugin-dir ...` / `claude --resume ...`。
+
+`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按 `CODEX_PLUGIN_ROOT` / `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` 解析脚本，避免 Codex 将 `./hooks` 错当成 worker cwd 相对路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
 
 ### Claude Code
 

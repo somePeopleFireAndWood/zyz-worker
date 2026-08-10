@@ -50,8 +50,9 @@ ZYZ_HOOK_INPUT="$(cat 2>/dev/null || true)"
 [ -n "$ZYZ_HOOK_INPUT" ] || exit 0
 
 base="$(zyz_get cwd)"
+[ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
-[ -n "$base" ] || exit 0
+[ -n "$base" ] || base="$PWD"
 
 root="$(zyz_task_root "$base")"
 [ -n "$root" ] || exit 0
@@ -66,7 +67,7 @@ status_file="$root/status.md"
 # more specific (it names the just-received subagent result and says to persist
 # it before dispatching further work) and its threshold is tighter. Everything
 # else still gets this hook's reminder.
-[ "$(zyz_get tool_name)" = "Agent" ] && exit 0
+case "$(zyz_get tool_name)" in Agent|spawn_agent|collaboration.spawn_agent) exit 0 ;; esac
 
 phase="$(zyz_phase_of "$status_file")"
 zyz_phase_active "$phase" || exit 0

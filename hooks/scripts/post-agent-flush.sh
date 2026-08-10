@@ -51,8 +51,9 @@ resp_status="$(zyz_get tool_response.status)"
 [ "$resp_status" = "async_launched" ] && exit 0
 
 base="$(zyz_get cwd)"
+[ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
-[ -n "$base" ] || exit 0
+[ -n "$base" ] || base="$PWD"
 
 root="$(zyz_task_root "$base")"
 [ -n "$root" ] || exit 0

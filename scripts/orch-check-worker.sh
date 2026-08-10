@@ -58,6 +58,9 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_ADAPTER="$SCRIPT_DIR/orch-agent-runtime.sh"
+
 usage() {
     echo "Usage: $(basename "$0") <task-id> <list-dir>" >&2
 }
@@ -126,8 +129,8 @@ fm_field() {
 # emitting the (possibly freshly-discovered) Phase-2 values + a regenerated body.
 #
 #   $1  dispatch file path
-#   $2  claude-pid          (in-memory value)
-#   $3  claude-session-id   (in-memory value)
+#   $2  agent-pid           (in-memory value)
+#   $3  agent-session-id    (in-memory value)
 #   $4  transcript-path     (in-memory value)
 #   $5  first-seen-iso      (in-memory value)
 #
@@ -148,16 +151,16 @@ fm_field() {
 # cleanly).
 rewrite_dispatch_atomic() {
     local file="$1"
-    local r_claude_pid="$2"
-    local r_claude_sid="$3"
+    local r_agent_pid="$2"
+    local r_agent_sid="$3"
     local r_transcript="$4"
     local r_first_seen="$5"
 
     # Phase-1 frontmatter — read back verbatim from the existing file.
     local p1_task_id p1_spawn_iso p1_tmux_session p1_tmux_window p1_tmux_pane
     local p1_shell_pid p1_worktree p1_source_repo p1_branch p1_base
-    local p1_plugin_root p1_encoded_cwd
-    local p1_reuse_from p1_reuse_scope p1_reuse_claude_eff p1_heartbeat_window
+    local p1_plugin_root p1_encoded_cwd p1_agent_runtime p1_worker_runtime
+    local p1_reuse_from p1_reuse_scope p1_reuse_agent_eff p1_heartbeat_window
     p1_task_id="$(fm_field "$file" task-id)"
     p1_spawn_iso="$(fm_field "$file" spawn-iso)"
     p1_tmux_session="$(fm_field "$file" tmux-session)"
@@ -170,13 +173,17 @@ rewrite_dispatch_atomic() {
     p1_base="$(fm_field "$file" base)"
     p1_plugin_root="$(fm_field "$file" plugin-root)"
     p1_encoded_cwd="$(fm_field "$file" encoded-cwd)"
+    p1_agent_runtime="$(fm_field "$file" agent-runtime)"
+    [ -z "$p1_agent_runtime" ] && p1_agent_runtime="claude"
+    p1_worker_runtime="$(fm_field "$file" worker-runtime-args)"
     # Reuse fields (Phase-1; written by orch-reuse-worker.sh, empty for plain
     # spawn). These MUST be read back and re-emitted here, otherwise the first
     # Phase-2 poll that triggers a rewrite would DROP them — this function is the
     # one and only fixed-field-list rewriter of dispatch.md.
     p1_reuse_from="$(fm_field "$file" reuse-from)"
     p1_reuse_scope="$(fm_field "$file" reuse-scope)"
-    p1_reuse_claude_eff="$(fm_field "$file" reuse-claude-effective)"
+    p1_reuse_agent_eff="$(fm_field "$file" reuse-agent-effective)"
+    [ -z "$p1_reuse_agent_eff" ] && p1_reuse_agent_eff="$(fm_field "$file" reuse-claude-effective)"
     p1_heartbeat_window="$(fm_field "$file" heartbeat-window-id)"
     # MCP inheritance snapshot (issue #2; written by spawn/reuse). Read back and
     # re-emitted for the same reason as the reuse fields: this fixed-field-list
@@ -185,6 +192,7 @@ rewrite_dispatch_atomic() {
     # resumed worker silently re-inherit the host's full mcpServers.
     local p1_worker_mcp
     p1_worker_mcp="$(fm_field "$file" worker-mcp-args)"
+    [ -z "$p1_worker_runtime" ] && p1_worker_runtime="$p1_worker_mcp"
 
     # Multi-repo numbered field group (worktree-N / source-repo-N / branch-N /
     # base-N, written by spawn for REPO_COUNT>=2). Like the reuse fields above,
@@ -195,8 +203,9 @@ rewrite_dispatch_atomic() {
     # after the `base:` scalar. Single-repo dispatch.md has no source-repo-2, so
     # the loop never runs, the variable stays empty, and the rewrite is
     # byte-identical to the legacy layout.
-    local p1_numbered ni nwt nsr nbr nba
+    local p1_numbered p1_worktrees ni nwt nsr nbr nba
     p1_numbered=""
+    p1_worktrees="$p1_worktree"
     ni=2
     while :; do
         nsr="$(fm_field "$file" "source-repo-$ni")"
@@ -209,6 +218,7 @@ worktree-$ni: $nwt
 source-repo-$ni: $nsr
 branch-$ni: $nbr
 base-$ni: $nba"
+        p1_worktrees="$p1_worktrees:$nwt"
         ni=$((ni + 1))
     done
 
@@ -221,27 +231,34 @@ base-$ni: $nba"
     #   reuse-from set AND reuse-claude-eff in
     #     {false, n/a}                             -> attach + --resume (independent
     #                                                 session, same as plain spawn)
-    local body
-    if [ -n "$r_claude_pid" ] && [ -n "$r_claude_sid" ] && [ -n "$r_transcript" ]; then
-        if [ -n "$p1_reuse_from" ] && [ "$p1_reuse_claude_eff" = "true" ]; then
-            body="This worker REUSES a shared claude session from task \`$p1_reuse_from\` (reuse-scope=$p1_reuse_scope, same claude process). Its \`claude-session-id\` \`$r_claude_sid\` is the SHARED (old+new merged) session. Recovery:
+    local body resume_command
+    if [ -n "$r_agent_pid" ] && [ -n "$r_agent_sid" ] && [ -n "$r_transcript" ]; then
+        if [ -n "$p1_reuse_from" ] && [ "$p1_reuse_agent_eff" = "true" ]; then
+            local shared_resume_warning
+            if [ "$p1_agent_runtime" = "claude" ]; then
+                shared_resume_warning="Do NOT run an independent \`claude --resume\` for this task"
+            else
+                shared_resume_warning="Do NOT independently resume this task"
+            fi
+            body="This worker REUSES a shared $p1_agent_runtime session from task \`$p1_reuse_from\` (reuse-scope=$p1_reuse_scope, same agent process). Its \`agent-session-id\` \`$r_agent_sid\` is the SHARED (old+new merged) session. Recovery:
 
 - ONLY \`tmux attach -t $p1_tmux_session\` while the session is alive.
-- Do NOT run an independent \`claude --resume\` for this task — resuming the shared session-id from two dispatch.md files is a known footgun.
+- $shared_resume_warning — resuming the shared session-id from two dispatch.md files is a known footgun.
 - Transcript file (for read-only inspection): \`$r_transcript\`
 
 Discovered at $r_first_seen."
         else
-            body="This worker is bound to claude session \`$r_claude_sid\`. Recovery commands:
+            resume_command="$("$RUNTIME_ADAPTER" resume-command "$p1_agent_runtime" "$p1_plugin_root" "$p1_worktree" "$r_agent_sid" "$p1_worker_runtime" "$p1_worktrees")"
+            body="This worker is bound to $p1_agent_runtime session \`$r_agent_sid\`. Recovery commands:
 
 - If tmux session \`$p1_tmux_session\` is still alive: \`tmux attach -t $p1_tmux_session\`
-- If tmux is dead but the transcript exists: \`cd $p1_worktree && claude --resume $r_claude_sid --plugin-dir $p1_plugin_root${p1_worker_mcp:+ $p1_worker_mcp}\`
+- If tmux is dead but the transcript exists: \`$resume_command\`
 - Transcript file (for read-only inspection): \`$r_transcript\`
 
 Discovered at $r_first_seen."
         fi
     else
-        body="(awaiting claude startup; orch-check-worker.sh populates this on the first poll where claude has registered AND first LLM round-trip has produced a transcript)"
+        body="(awaiting $p1_agent_runtime startup; orch-check-worker.sh populates this after the runtime has registered a persisted session)"
     fi
 
     local tmp="$file.tmp.$$"
@@ -259,13 +276,18 @@ branch: $p1_branch
 base: $p1_base$p1_numbered
 plugin-root: $p1_plugin_root
 encoded-cwd: $p1_encoded_cwd
+agent-runtime: $p1_agent_runtime
+worker-runtime-args: $p1_worker_runtime
 worker-mcp-args: $p1_worker_mcp
 reuse-from: $p1_reuse_from
 reuse-scope: $p1_reuse_scope
-reuse-claude-effective: $p1_reuse_claude_eff
+reuse-agent-effective: $p1_reuse_agent_eff
+reuse-claude-effective: $p1_reuse_agent_eff
 heartbeat-window-id: $p1_heartbeat_window
-claude-pid: $r_claude_pid
-claude-session-id: $r_claude_sid
+agent-pid: $r_agent_pid
+agent-session-id: $r_agent_sid
+claude-pid: $r_agent_pid
+claude-session-id: $r_agent_sid
 transcript-path: $r_transcript
 first-seen-iso: $r_first_seen
 ---
@@ -279,9 +301,10 @@ EOF
     mv -f "$tmp" "$file"
 }
 
-# Determine tmux session name. Prefer the master entry frontmatter; fall back
-# to the conventional prefix.
-TMUX_SESSION="$(fm_field "$MASTER_ENTRY" tmux-session)"
+# Determine tmux session name. A reuse dispatch can point at another task's
+# session, so dispatch is authoritative, then master entry, then convention.
+TMUX_SESSION="$(fm_field "$DISPATCH_FILE" tmux-session)"
+[ -z "$TMUX_SESSION" ] && TMUX_SESSION="$(fm_field "$MASTER_ENTRY" tmux-session)"
 if [ -z "$TMUX_SESSION" ]; then
     TMUX_SESSION="zyz-task-$TASK_ID"
 fi
@@ -393,11 +416,20 @@ if [ -f "$DISPATCH_FILE" ]; then
     DISPATCH_BOUND="false"   # present-but-incomplete default; flipped at Step D.
 
     # Read all current values from dispatch.md.
-    CLAUDE_PID="$(fm_field "$DISPATCH_FILE" claude-pid)"
-    CLAUDE_SID="$(fm_field "$DISPATCH_FILE" claude-session-id)"
+    AGENT_RUNTIME="$(fm_field "$DISPATCH_FILE" agent-runtime)"
+    [ -z "$AGENT_RUNTIME" ] && AGENT_RUNTIME="claude"
+    if [ "$AGENT_RUNTIME" = "claude" ]; then
+        AGENT_PID="$(fm_field "$DISPATCH_FILE" claude-pid)"
+        AGENT_SID="$(fm_field "$DISPATCH_FILE" claude-session-id)"
+    else
+        AGENT_PID="$(fm_field "$DISPATCH_FILE" agent-pid)"
+        AGENT_SID="$(fm_field "$DISPATCH_FILE" agent-session-id)"
+    fi
     TRANSCRIPT="$(fm_field "$DISPATCH_FILE" transcript-path)"
     FIRST_SEEN="$(fm_field "$DISPATCH_FILE" first-seen-iso)"
     DISPATCH_SHELL_PID="$(fm_field "$DISPATCH_FILE" shell-pid)"
+    DISPATCH_WORKTREE="$(fm_field "$DISPATCH_FILE" worktree)"
+    DISPATCH_SPAWN_ISO="$(fm_field "$DISPATCH_FILE" spawn-iso)"
     # encoded-cwd is preserved verbatim into the rewrite (rewrite_dispatch_atomic
     # re-reads it directly from the file via fm_field). It is no longer used for
     # transcript discovery — Step C finds the JSONL by session-id — so it is not
@@ -405,68 +437,36 @@ if [ -f "$DISPATCH_FILE" ]; then
 
     NEEDS_REWRITE="false"
 
-    # Step A: discover claude-pid (newest direct child of the pane shell named
-    # `claude`). `-n` = newest match (claude forks after the heartbeat daemon, so
-    # higher PID); `-x claude` = exact comm match (filters the heartbeat daemon,
-    # whose comm is not `claude`). pgrep is invoked by basename so PATH shims
-    # work in tests. pgrep exits non-zero on no match under set -e → `|| true`.
-    if [ -z "$CLAUDE_PID" ] && [ -n "$DISPATCH_SHELL_PID" ]; then
-        CANDIDATE="$(pgrep -P "$DISPATCH_SHELL_PID" -n -x claude 2>/dev/null || true)"
+    # Step A: discover the selected runtime's newest direct child of the pane.
+    PROCESS_NAME="$("$RUNTIME_ADAPTER" process-name "$AGENT_RUNTIME")"
+    if [ -z "$AGENT_PID" ] && [ -n "$DISPATCH_SHELL_PID" ]; then
+        CANDIDATE="$(pgrep -P "$DISPATCH_SHELL_PID" -n -x "$PROCESS_NAME" 2>/dev/null || true)"
         if [ -n "$CANDIDATE" ]; then
-            CLAUDE_PID="$CANDIDATE"
+            AGENT_PID="$CANDIDATE"
             NEEDS_REWRITE="true"
         fi
     fi
 
-    # Step B: discover claude-session-id from the pid pointer json. The pointer
-    # path is passed to python3 via the ZYZ_POINTER env var (never interpolated
-    # into the python source — avoids any quoting issue). python3 is invoked by
-    # basename; absence or parse failure degrades silently (`2>/dev/null||true`).
-    if [ -n "$CLAUDE_PID" ] && [ -z "$CLAUDE_SID" ]; then
-        POINTER="$HOME/.claude/sessions/$CLAUDE_PID.json"
-        # Diagnose a missing python3 rather than degrading invisibly. Without it
-        # the session-id never binds, so dispatch-bound stays false forever and
-        # crash recovery loses its `claude --resume` path — with no clue why.
-        # Stderr only (human channel): stdout stays a clean key=value report and
-        # the exit code stays 0, so this is not the exit-3 dependency class.
-        if [ -f "$POINTER" ] && ! command -v python3 >/dev/null 2>&1; then
-            echo "warning: python3 not found; cannot read claude-session-id from $POINTER (dispatch-bound will stay false and 'claude --resume' recovery is unavailable)" >&2
-        fi
-        if [ -f "$POINTER" ]; then
-            CAND_SID="$(ZYZ_POINTER="$POINTER" python3 -c 'import json, os
-try:
-    print(json.load(open(os.environ["ZYZ_POINTER"])).get("sessionId", ""))
-except Exception:
-    pass' 2>/dev/null || true)"
-            if [ -n "$CAND_SID" ]; then
-                CLAUDE_SID="$CAND_SID"
+    # Steps B/C: runtime-specific persisted-session discovery. Claude resolves
+    # its PID pointer then project transcript; Codex scans rollout session_meta
+    # records matching this physical worktree and spawn time.
+    if [ -n "$AGENT_PID" ] && { [ -z "$AGENT_SID" ] || [ -z "$TRANSCRIPT" ]; }; then
+        CAND_SESSION="$("$RUNTIME_ADAPTER" discover-session "$AGENT_RUNTIME" "$AGENT_PID" "$DISPATCH_WORKTREE" "$DISPATCH_SPAWN_ISO" 2>/dev/null || true)"
+        CAND_SID="${CAND_SESSION%%$'\t'*}"
+        if [[ "$CAND_SESSION" == *$'\t'* ]]; then CAND_TRANSCRIPT="${CAND_SESSION#*$'\t'}"; else CAND_TRANSCRIPT=""; fi
+        if [ -n "$CAND_SID" ] && { [ -z "$AGENT_SID" ] || [ "$AGENT_SID" = "$CAND_SID" ]; }; then
+            if [ -z "$AGENT_SID" ]; then AGENT_SID="$CAND_SID"; NEEDS_REWRITE="true"; fi
+            if [ -z "$TRANSCRIPT" ] && [ -n "$CAND_TRANSCRIPT" ] && [ -f "$CAND_TRANSCRIPT" ]; then
+                TRANSCRIPT="$CAND_TRANSCRIPT"
                 NEEDS_REWRITE="true"
             fi
         fi
     fi
 
-    # Step C: discover the transcript file once session-id is known. We find the
-    # JSONL by session-id (a UUID, globally unique under ~/.claude/projects/)
-    # rather than by reconstructing claude's encoded-cwd directory name. Claude's
-    # project-dir encoding (both `/` and `.` -> `-`, then squeeze consecutive `-`)
-    # is more complex than a plain tr '/' '-' and is version-dependent; find-by-sid
-    # sidesteps it entirely and always lands on claude's real file. The transcript
-    # only appears after the first LLM round-trip, which can lag claude
-    # registration by seconds/minutes, so only set transcript-path if a match
-    # actually exists. find with `2>/dev/null` yields an empty string on no match
-    # (safe under set -e), guarded by the `-n` test below.
-    if [ -n "$CLAUDE_SID" ] && [ -z "$TRANSCRIPT" ]; then
-        CAND_TRANSCRIPT="$(find "$HOME/.claude/projects" -name "$CLAUDE_SID.jsonl" 2>/dev/null | head -1)"
-        if [ -n "$CAND_TRANSCRIPT" ] && [ -f "$CAND_TRANSCRIPT" ]; then
-            TRANSCRIPT="$CAND_TRANSCRIPT"
-            NEEDS_REWRITE="true"
-        fi
-    fi
-
-    # Step D: bind on the trio (claude-pid + claude-session-id + transcript-path).
+    # Step D: bind on the generic pid + session-id + transcript trio.
     # first-seen-iso is stamped only the first time the trio completes.
     NEWLY_BOUND="false"
-    if [ -n "$CLAUDE_PID" ] && [ -n "$CLAUDE_SID" ] && [ -n "$TRANSCRIPT" ]; then
+    if [ -n "$AGENT_PID" ] && [ -n "$AGENT_SID" ] && [ -n "$TRANSCRIPT" ]; then
         DISPATCH_BOUND="true"
         if [ -z "$FIRST_SEEN" ]; then
             FIRST_SEEN="$(date +%Y-%m-%dT%H:%M:%S%z)"
@@ -477,7 +477,7 @@ except Exception:
 
     if [ "$NEEDS_REWRITE" = "true" ]; then
         rewrite_dispatch_atomic "$DISPATCH_FILE" \
-            "$CLAUDE_PID" "$CLAUDE_SID" "$TRANSCRIPT" "$FIRST_SEEN"
+            "$AGENT_PID" "$AGENT_SID" "$TRANSCRIPT" "$FIRST_SEEN"
     fi
 fi
 
@@ -490,6 +490,7 @@ printf 'wait-state=%s\n' "$WAIT_STATE"
 printf 'waiting-reason=%s\n' "$WAITING_REASON"
 printf 'expected-resume-by=%s\n' "$EXPECTED_RESUME_BY"
 printf 'dispatch-bound=%s\n' "$DISPATCH_BOUND"
+[ -f "$DISPATCH_FILE" ] && printf 'agent-runtime=%s\n' "${AGENT_RUNTIME:-claude}"
 
 # Malformed-frontmatter guard: a worker-status.md that exists but has no `---`
 # fence is a bare field dump that fm_field cannot parse (all fields read empty).
