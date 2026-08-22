@@ -1,5 +1,7 @@
 # Long-Running State Convention
 
+Large implementation/test work writes a coherent skeleton before deep filling and keeps an incremental physical artifact inventory in its SubTask status. A strict `Waiting On` row is removed when a result arrives or before expiry review and never acts as a general watchdog mute. Confirmed dead roles are finalized through the supported helper rather than by deleting stale markers.
+
 ## Purpose
 
 This document is a zyz-worker plugin-wide convention: **for any task that lasts longer than a single LLM conversation turn or a single tool-call round, the source of truth for progress is a file on disk, not the conversation context.**

@@ -1,5 +1,7 @@
 # Project Structure Convention
 
+`hooks/scripts/agent-runtime-state.sh` is the only supported user-facing writer for standalone role state; `hooks/scripts/runtime_state.py` is its dependency-free backend. Hash-keyed logical records live in fixed catalog/audit/work packs below `.zyz-worker/tasks/<task-id>/runtime/` and must not be hand-edited. Bounded waits live only in the overall `status.md` single `## Agent State` section.
+
 This repository is a multi-CLI agent plugin. It targets both Codex and Claude Code with a single set of shared assets and per-CLI manifests.
 
 ## Root Layout

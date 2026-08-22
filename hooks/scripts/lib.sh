@@ -50,10 +50,9 @@
 # - zyz_bg_running_types        agent_type of every background subagent task
 #                               in ZYZ_HOOK_INPUT that is not completed or
 #                               failed, one per line (Stop-event input).
-# - zyz_scan_stale <dir> <stale-sec> <horizon-sec>
-#                               one "key<TAB>age" line per not-done agent
-#                               whose last liveness is older than <stale-sec>
-#                               but younger than <horizon-sec>.
+# - zyz_runtime_observe <task-dir> <true|false>
+#                               authenticated fixed-pack observer JSON; the
+#                               boolean selects bounded no-output comparison.
 #
 # ## Failure behavior
 #
@@ -111,7 +110,15 @@ except Exception:
 
 zyz_mtime() {
     [ -e "${1:-}" ] || return 0
-    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+    local value
+    value="$(stat -f %m "$1" 2>/dev/null || true)"
+    case "$value" in
+        ''|*[!0-9]*) value="$(stat -c %Y "$1" 2>/dev/null || true)" ;;
+    esac
+    case "$value" in
+        ''|*[!0-9]*) return 0 ;;
+        *) printf '%s\n' "$value" ;;
+    esac
 }
 
 zyz_now() {
@@ -124,6 +131,108 @@ zyz_iso() {
 
 zyz_sanitize() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# Canonicalize the only role values that are valid in persisted runtime state.
+# Returns 1 for every spelling outside the documented closed set.
+zyz_canonical_role() {
+    case "${1:-}" in
+        implementation-agent|zyz-worker:implementation-agent) printf '%s' implementation-agent ;;
+        test-agent|zyz-worker:test-agent) printf '%s' test-agent ;;
+        review-agent|zyz-worker:review-agent) printf '%s' review-agent ;;
+        *) return 1 ;;
+    esac
+}
+
+zyz_sha256_text() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "${1:-}" | shasum -a 256 | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "${1:-}" | sha256sum | awk '{print $1}'
+    elif command -v python3 >/dev/null 2>&1; then
+        printf '%s' "${1:-}" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null
+    fi
+}
+
+# A human-readable prefix is never an identity.  The complete raw-id digest is.
+zyz_instance_key() {
+    local prefix digest
+    prefix="$(zyz_sanitize "${1:-}")"
+    prefix="$(printf '%.32s' "$prefix")"
+    [ -n "$prefix" ] || prefix=agent
+    digest="$(zyz_sha256_text "${1:-}")"
+    [ "${#digest}" -eq 64 ] || return 1
+    printf '%s.%s' "$prefix" "$digest"
+}
+
+# Validate a public numeric setting before shell arithmetic. Invalid values use
+# the default and emit one bounded diagnostic. Arguments: name default min max
+# allow-zero. The validated decimal is printed.
+zyz_env_uint() {
+    local name def min max zero value
+    name="$1"; def="$2"; min="$3"; max="$4"; zero="$5"
+    eval 'value=${'"$name"'-__ZYZ_UNSET__}'
+    case "$value" in
+        __ZYZ_UNSET__) value="$def" ;;
+        ''|*[!0-9]*) value="$def"; printf 'zyz-worker: invalid %s; using %s\n' "$name" "$def" >&2 ;;
+        0[0-9]*) value="$def"; printf 'zyz-worker: non-canonical %s; using %s\n' "$name" "$def" >&2 ;;
+        *)
+            if [ "$zero" = 1 ] && [ "$value" = 0 ]; then printf '0'; return 0; fi
+            if [ "${#value}" -gt "${#max}" ] \
+                || { [ "${#value}" -eq "${#max}" ] && [ "$value" \> "$max" ]; } \
+                || [ "${#value}" -lt "${#min}" ] \
+                || { [ "${#value}" -eq "${#min}" ] && [ "$value" \< "$min" ]; }; then
+                printf 'zyz-worker: invalid %s=%s; using %s\n' "$name" "$value" "$def" >&2
+                value="$def"
+            fi
+            ;;
+    esac
+    printf '%s' "$value"
+}
+
+# Return 0 only when status.md has exactly one Agent State section and at least
+# one strictly valid, unexpired Waiting On row. Any malformed candidate makes
+# the complete collection fail open (freshness remains enabled).
+zyz_status_waiting() {
+    [ -f "${1:-}" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    local max now
+    max="$(zyz_env_uint ZYZ_WAIT_MAX_SEC 3600 1 86400 0)"
+    now="$(zyz_now)"
+    python3 - "$1" "$now" "$max" <<'PY'
+import re, sys
+p, now, horizon = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+heading = b"## Agent State"
+row = re.compile(br"^- Waiting On: instance-key=([A-Za-z0-9._-]+); since-epoch=(0|[1-9][0-9]*); next-check-epoch=(0|[1-9][0-9]*); reason=(.*)$")
+sections = 0; inside = False; candidates = []; bad = False
+try:
+    with open(p, "rb", buffering=0) as f:
+        for raw in f:
+            if len(raw) > 4096: bad = True; continue
+            line = raw.rstrip(b"\n")
+            if line.endswith(b"\r"): bad = True; continue
+            if line == heading: sections += 1; inside = True; continue
+            if inside and line.startswith(b"## "): inside = False
+            if inside and line.startswith(b"- Waiting On:"):
+                m = row.fullmatch(line)
+                if not m: bad = True; continue
+                candidates.append(m.groups())
+except OSError:
+    sys.exit(1)
+if sections != 1 or bad or not candidates: sys.exit(1)
+seen = set()
+for key, since_b, nxt_b, reason in candidates:
+    try: reason.decode("utf-8")
+    except UnicodeDecodeError: sys.exit(1)
+    if len(reason) > 1024 or key in seen: sys.exit(1)
+    seen.add(key)
+    if len(since_b) > 10 or len(nxt_b) > 10: sys.exit(1)
+    if (len(since_b)==10 and since_b>b"2147483647") or (len(nxt_b)==10 and nxt_b>b"2147483647"): sys.exit(1)
+    since, nxt = int(since_b), int(nxt_b)
+    if since < 1 or nxt < 1 or since > now or now >= nxt: sys.exit(1)
+    if since > 2147483647-horizon or nxt > since+horizon: sys.exit(1)
+sys.exit(0)
+PY
 }
 
 # Resolve a pointer file that lives under exactly one base directory.
@@ -380,11 +489,33 @@ zyz_scope_strip_quotes() {
                  -e "s/(^|[[:space:]([{:,])'[^']*'/\1 /g" 2>/dev/null
 }
 
+zyz_scope_utf8_locale() {
+    # Scope-cap regexes use bounded CJK character spans.  GNU grep interprets
+    # those bounds bytewise in the POSIX/C locale, so select a known UTF-8
+    # locale explicitly instead of inheriting the hook caller's locale.
+    local candidate charmap
+    for candidate in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8 UTF-8; do
+        charmap="$(LC_ALL="$candidate" locale charmap 2>/dev/null)" || continue
+        case "$charmap" in
+            UTF-8|UTF8|utf-8|utf8)
+                printf '%s' "$candidate"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 zyz_scope_cap_hit() {
     # $1 = dispatch prompt text. Prints the first scope-capping phrase found
     # (so the deny reason can quote it), or nothing. Input is lowercased, so
     # English patterns need no case folding; the CJK ones are unaffected.
-    local p pat m
+    local p pat m scope_locale
+    scope_locale="$(zyz_scope_utf8_locale 2>/dev/null || true)"
+    if [ -n "$scope_locale" ]; then
+        local LC_ALL="$scope_locale"
+        export LC_ALL
+    fi
     p="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' 2>/dev/null | tr '\n' ' ' 2>/dev/null)"
     [ -n "$p" ] || return 0
     # A prompt that explicitly forbids truncation is never a cap. Negation is
@@ -499,29 +630,15 @@ except Exception:
     return 0
 }
 
-zyz_scan_stale() {
-    # $1 agents dir, $2 stale-sec, $3 horizon-sec.
-    # A subagent counts as stale when it has a .start stamp, no .done mark,
-    # and its last liveness (newest of .start/.heartbeat) is older than
-    # stale-sec. Entries older than horizon-sec are orphans from finished
-    # work and are skipped instead of nagging forever.
-    local dir stale horizon now f key last hb age
-    dir="${1:-}"; stale="${2:-900}"; horizon="${3:-21600}"
-    [ -d "$dir" ] || return 0
-    now="$(zyz_now)"
-    for f in "$dir"/*.start; do
-        [ -e "$f" ] || continue
-        key="$(basename "$f" .start)"
-        [ "$key" = "main" ] && continue
-        [ -f "$dir/$key.done" ] && continue
-        last="$(zyz_mtime "$f")"
-        hb="$(zyz_mtime "$dir/$key.heartbeat")"
-        [ -n "$hb" ] && [ "$hb" -gt "$last" ] && last="$hb"
-        [ -n "$last" ] || continue
-        age=$((now - last))
-        [ "$age" -gt "$stale" ] || continue
-        [ "$age" -lt "$horizon" ] || continue
-        printf '%s\t%s\n' "$key" "$age"
-    done
-    return 0
+zyz_runtime_observe() {
+    # $1 task root, $2 whether to perform bounded no-output comparisons.
+    # The Python observer enumerates only authenticated catalog owners and
+    # reads logical records from fixed packs. Shell must never reconstruct
+    # new-format identity/liveness/terminal state from directory membership.
+    local root include lib_dir
+    root="${1:-}"; include="${2:-false}"
+    [ -d "$root" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || return 0
+    python3 "$lib_dir/runtime_state.py" hook-observe "$root" "$include" 2>/dev/null || true
 }

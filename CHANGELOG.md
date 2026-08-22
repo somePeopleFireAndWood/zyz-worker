@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Detect terminal-but-unharvested subagent roles as a mitigation for dropped
+  subagent-completion notifications. When a role reaches a terminal state
+  (clean DONE or adjudicated FINALIZED) but the main agent stays idle since it
+  completed — the symptom of a completion notification that never arrived, with
+  the result already on disk — the watchdog layers now flag it instead of
+  silently skipping every terminal instance. **L4 stop-gate (`stop-gate-main.sh`,
+  primary):** synchronously blocks the idle attempt during an active phase,
+  names the completed role and where its result lives, and instructs the main
+  agent to read and record it before idling; the block is satisfiable and
+  self-clearing (any tool call or status write clears it), honors
+  `stop_hook_active`, and shares the existing `runtime/nag/stopgate.last`
+  cooldown. **L3 watchdog (`monitors/watchdog.sh`, backup):** the instance loop
+  no longer blindly skips terminal instances; a new `unharvested` scan emits one
+  rate-limited wake line (own `runtime/nag/watchdog-unharvested-<key>.last`
+  cooldown) for the case L4 cannot catch — the role going terminal after the
+  main agent already idled. The predicate (`terminal` AND
+  `main_heartbeat_epoch <= terminal_epoch` AND `status.md` mtime
+  `<= terminal_epoch`) `isinstance(int)`-guards every epoch so a missing value
+  skips the instance rather than throwing and aborting the shared loop. Adds a
+  read-only, additive `terminal_epoch` field to the fixed-pack observer
+  (`runtime_state.py hook-observe`), surfaced on all three terminal paths. This
+  is a **mitigation**, not a root-cause fix of the harness notification-delivery
+  layer (out of a plugin hook's reach); L4 is primary because it does not ride
+  the completion channel that drops events. **Linux-only:** like the dead-role
+  scan, the detection is inert on macOS where the observer returns
+  `genesis-capability-unavailable`.
+- Probe update errors now distinguish malformed challenge syntax
+  (`invalid-probe-id`, exit 2) from a syntactically valid but non-current
+  challenge (`probe-mismatch`, exit 4), giving callers a stable
+  machine-readable validation boundary.
+- Resolve standalone execute-task issues #7–#10 with hash-keyed role identity,
+  distinct logical DONE/FINALIZED audit state in fixed packs, explicit reconnect
+  challenge/ACK, bounded multi-lane `Waiting On`, incremental-output contracts,
+  and content-sensitive no-output observation. **Linux-only:** the fixed-pack
+  layer requires `statx(STATX_MNT_ID)` mount identity; on macOS it fails closed
+  as `genesis-capability-unavailable`, all hooks stay fail-open, and L3/L4
+  dead-role detection is disabled (see hooks/README.md `## Degraded
+  environments`).
+- Add the supported `agent-runtime-state.sh` interface, persistent advisory-lock
+  carriers, fixed-slot transition journals, terminal-first hook/watchdog
+  consumers, the bounded public `gc-step`, validated runtime bounds, and a
+  15-second SubagentStart budget (host timeout raised to 20 s for margin).
+- Read Claude Code's `tool_use_id` (falling back to Codex's
+  `tool_call_id`/`call_id`) so the fixed-table INFLIGHT feature works on both
+  runtimes, add a dispatch grace period before non-armed/stale role instances
+  can block the main-agent stop gate or page the watchdog, and align the
+  PostToolUse heartbeat timeout with PreToolUse.
+
 ## [0.17.0] — 2026-08-10
 
 ### Added — full Codex runtime compatibility

@@ -88,6 +88,10 @@ case "$role" in
     *) exit 0 ;;
 esac
 
+# A valid bounded wait declaration only suppresses the MAIN audience's generic
+# status-stale reminder. Role liveness and post-result flushing are orthogonal.
+[ "$audience" != main ] || ! zyz_status_waiting "$status_file" || exit 0
+
 cooldown="${ZYZ_STATUS_NAG_COOLDOWN_SEC:-300}"
 zyz_cooldown_ok "$root/runtime/nag/$audience.last" "$cooldown" || exit 0
 

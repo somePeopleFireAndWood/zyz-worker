@@ -1,5 +1,15 @@
 # zyz-worker
 
+Standalone `execute-task` role instances are hash-keyed and auditable. Fixed
+audit/work packs hold logical START, HEARTBEAT, DONE, FINALIZED, probe,
+diagnostic, receipt, and baseline-inventory records; they are not standalone
+marker files. Confirmed API-kill deaths use `agent-runtime-state.sh finalize`,
+reconnects use explicit challenge/ACK, bounded `Waiting On` rows suppress only
+status freshness, and bounded cleanup uses `gc-step`. **Platform note:** the
+fixed-pack tracking layer requires Linux (`statx` mount identity); on macOS it
+fails closed as `genesis-capability-unavailable` and dead-role detection is
+disabled — see [hooks/README.md](hooks/README.md) `## Degraded environments`.
+
 我是周钰喆，一名光荣的工人，隶属于伟大的工人阶级。我会和同志们一起解放全人类，最后解放我自己。
 
 这个插件是我实际工作时用到的方法、技能。希望能帮助到同志们的生产、工作。

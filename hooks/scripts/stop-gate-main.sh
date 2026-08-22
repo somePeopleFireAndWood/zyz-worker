@@ -21,8 +21,8 @@
 # - Normally nothing (allow stop).
 # - Blocks (top-level {"decision":"block","reason":...}) when the current
 #   task is in an active execution phase AND either:
-#     (a) a dispatched role looks dead or stuck — it has a `.start` marker,
-#         no `.done` marker, and no heartbeat within ZYZ_ROLE_STALE_SEC
+#     (a) a fixed-pack role instance is non-terminal and its latest logical
+#         START/HEARTBEAT fact is stale, or its tracking state is unverifiable
 #         (covers subagents killed by API errors, where SubagentStop never
 #         fired); or
 #     (b) the overall status file is older than ZYZ_STOP_STATUS_STALE_SEC.
@@ -66,7 +66,27 @@ zyz_phase_active "$phase" || exit 0
 
 stale_sec="${ZYZ_ROLE_STALE_SEC:-900}"
 horizon="${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}"
-stale_roles="$(zyz_scan_stale "$root/runtime/agents" "$stale_sec" "$horizon")"
+runtime_observation="$(zyz_runtime_observe "$root" false)"
+stale_roles="$(printf '%s' "$runtime_observation" | python3 -c '
+import json,sys
+try:
+ stale,horizon,now=map(int,sys.argv[1:4]);data=json.load(sys.stdin)
+ if data.get("ok") is not True or data.get("state")!="observed":raise ValueError()
+ for item in data.get("instances",[]):
+  if item.get("terminal"):continue
+  key=item.get("instance_key");role=item.get("role") or "unknown";cap=item.get("tracking_capability")
+  last=item.get("last_liveness_epoch")
+  if not isinstance(last,int):last=item.get("start_epoch")
+  # Grace period: hook-start is fail-open by design (lock timeout, capacity
+  # pressure), so a fresh non-armed instance is not evidence of death. Only
+  # raise either signal once the newest known fact is older than stale-sec;
+  # with no epoch at all fall back to horizon/2 age so it still surfaces.
+  age=(now-last) if isinstance(last,int) else horizon//2
+  if age<=stale or age>=horizon:continue
+  if cap!="armed":print(f"{key}\t{age}\t{role}\t{cap}")
+  else:print(f"{key}\t{age}\t{role}\tstale-liveness")
+except Exception:pass
+' "$stale_sec" "$horizon" "$(zyz_now)" 2>/dev/null || true)"
 running_types="$(zyz_bg_running_types)"
 
 status_stale_sec="${ZYZ_STOP_STATUS_STALE_SEC:-1200}"
@@ -76,7 +96,7 @@ mtime="$(zyz_mtime "$status_file")"
 
 reason=""
 if [ -n "$stale_roles" ]; then
-    # Normalize scope prefixes on both sides: the .start stamp and
+    # Normalize scope prefixes on both sides: the logical START role and
     # background_tasks may disagree on "zyz-worker:role" vs bare "role".
     running_roles=""
     if [ -n "$running_types" ]; then
@@ -85,35 +105,67 @@ if [ -n "$stale_roles" ]; then
         done)"
     fi
     detail=""
-    while IFS="$(printf '\t')" read -r key age; do
+    while IFS="$(printf '\t')" read -r key age role_type stale_kind; do
         [ -n "$key" ] || continue
-        role_line="$(head -n1 "$root/runtime/agents/$key.start" 2>/dev/null || true)"
-        role_type="${role_line#* }"
         # A still-running background subagent of the same role is not dead —
         # it may just be reasoning without tool calls. Skip it.
         if [ -n "$running_roles" ] && [ -n "$role_type" ] \
             && printf '%s\n' "$running_roles" | grep -qxF "$(zyz_role_of "$role_type")" 2>/dev/null; then
             continue
         fi
-        detail="${detail}${key} (${role_type}, silent $((age / 60)) min); "
+        detail="${detail}${key} (${role_type}, ${stale_kind}, silent $((age / 60)) min); "
     done <<EOF
 $stale_roles
 EOF
     if [ -n "$detail" ]; then
-        # The instruction MUST name an action that actually clears the trigger.
-        # This gate reads only the runtime markers — never status.md — so telling
-        # the agent to "mark it finished in the status file" was unsatisfiable:
-        # it complied, the marker stayed, and the gate re-blocked until the
-        # cooldown or the platform block cap timed out. A .start is cleared by a
-        # clean SubagentStop, which by definition does not happen on an API-error
-        # death, so the agent needs the explicit escape below.
-        reason="Dispatched role(s) look dead or stuck with no clean finish: ${detail}They may have been killed by an API error without any SubagentStop. Do one of: (a) re-dispatch each unfinished role with the latest design and status summary, or (b) if its work actually completed, record that in the status file AND clear its stale marker with: rm -f '${root}/runtime/agents/'<key>.start '${root}/runtime/agents/'<key>.heartbeat  (<key> is the name shown above). This gate reads only those runtime markers, so a status-file note alone will not clear it."
+        reason="Dispatched role(s) look dead or stuck with no clean finish: ${detail}They may have been killed by an API error without SubagentStop. Verify platform status, then use the supported runtime protocol: create an exact probe and investigate its ACK; after confirmed death run agent-runtime-state.sh finalize <task-dir> <agent-id> <role> <reason> [replacement-id]. Never delete or fabricate runtime markers by hand."
     fi
 fi
 
-if [ "$status_age" -gt "$status_stale_sec" ]; then
+if [ "$status_age" -gt "$status_stale_sec" ] && ! zyz_status_waiting "$status_file"; then
     [ -n "$reason" ] && reason="${reason} "
     reason="${reason}The overall status file (${status_file}) is $((status_age / 60)) minutes stale for an active phase (${phase}). Persist current progress, active roles, blockers, and the next step into it before idling."
+fi
+
+# Terminal-but-unharvested detection (L4 primary): a role reached a terminal
+# state (clean DONE / adjudicated FINALIZED) but the main agent has been idle
+# since — its last tool call predates completion (main_heartbeat_epoch <=
+# terminal_epoch) AND no status was written since (status.md mtime <=
+# terminal_epoch). Reuses the SAME observer snapshot. Every epoch is
+# isinstance(int)-guarded before comparison so a missing epoch is skipped, never
+# thrown (an unguarded None<=int would abort the whole filter). Fails open
+# (observer error / macOS genesis-unavailable → empty → no block), like the
+# stale-role branch above.
+status_mtime=0
+[ -n "$mtime" ] && status_mtime="$mtime"
+unharvested_roles="$(printf '%s' "$runtime_observation" | python3 -c '
+import json,sys
+try:
+ status_mtime=int(sys.argv[1]);data=json.load(sys.stdin)
+ if data.get("ok") is not True or data.get("state")!="observed":raise ValueError()
+ main_hb=data.get("main_heartbeat_epoch")
+ if not isinstance(main_hb,int):sys.exit(0)
+ for item in data.get("instances",[]):
+  if not item.get("terminal"):continue
+  te=item.get("terminal_epoch")
+  if not isinstance(te,int):continue
+  if main_hb<=te and status_mtime<=te:
+   key=item.get("instance_key");role=item.get("role") or "unknown"
+   print(f"{key}\t{role}")
+except Exception:pass
+' "$status_mtime" 2>/dev/null || true)"
+if [ -n "$unharvested_roles" ]; then
+    udetail=""
+    while IFS="$(printf '\t')" read -r key role; do
+        [ -n "$key" ] || continue
+        udetail="${udetail}${role} (${key}, its result SubTask file under ${root}/subtasks/ and its durable log); "
+    done <<EOF
+$unharvested_roles
+EOF
+    if [ -n "$udetail" ]; then
+        [ -n "$reason" ] && reason="${reason} "
+        reason="${reason}Completed role(s) look unharvested — they reached a terminal state (DONE/FINALIZED) but the main agent has been idle since, so the completion may not have been processed (a dropped completion notification): ${udetail}Read each named result now, record it in ${status_file}, then continue — that clears this block."
+    fi
 fi
 
 [ -n "$reason" ] || exit 0
