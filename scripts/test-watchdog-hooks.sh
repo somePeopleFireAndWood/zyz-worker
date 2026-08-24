@@ -9382,13 +9382,15 @@ PY
 import json,os,sys
 b=json.load(open(sys.argv[1]));x=json.load(open(sys.argv[2]));r=x["root"]["metadata"];g=x["group"]["metadata"]
 entries=x["chain"]["entries"];ranges=[(e.get("first_generation"),e.get("last_generation")) for e in entries]
-names=[e.get("basename") for e in entries];container=os.path.dirname(sys.argv[2])
+names=[e.get("basename") for e in entries];container=os.path.dirname(sys.argv[2]);mi=r.get("migration_quiesce_intent")
 ok=(r.get("state")=="migration-committed" and r.get("admission_state")=="closed" and g.get("state")=="group-committed" and
  len(entries)==2 and all(e.get("kind")=="scratch-object" for e in entries) and ranges==[(1,16),(17,17)] and
  names==[".catalog-compaction-scratch.v1",".catalog-segment.0000000000000001.v1"] and
  r.get("owned_bytes")==b["root"]["metadata"].get("owned_bytes")-15*1048576 and
  r.get("counter_generation")==b["root"]["metadata"].get("counter_generation")+15 and
- g.get("retired_bytes")==0 and r.get("migration_source_chain_digest") is None and r.get("migration_creator_cutoff") is None)
+ g.get("retired_bytes")==0 and isinstance(mi,dict) and mi==b["root"]["metadata"].get("migration_quiesce_intent") and
+ r.get("migration_source_chain_digest")==mi.get("source_chain_digest") and isinstance(mi.get("source_chain_digest"),str) and
+ r.get("migration_creator_cutoff")==mi.get("creator_cutoff_sequence") and isinstance(mi.get("creator_cutoff_sequence"),int))
 raise SystemExit(0 if ok else 1)
 PY
         }
@@ -9582,10 +9584,22 @@ import hashlib,json,struct,sys
 x=json.load(open(sys.argv[1]));rows=[json.loads(v) for v in open(sys.argv[2]) if v.strip()];outs=[json.load(open(v)) for v in sys.argv[3:]]
 r=x["root"]["metadata"];s=r.get("dense_capacity_signature") or {}
 want=hashlib.sha256(b"zyz-dense-capacity-signature-v1"+bytes.fromhex(r["hybrid_chain_digest"])+bytes.fromhex(r["recovery_overlay_digest"])+struct.pack(">QQQ",r["counter_generation"],r["owned_bytes"],r["active_data_claims"])).hexdigest()
+def _pressure(v):
+    return v.get("state")=="pressure" and v.get("error",{}).get("code")=="catalog-capacity-pressure" and v.get("error",{}).get("retryable") is True
+def _pass_ok(v):
+    # no-compaction-rerun invariant holds for ALL four suppression passes (design.md:403):
+    # a matching dense signature never re-runs the unchanged 1->1 compaction.
+    if not (v.get("ok") is True and v.get("entries_deleted")==v.get("bytes_reclaimed")==0): return False
+    if v.get("due") is False:
+        # automatic triggers (watchdog, lifecycle): matching signature MUST suppress to pressure with no work.
+        return _pressure(v)
+    # due=true (manual, system-timer): ordinary GC may be mid-sweep on the 65>64 fixture
+    # (state=pending, priority blocked>pending>pressure at design.md:124) or reach pressure;
+    # either is legitimate, but no compaction rerun (guarded above).
+    return _pressure(v) if v.get("state")=="pressure" else v.get("state")=="pending"
 ok=(s==want and r.get("state")=="active" and r.get("admission_state")=="closed" and
  sum(v["entries_deleted"] for v in rows)==1 and sum(v["bytes_reclaimed"] for v in rows)==1048576 and
- all(v.get("ok") is True and v.get("state")=="pressure" and v.get("error",{}).get("code")=="catalog-capacity-pressure" and v["error"].get("retryable") is True and
-     v.get("entries_deleted")==v.get("bytes_reclaimed")==0 for v in outs))
+ all(_pass_ok(v) for v in outs))
 raise SystemExit(0 if ok else 1)
 PY
         then
@@ -9594,7 +9608,16 @@ PY
             fail "T51 dense 2-to-1 completion emits bound pressure signature and suppresses unchanged reruns" "done=$t51_dense_done auto=$t51_watchdog_rc/$t51_lifecycle_rc explicit=$t51_manual_rc/$t51_timer_rc"
         fi
         t51_files_digest "$t51_container" >"$t51/dense-before.sha"
-        t37_public "$t51" '' "$t37_seed" 0 >"$t51/admission.out" 2>"$t51/admission.err";t51_admission_rc=$?
+        # Drive new-owner admission through the fresh-claim real-rc actor (design.md:378 item 2,
+        # manifest "Dense admission priority and zero effect"): t51_drive claim-create derives a
+        # genuinely fresh cell key (claim.<sha> not in t40_public's 65-claim batch, so duplicate is
+        # None), reaching the dense capacity gate on the fresh-owner/claim-create path
+        # (runtime_state.py:4609->4465) which preempts high/hard before any recovery/directory/pack
+        # write and returns the rc4 catalog-capacity-pressure envelope on stdout.  The SubagentStart
+        # host hook (t37_public -> subagent-track.sh) is intentionally fail-open exit 0 (design.md:567)
+        # and cannot emit rc4/an stdout envelope; a bare t37_public also reuses the committed batch
+        # owner id, so the reused-identity conflict (10000) would preempt the gate entirely.
+        t51_drive "$t51_container" claim-create '' >"$t51/admission.out" 2>"$t51/admission.err";t51_admission_rc=$?
         t51_files_digest "$t51_container" >"$t51/dense-after.sha"
         if [ "$t51_admission_rc" -eq 4 ] && cmp -s "$t51/dense-before.sha" "$t51/dense-after.sha" \
             && python3 -c 'import json,sys;x=json.load(open(sys.argv[1]));raise SystemExit(0 if x.get("error",{}).get("code")=="catalog-capacity-pressure" and x["error"].get("retryable") is True else 1)' "$t51/admission.out"; then

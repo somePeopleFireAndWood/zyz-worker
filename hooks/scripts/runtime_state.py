@@ -113,6 +113,10 @@ CATALOG_CHAIN_OFFSET = 5120
 CATALOG_CHAIN_SIZE = sum(CATALOG_CHAIN_PARTITIONS)
 CATALOG_CHAIN_ENTRY_COUNT = 16
 CATALOG_CHAIN_ENTRY_SIZE = 512
+# All anchors together may cover at most floor(2147483647 / 1048576) distinct
+# 1 MiB physical segments; the 2048th member must be blocked with zero effect
+# before any ROOT visibility.
+CATALOG_CHAIN_MEMBER_COUNT = 2047
 # Public structural floor. It rounds the 31 MiB data-object sum up to 32 MiB
 # so the three carrier blocks and filesystem allocation rounding are included.
 CATALOG_GENESIS_FLOOR = 33554432
@@ -1679,7 +1683,7 @@ def _terminal_cell_semantic(value: dict) -> None:
                 set(event_receipts) != {
                     "schema_version", "resolved_start_ring_digest",
                     "resolved_stop_ring_digest", "latest_start_event_token",
-                    "latest_stop_event_token"} or
+                    "latest_stop_event_token", "resolved_stop_epoch"} or
                 event_receipts.get("schema_version") != 1 or
                 any(event_receipts.get(name) is not None and
                     not HEX64.fullmatch(str(event_receipts[name]))
@@ -1689,6 +1693,8 @@ def _terminal_cell_semantic(value: dict) -> None:
                     not EVENT_RE.fullmatch(str(event_receipts[name]))
                     for name in ("latest_start_event_token",
                                  "latest_stop_event_token")) or
+                (event_receipts.get("resolved_stop_epoch") is not None and
+                 not isinstance(event_receipts["resolved_stop_epoch"], int)) or
                 not isinstance(value.get("created_epoch"), int) or
                 not isinstance(value.get("last_event_epoch"), int) or
                 not isinstance(value.get("retention_epoch"), int) or
@@ -2082,6 +2088,8 @@ def _terminal_freeze(container: Path, instance_key: str,
                     resolved_start[-1]["event_token"] if resolved_start else None),
                 "latest_stop_event_token": (
                     resolved_stop[-1]["event_token"] if resolved_stop else None),
+                "resolved_stop_epoch": (
+                    resolved_stop[-1]["resolved_epoch"] if resolved_stop else None),
             }
             if (not isinstance(identity, dict) or not isinstance(marker, dict) or
                     identity.get("agent_id_sha256") !=
@@ -3166,6 +3174,20 @@ def _catalog_chain_region(entries: list[dict], generation: int,
             CATALOG_CHAIN_ENTRY_COUNT or generation < 1 or
             len(predecessor) != 32):
         raise StateError("gc-internal", "hybrid-chain image input is invalid", 5)
+    # All anchors together may cover at most CATALOG_CHAIN_MEMBER_COUNT
+    # distinct physical segments (a scratch anchor is one physical object
+    # regardless of its logical span); checked addition, zero effect before
+    # any image bytes are built.
+    member_total = 0
+    for entry in entries:
+        first = entry.get("first_generation")
+        last = entry.get("last_generation")
+        if (not isinstance(first, int) or not isinstance(last, int) or
+                first < 1 or last < first):
+            raise StateError("gc-internal", "hybrid-chain image input is invalid", 5)
+        member_total += 1 if entry.get("kind") == "scratch-object" else last - first + 1
+        if member_total > CATALOG_CHAIN_MEMBER_COUNT:
+            raise StateError("gc-internal", "hybrid-chain member total overflows", 5)
     entry_images = []
     entry_predecessor = predecessor
     for entry in entries:
@@ -3252,6 +3274,7 @@ def _catalog_parse_chain_region(container: Path, raw: bytes,
     predecessor = header[1]
     members = []
     prior_generation = 0
+    member_total = 0
     for index in range(header_meta["entry_count"]):
         start = index * CATALOG_CHAIN_ENTRY_SIZE
         image = entry_raw[start:start + CATALOG_CHAIN_ENTRY_SIZE]
@@ -3299,6 +3322,11 @@ def _catalog_parse_chain_region(container: Path, raw: bytes,
             container, entry, append_will)
         entries.append(entry)
         members.extend(entry_members)
+        member_total += (1 if entry.get("kind") == "scratch-object" else
+                         entry["last_generation"] - entry["first_generation"] + 1)
+        if member_total > CATALOG_CHAIN_MEMBER_COUNT:
+            raise StateError("catalog-root-invalid",
+                             "hybrid-chain member total overflows", 4)
         prior_generation = entry["last_generation"]
         images.append(image)
         predecessor = parsed[3]
@@ -5287,8 +5315,16 @@ def _catalog_migration_source_fact(member: dict) -> dict:
             first < 1 or last < first):
         raise StateError("catalog-root-invalid",
                          "migration source logical range is invalid", 4)
+    # segment_generation carries the PHYSICAL descriptor generation (the
+    # segment's on-disk metadata.segment_generation), NOT the logical chain
+    # position. For an ordinary segment the two are equal (member["generation"]
+    # == the chain position == the physical gen). For the compaction scratch
+    # anchor the physical descriptor generation is always 0 while the logical
+    # chain range (logical_first/last_generation) spans the retired sources.
+    physical_generation = (0 if member.get("anchor_kind") == "scratch-object"
+                           else member["generation"])
     return {
-        "segment_generation": member["generation"],
+        "segment_generation": physical_generation,
         "logical_first_generation": first,
         "logical_last_generation": last,
         "basename": member["basename"],
@@ -5309,8 +5345,13 @@ def _catalog_migration_quiesce_intent(container: Path, proof: dict,
     source_facts = [{"position": position,
                      **_catalog_migration_source_fact(member)}
                     for position, member in enumerate(chain["members"])]
+    scratch_basename = root.get("migration_scratch_basename")
+    if (not isinstance(scratch_basename, str) or
+            not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", scratch_basename)):
+        raise StateError("catalog-root-invalid",
+                         "migration scratch authority is invalid", 4)
     scratch = _catalog_segment_chain_projection(
-        container, ".catalog-compaction-scratch.v1", 0)
+        container, scratch_basename, 0)
     source_digest = _catalog_digest(
         b"zyz-migration-source-chain-v1", _catalog_json(source_facts)).hex()
     scratch_fact = {
@@ -5338,8 +5379,10 @@ def _catalog_migration_quiesce_intent(container: Path, proof: dict,
         "source_hybrid_chain_digest": chain["digest"],
         "source_chain_generation": chain["generation"],
         "source_count": len(source_facts),
-        "first_source_generation": source_facts[0]["segment_generation"],
-        "last_source_generation": source_facts[-1]["segment_generation"],
+        "first_source_generation":
+            source_facts[0]["logical_first_generation"],
+        "last_source_generation":
+            source_facts[-1]["logical_last_generation"],
         "scratch": scratch_fact,
     }
 
@@ -6762,7 +6805,7 @@ def _catalog_previs_group_visible(container: Path, group_generation: int,
             cancel_set_digest = accumulator.digest()
             sources = group.get("source_segments")
             if (not isinstance(sources, list) or not sources or
-                    sources[0].get("segment_generation") !=
+                    sources[0].get("logical_last_generation") !=
                         source_segment_generation or
                     any(sources[position].get("logical_last_generation") + 1 !=
                         sources[position + 1].get("logical_first_generation")
@@ -7243,11 +7286,20 @@ def _catalog_group_retire_step(container: Path) -> dict:
                         global_fd, recovery_fd, proof, metadata,
                         "group-committed",
                         {"migration_retirement_cursor":
-                            sources[-1]["segment_generation"] + 1,
+                            sources[-1]["logical_last_generation"] + 1,
                          "previs_cancel_count": 0})
                     return {"state": "group-committed", "advanced": True,
                             **result}
                 source = sources[cursor]
+                try:
+                    present = _catalog_object_identity(
+                        container, source["basename"], CATALOG_SEGMENT_SIZE)
+                except FileNotFoundError:
+                    raise StateError("catalog-root-invalid",
+                                     "retired source is missing before will", 4)
+                if present["digest"] != source["identity_digest"]:
+                    raise StateError("catalog-root-invalid",
+                                     "retired source identity changed", 4)
                 root = proof["root_meta"]
                 owned = root.get("owned_bytes")
                 counter = root.get("counter_generation")
@@ -7430,7 +7482,7 @@ def _catalog_group_continue_or_finish(container: Path) -> dict:
                     group.get("state") != "group-committed"):
                 raise StateError("catalog-root-invalid",
                                  "group continuation prior conflicts", 4)
-            last = group["source_segments"][-1]["segment_generation"]
+            last = group["source_segments"][-1]["logical_last_generation"]
             suffix = [member for member in proof["chain"]["members"]
                       if member["generation"] > last]
             if suffix:
@@ -7509,6 +7561,10 @@ def _catalog_migration_commit_outcome(container: Path, config: dict) -> dict:
                 "migration-outcome-active")
             return {"state": "pressure" if dense else "active",
                     "dense": dense, "advanced": True,
+                    # The outcome IS the cycle's terminal completion: no
+                    # remaining eligible work, so the dispatcher must not
+                    # default this pass to pending from owned >= high.
+                    "pending": False,
                     "transactions_advanced": 1,
                     "root_digest": successor["digest"].hex()}
         finally:
@@ -11001,11 +11057,9 @@ def reconcile_stop(task: str, raw_id: str, role_arg: str, token: str,
         env.update(state="reconciled-stop", trusted=True,
                    tracking_capability="armed", idempotent=True,
                    event_token=token,
-                   reconciled_epoch=(late or {}).get(
-                       "done_record", {}).get("terminal_epoch"),
+                   reconciled_epoch=receipts.get("resolved_stop_epoch"),
                    terminal_kind="done",
-                   terminal_epoch=(late or {}).get(
-                       "done_record", {}).get("terminal_epoch"),
+                   terminal_epoch=marker.get("terminal_epoch"),
                    late_clean=late is not None,
                    preserved_terminal_kind=(marker.get("terminal_kind")
                                               if late is not None else None),
