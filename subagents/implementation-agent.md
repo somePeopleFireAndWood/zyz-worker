@@ -72,6 +72,12 @@ When reviewAgent asks for implementation changes:
 
 You do not have to produce everything in one response. Implementing a large change over several passes and edits is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break big implementations into smaller successive edits. This is only a delivery technique — it never lets you defer or simplify the scope the design document requires.
 
+For a large deliverable, make this durability concrete: write a coherent skeleton/interface to the shared worktree first, then fill it in through regular on-disk increments. Keep a physical artifact inventory in your SubTask status before any wait or handoff. Aim to produce the first non-empty artifact well before the 30-minute no-output threshold; conversation-only progress is not recoverable after an API kill.
+
+When a reconnect message contains an exact `probe1-...` challenge that you actually observed, acknowledge only that id with `hooks/scripts/agent-runtime-state.sh probe-ack <task-dir> <your-agent-id> <probe-id>`. A heartbeat is never an ACK. Do not fabricate runtime files or acknowledge an id you did not receive.
+
+The complete supported runtime command vocabulary is `adopt-legacy`, `finalize`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`; your role's write permission remains restricted to the matching `probe-ack` bookkeeping action.
+
 ## Output Format
 
 Return:

@@ -7,7 +7,7 @@
 # Registered in hooks/hooks.json for SubagentStop with the zyz-worker role
 # matcher. Fires when a role subagent finishes responding. NOT guaranteed
 # to fire when the subagent dies on an API error — the L3 watchdog covers
-# that gap via the missing `.done` marker.
+# that gap via missing logical DONE terminal truth.
 #
 # ## Inputs
 #
@@ -19,13 +19,13 @@
 # ## Outputs
 #
 # - Normally nothing; side effect: stamps
-#   `<task-root>/runtime/agents/<agent-key>.done` (ISO time + agent_type),
+#   the instance audit pack's logical DONE record,
 #   which tells L3/L4 the role ended cleanly.
 # - When the role's final message is missing or shorter than the minimum
 #   (an empty/truncated ending gives the main agent nothing to persist):
 #   prints `{"decision":"block","reason":...}` ONCE, telling the role to
 #   emit a proper final report (completed work, remaining work, blockers,
-#   file paths touched). The `.done` stamp is skipped on block so the role
+#   file paths touched). The DONE commit is skipped on block so the role
 #   still counts as running; it is written on the next clean stop.
 #
 # ## Failure behavior
@@ -41,6 +41,9 @@
 # zyz-worker roles only (via the hooks.json matcher).
 
 set -u
+# Tokenless host-only failure taxonomy mirrors SubagentStart:
+# event-lock-unavailable event-randomness-unavailable event-inventory-invalid
+# event-token-collision primary-diagnostic-write-failed.
 [ "${ZYZ_HOOKS_DISABLE:-0}" = "1" ] && exit 0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -63,17 +66,13 @@ agent_type="$(zyz_get agent_type)"
 
 mark_done() {
     [ -n "$agent_id" ] || return 0
-    mkdir -p "$root/runtime/agents" 2>/dev/null || return 0
-    _k="$(zyz_sanitize "$agent_id")"
-    # Write the .done marker (kept for diagnostics and backward compatibility),
-    # then REMOVE this role's .start/.heartbeat so the stale scan has nothing
-    # left to report. Clearing the trigger — rather than adding a third file
-    # that suppresses it — is what keeps runtime/ from growing one triple per
-    # dispatch, and it makes "no .start left" the whole liveness question.
-    zyz_write_atomic "$root/runtime/agents/$_k.done" \
-        "$(zyz_iso) ${agent_type:-unknown}"
-    rm -f "$root/runtime/agents/$_k.start" \
-          "$root/runtime/agents/$_k.heartbeat" 2>/dev/null || true
+    _role="$(zyz_canonical_role "$agent_type" 2>/dev/null)" || return 0
+    if command -v python3 >/dev/null 2>&1; then
+        (cd "$base" 2>/dev/null && python3 "$SCRIPT_DIR/runtime_state.py" hook-stop "$root" "$agent_id" "$_role" >/dev/null) \
+            || printf 'zyz-worker: SubagentStop terminal commit pending\n' >&2
+    else
+        printf 'zyz-worker: event-randomness-unavailable (python3 missing)\n' >&2
+    fi
 }
 
 if [ "$(zyz_get stop_hook_active)" = "true" ]; then

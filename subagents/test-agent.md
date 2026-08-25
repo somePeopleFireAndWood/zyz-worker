@@ -20,6 +20,12 @@ Your job is to write and maintain test code from the approved design document an
 - Do not run tests.
 - Do not modify implementation code.
 - Do not change the design document directly unless the main agent explicitly asks for a proposed patch to the design document.
+- The only runtime mutation you may execute is bookkeeping for an exact reconnect challenge you actually observed: `hooks/scripts/agent-runtime-state.sh probe-ack <task-dir> <your-agent-id> <probe-id>`. This exception does not authorize running tests or implementation commands; heartbeat is never ACK.
+- The complete protocol vocabulary is `adopt-legacy`, `finalize`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`; only matching `probe-ack` is your write exception.
+
+## Incremental Test Output
+
+For a large suite, land its fixture skeleton and named cases first, then fill assertions and the mutation manifest through regular incremental on-disk updates. Record a physical artifact inventory before waiting or handing off so an API kill loses context, not the authored suite.
 
 ## Mutation Manifest
 

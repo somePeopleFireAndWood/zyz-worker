@@ -34,6 +34,12 @@ This is the single mandatory overall task status file. Each SubTask may optional
 - testAgent:
 - reviewAgent:
 
+<!-- Optional bounded standalone wait rows go here, one per instance. Never
+pre-create an empty row. Strict form:
+- Waiting On: instance-key=<key>; since-epoch=<unix>; next-check-epoch=<unix>; reason=<single-line UTF-8 reason>
+Delete a row when the result arrives or before an expiry review. Waiting On
+suppresses only main status freshness, never role/probe/no-output/result-flush. -->
+
 ## Optional Capabilities Used
 
 - Capability:
@@ -144,7 +150,7 @@ Shared-file hotspots: (declared at dispatch time when parallel SubTasks append t
 ## Status Freshness
 
 - Updated At: (ISO timestamp of the last write to THIS file — a transition is not complete until this advances)
-- Reconciled From Code At: (when a resuming session last cross-checked this file against `git log` / `subtasks/*.md` / `runtime/agents/*.heartbeat`; empty = never)
+- Reconciled From Code At: (when a resuming session last cross-checked this file against `git log` / `subtasks/*.md` / the authenticated fixed-pack observer; empty = never)
 - Fields Reconstructed From Code: (which entries below were rebuilt from commits/transcripts rather than recorded live — a later reader must know which parts were never written by the actor that did the work)
 - Known Divergences: (any place this file still disagrees with the git history or a SubTask file, and which one is authoritative)
 

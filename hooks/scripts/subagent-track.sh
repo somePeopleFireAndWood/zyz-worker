@@ -16,13 +16,11 @@
 # ## Outputs
 #
 # - None on stdout.
-# - Side effect: stamps `<task-root>/runtime/agents/<agent-key>.start`
-#   (ISO time + agent_type). A `.start` without a matching `.done` (written
-#   by stop-gate-subagent.sh) and without fresh heartbeats is what the L3
-#   watchdog and L4 main stop gate treat as a dead or stuck role. Note that
-#   SubagentStop is NOT guaranteed to fire when a subagent dies on an API
-#   error — that gap is exactly what leaves `.done` missing, which is the
-#   signal the watchdog needs.
+# - Side effect: reserves the hash-keyed instance and commits logical IDENTITY
+#   and START records in its fixed audit/work packs. Missing terminal truth plus
+#   stale logical HEARTBEAT is what L3/L4 treat as dead or stuck. SubagentStop
+#   is not guaranteed after an API error; confirmed death is recorded with the
+#   supported `finalize` command.
 #
 # ## Failure behavior
 #
@@ -54,8 +52,18 @@ root="$(zyz_task_root "$base")"
 agent_id="$(zyz_get agent_id)"
 agent_type="$(zyz_get agent_type)"
 [ -n "$agent_id" ] || exit 0
-key="$(zyz_sanitize "$agent_id")"
+role="$(zyz_canonical_role "$agent_type" 2>/dev/null)" || exit 0
 
-mkdir -p "$root/runtime/agents" 2>/dev/null || exit 0
-zyz_write_atomic "$root/runtime/agents/$key.start" "$(zyz_iso) ${agent_type:-unknown}"
+# The backend owns identity selection, collision latching, transition locking
+# and WAL ordering. This state-writing hook remains host-fail-open: a tracking
+# failure is diagnostic and never prevents the host from starting the role.
+if command -v python3 >/dev/null 2>&1; then
+    (cd "$base" 2>/dev/null && python3 "$SCRIPT_DIR/runtime_state.py" hook-start "$root" "$agent_id" "$role" >/dev/null) \
+        || printf 'zyz-worker: SubagentStart runtime tracking unavailable\n' >&2
+else
+    printf 'zyz-worker: event-randomness-unavailable (python3 missing)\n' >&2
+fi
+# Tokenless host-only failure taxonomy: event-lock-unavailable,
+# event-randomness-unavailable, event-inventory-invalid, event-token-collision,
+# primary-diagnostic-write-failed. None creates a reconcilable token.
 exit 0

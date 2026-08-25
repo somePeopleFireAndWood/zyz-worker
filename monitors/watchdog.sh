@@ -62,6 +62,7 @@ ROLE_STALE="${ZYZ_WATCHDOG_ROLE_STALE_SEC:-1200}"
 HORIZON="${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}"
 STATUS_STALE="${ZYZ_WATCHDOG_STATUS_STALE_SEC:-1800}"
 COOLDOWN="${ZYZ_WATCHDOG_COOLDOWN_SEC:-900}"
+ONCE="${ZYZ_WATCHDOG_ONCE:-0}"
 
 WATCHDOG_PID_FILE="${ZYZ_WATCHDOG_PID_FILE:-}"
 watchdog_cleanup() {
@@ -114,21 +115,80 @@ while :; do
         status_file="$root/status.md"
         phase="$(zyz_phase_of "$status_file")"
         if zyz_phase_active "$phase"; then
-            # (a) dead/stuck roles: .start without .done, silent too long.
-            zyz_scan_stale "$root/runtime/agents" "$ROLE_STALE" "$HORIZON" \
-            | while IFS="$(printf '\t')" read -r key age; do
-                [ -n "$key" ] || continue
-                zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
-                role_line="$(head -n1 "$root/runtime/agents/$key.start" 2>/dev/null || true)"
-                printf '[zyz-worker watchdog] role %s (%s) has been silent for %s min with no clean finish — verify whether it is actually dead (check its background task status / result; API-error kills skip SubagentStop, but a healthy role may also just be reasoning without tool calls). If dead, re-dispatch it with the latest design and status summary; if it finished, mark it in the status file.\n' \
-                    "$key" "${role_line#* }" "$((age / 60))"
-            done
-
-            # (b) stale overall status file during an active phase.
+            # (a) Fixed-pack liveness, tracking, probe, no-output, and
+            # terminal-but-unharvested signals. One authenticated observer
+            # snapshot owns enumeration; shell never treats pathname membership
+            # as new-format state authority. Status mtime is read first so the
+            # terminal-unharvested predicate can consume it.
             mtime="$(zyz_mtime "$status_file")"
+            status_mtime_arg=0
+            [ -n "$mtime" ] && status_mtime_arg="$mtime"
+            runtime_observation="$(zyz_runtime_observe "$root" true)"
+            runtime_events="$(printf '%s' "$runtime_observation" | python3 -c '
+import json,sys
+try:
+ stale,horizon,now,status_mtime=map(int,sys.argv[1:5]);data=json.load(sys.stdin)
+ if data.get("ok") is not True or data.get("state")!="observed":raise ValueError()
+ main_hb=data.get("main_heartbeat_epoch")
+ for item in data.get("instances",[]):
+  key=item.get("instance_key");role=item.get("role") or "unknown"
+  if item.get("terminal"):
+   # Terminal-but-unharvested: role finished (DONE/FINALIZED) but the main
+   # agent has been idle since (main_heartbeat_epoch <= terminal_epoch) and
+   # wrote no status since (status.md mtime <= terminal_epoch). Every epoch is
+   # isinstance(int)-guarded before comparison and the item skipped on absence
+   # — an unguarded None<=int would throw and abort the whole shared loop,
+   # dropping every other instance event.
+   te=item.get("terminal_epoch")
+   if not isinstance(main_hb,int) or not isinstance(te,int):continue
+   if main_hb<=te and status_mtime<=te:print(f"unharvested\t{key}\t{role}\t0\t-")
+   continue
+  cap=item.get("tracking_capability")
+  last=item.get("last_liveness_epoch")
+  if not isinstance(last,int):last=item.get("start_epoch")
+  # Same grace as L4: fail-open starts leave non-armed instances that are not
+  # yet evidence of death; only report past stale-sec (no-epoch -> horizon/2).
+  age=(now-last) if isinstance(last,int) else horizon//2
+  if stale<age<horizon:
+   if cap!="armed":print(f"tracking\t{key}\t{role}\t{age}\t{cap}")
+   else:print(f"stale\t{key}\t{role}\t{age}\t-")
+  if item.get("probe_state")=="overdue":print("probe\t{}\t{}\t0\t{}".format(key,role,item.get("probe_id") or "unknown"))
+  if item.get("no_output_state")=="unchanged":print(f"no-output\t{key}\t{role}\t0\t-")
+except Exception:pass
+' "$ROLE_STALE" "$HORIZON" "$(zyz_now)" "$status_mtime_arg" 2>/dev/null || true)"
+            while IFS="$(printf '\t')" read -r event_kind key role_line age detail; do
+                [ -n "$event_kind" ] || continue
+                case "$event_kind" in
+                    stale)
+                        zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
+                        printf '[zyz-worker watchdog] role %s (%s) has been silent for %s min with no clean finish — verify platform state, send an exact reconnect probe, and after confirmed death use agent-runtime-state.sh finalize before re-dispatch.\n' "$key" "$role_line" "$((age / 60))"
+                        ;;
+                    tracking)
+                        zyz_cooldown_ok "$root/runtime/nag/watchdog-tracking-$key-$detail.last" "$COOLDOWN" || continue
+                        printf '[zyz-worker watchdog] role %s (%s) has fixed-pack tracking state %s — reconcile the exact persisted event when available; do not treat an unverifiable instance as healthy quiet.\n' "$key" "$role_line" "$detail"
+                        ;;
+                    probe)
+                        zyz_cooldown_ok "$root/runtime/nag/watchdog-probe-$key-$detail.last" "$COOLDOWN" || continue
+                        printf '[zyz-worker watchdog] reconnect probe %s for role instance %s is overdue without an explicit matching ACK; heartbeat alone is not an ACK. Query platform running/inflight state now and follow the bounded recovery protocol.\n' "$detail" "$key"
+                        ;;
+                    no-output)
+                        zyz_cooldown_ok "$root/runtime/nag/watchdog-no-output-$key.last" "$COOLDOWN" || continue
+                        printf '[zyz-worker watchdog] role instance %s has reached the no-output threshold and its fixed LIVE_INVENTORY baseline still matches the current descriptor-bounded physical tree; the lane may be lost.\n' "$key"
+                        ;;
+                    unharvested)
+                        zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
+                        printf '[zyz-worker watchdog] role %s (%s) completed (DONE/FINALIZED) but appears UNPROCESSED — the main agent has been idle since it finished, so its completion may not have been delivered (backup signal on the watchdog path). Read its result SubTask file under %s/subtasks/ and its durable log, record it in %s, then continue.\n' "$key" "$role_line" "$root" "$status_file"
+                        ;;
+                esac
+            done <<EOF
+$runtime_events
+EOF
+
+            # (b) stale overall status file during an active phase. Reuses the
+            # $mtime read above for the unharvested predicate.
             if [ -n "$mtime" ]; then
                 age=$(( $(zyz_now) - mtime ))
-                if [ "$age" -gt "$STATUS_STALE" ]; then
+                if [ "$age" -gt "$STATUS_STALE" ] && ! zyz_status_waiting "$status_file"; then
                     if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
                         printf '[zyz-worker watchdog] status file %s is %s min stale during active phase %s — persist current progress, active roles, blockers, and next step into it now.\n' \
                             "$status_file" "$((age / 60))" "$phase"
@@ -137,5 +197,6 @@ while :; do
             fi
         fi
     fi
+    [ "$ONCE" = 1 ] && exit 0
     sleep "$INTERVAL"
 done

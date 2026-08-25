@@ -1,5 +1,27 @@
 # zyz-worker 架构说明
 
+## Standalone role-runtime protocol
+
+Each execute-task dispatch owns an immutable namespace made from a 32-byte
+display prefix and the complete raw-id SHA-256. State-changing operations use
+a preallocated regular lock carrier with cooperative `fcntl.flock`; natural
+DONE and adjudicated FINALIZED remain distinct logical records in a fixed audit
+pack and both are terminal-first for readers.
+
+Reconnect observation separates weak heartbeat, explicit `probe1-*`
+challenge/ACK, fixed-table inflight calls, and host running/interrupt state.
+Physical no-output is orthogonal: implementation/test starts publish a baseline
+through fixed LIVE_INVENTORY authority while snapshot data remains
+catalog-owned; Git index/ref/commit changes are not output. Catalog cleanup and
+publication recovery advance only through bounded `gc-step` passes.
+
+**平台边界：** 固定 pack 层的 catalog genesis 依赖 per-vnode mount identity
+（Linux `statx(STATX_MNT_ID)`）。macOS 没有等价 API（FSID 无法区分同 FSID 的第二个
+mount 实例），因此 Darwin 上所有 tracked-state 操作 fail-closed 为
+`genesis-capability-unavailable`：L0 不写实例状态，L3/L4 没有角色观测，
+**死角色检测与「终态但未收割」检测在 macOS 上均不可用**（状态文件过期分支、L2 退出门与
+prompt 纪律仍然有效，全部保持 fail-open）。详见 hooks/README.md `## Degraded environments`。
+
 本文讲整体架构与主体原理：插件由哪些部件组成、各自的职责边界、以及它们如何协作。不追求逐行细节——具体契约看各文件自身的 in-file contract 块与对应 SKILL.md。
 
 ## 一、一句话概括
@@ -94,19 +116,19 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 | 层 | 载体 | 触发点 | 干什么 |
 |---|---|---|---|
-| **L0 心跳** | `heartbeat.sh` + `subagent-track.sh` | 每次工具调用（Pre/PostToolUse，异步）；SubagentStart | 把「存活」变成干活的**副作用**，而不是需要记得做的事。`.start` 有、`.done` 无、心跳过期 = 角色死了或卡住 |
+| **L0 心跳** | `heartbeat.sh` + `subagent-track.sh` | 每次工具调用（Pre/PostToolUse，同步）；SubagentStart | 把「存活」变成干活的**副作用**，而不是需要记得做的事。主角色更新固定 PACK_HEADER；动态角色更新固定 START/HEARTBEAT 逻辑记录 |
 | **L1 新鲜度提醒** | `status-freshness.sh`、`post-agent-flush.sh` | PostToolUse | 状态文件在活跃阶段过期时注入提醒；收到 subagent 结果后提醒先落盘再派下一个。纯建议，带冷却。**每次工具调用只出一条**：Agent 返回归 `post-agent-flush`（措辞更具体、阈值更紧），其余归 `status-freshness` |
 | **L2 子 agent 退出门** | `stop-gate-subagent.sh` | SubagentStop | 最终消息过短就拦一次，要求先给正式报告（主 agent 才有东西可落盘）。最多拦一次，不会循环 |
-| **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层 |
-| **L4 主 agent 停止门** | `stop-gate-main.sh` | Stop | 派出的角色看起来死了、或状态文件严重过期时，阻止主 agent 就这么闲下来 |
+| **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层。**兜底**再加一支「终态但未收割」扫描：某角色已到终态（DONE/FINALIZED）但主 agent 自那以后一直空闲（完成通知被丢），定时唤醒它去读结果——补 L4 抓不到的「角色在主 agent 空闲之后才终态」一例 |
+| **L4 主 agent 停止门** | `stop-gate-main.sh` | Stop | 派出的角色看起来死了、或状态文件严重过期时，阻止主 agent 就这么闲下来。**主层**再加「终态但未收割」拦截：角色已终态、结果已落盘，但主 agent 自完成起零动作（`main_heartbeat_epoch<=terminal_epoch` 且 `status.md` mtime`<=terminal_epoch`）时拦一次，点名结果所在，逼它先读再落盘——同步、不依赖会丢的完成通知，故为主层 |
 | **L5 派发范围守卫** | `dispatch-scope-guard.sh` | PreToolUse (`^Agent$`) | 唯一**事前**层：检查派发提示词是否在压缩角色交付范围，是则 deny（除非同一提示词承诺了补齐剩余部分）。启发式匹配，三重防过度拦截：否决式表述免疫、引号内容不算下达指令、上限必须挂在评审交付物名词上 |
 | **L6 共享树回退守卫** | `checkout-guard.sh` | PreToolUse (`^Bash$`) | 拦截会摧毁**他人未提交成果**的 git 回退：`checkout/restore` 指向有未提交改动的文件、以及移动状态的 `stash` 形态。deny 消息里给出安全替代（改前 cp 备份、`git show HEAD:<file>` 只读、`git apply -R`）。源自真实事故：变异测试回退用 checkout 连带删掉另一 agent 约 5000 字符守卫代码，且 build 全绿 |
 
 ### 4.3 关键机制
 
 - **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来。现已加**有界兜底**：单 base 命中（热路径不变）→ `$ZYZ_TASK_DIR` → 同仓库的兄弟 worktree（按 `status.md` mtime 取最新、跳过 `phase: done`、每次兜底命中记一行日志）。刻意**不做**无界向上遍历：默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session。
-- **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求在工具调用后确认 `runtime/agents/main.heartbeat` 存在；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。
-- **`.start` 有、`.done` 无、心跳仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。`runtime/` 整个不存在则意味着看门狗从未上膛，此时没有任何存活证据可用。
+- **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求通过只读 fixed-pack observer 确认 PACK_HEADER 中的 `main_heartbeat_epoch` 已推进；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。
+- **固定 START 存在、无 DONE/FINALIZED、HEARTBEAT 仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。observer 无法验证 catalog/runtime 时只能报告 tracking unavailable，不能把静默当成健康。
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
 - **输出形状按事件类型区分。** `PostToolUse` / `PreToolUse` 这类注入或拦截，输出 `hookSpecificOutput` 且其中 `hookEventName` 必须与注册的事件一致（前者带 `additionalContext`，后者带 `permissionDecision`）；而 Stop / SubagentStop 两个停止门禁输出的是**不带**事件名的 `{decision:"block",reason}`——这是该事件族的约定，不是漏写。
 - **四个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5、`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关 L6（两者的匹配都是启发式的——用 shell 解析 shell 无法完美——必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。
@@ -115,11 +137,11 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 - **两个停止门禁都不会死锁。** 二者都先检查 `stop_hook_active`：该标志为真意味着本次停止已经被拦过一次，此时直接放行。所以每次停止最多拦一次，不存在反复阻止的活锁；再叠加冷却戳限流。
 - **同步层性能要可控。** 当前 Codex 会跳过 async hook，因此心跳与 `status-freshness.sh` 都是同步的。成本来自 `zyz_get` 每读一个字段起一个 `jq` 进程；真要降本应在 hook 脚本里一次性取全部字段，不要在命令替换子 shell 中做无效缓存。
 - **`when: always` 而不是 `on-skill-invoke:`（踩过的坑）。** 后者按**精确字符串**与「发出的 skill 名」比对，而同一个 skill 以插件加载时发出的是**带限定名**的 `zyz-worker:execute-task`、以项目模式使用时发出的是裸名 `execute-task`——一个字面量覆盖不了两种安装方式，原先写的裸名在正常插件安装下**从未 arm 过**。`watchdog.sh` 本身以指针为门，所以恒久 arm 与按需 arm 效果等价，代价只是一个休眠进程。教训：手动跑脚本只验证脚本逻辑，**不验证宿主是否真的把它挂上**。
-- **门禁的指令必须是「能被执行后清掉触发条件」的。** L4 只读 `runtime/` 标记、从不读 `status.md`，所以早期那句「在状态文件里标记它已完成」是**无法满足**的指令：照做了标记还在、门禁继续拦，只能等冷却或平台的连续拦截上限超时。现在改为：干净退出的 SubagentStop 直接**删掉** `.start`/`.heartbeat`（顺带解决 `runtime/` 每派发一次就多留一组标记的累积问题，因为 `agent_id` 每次都是新的随机值），而拦截理由里直接给出该删哪个文件的 `rm -f`。
+- **门禁的指令必须是「能被执行后清掉触发条件」的。** L4 从 fixed-pack observer 读取实例状态；干净退出由 SubagentStop 提交 DONE，确认的 API-kill 由 `finalize` 提交 FINALIZED，持久诊断则走 matching `reconcile-*`。门禁从不要求手删 runtime inode，也不把仅写 `status.md` 当作终态证据。
 - **长度阈值按字节量，不按 `${#var}`。** bash 的 `${#var}` 在 UTF-8 locale 下数字符、在 `LC_ALL=C` 下数字节——同一条消息两种读数。一份完整的 45 字中文报告按字符只有 45、低于阈值 80 会被当成「太短」拦掉，而它其实有 135 字节。已改为数字节（与 locale 无关），阈值按字节校准。
 - **启发式守卫必须防「误伤自己」。** L5 靠措辞匹配，最初把**引用**某句上限措辞当成**下达**该措辞——于是「写个测试断言 `"limit to 3 findings"` 会被拒」这类工作被守卫自己拦住，而在本仓库里给这个守卫写文档/测试/CHANGELOG 恰恰是常规工作。现在上限只在**去掉引号内容后**的文本里匹配（否决式表述仍读全文，所以引号里的否决依然有效），且上限必须挂在 `findings|issues|problems` 这类评审交付物名词上——否则「每页不超过 3 条 items」「重试上限 3 次」这种正常业务需求也会被拦。留了一个明知的取舍：整条提示词就是一句带引号的上限时会放过。
 - **测试载荷必须正确转义，否则会「假绿」。** T7 原先把提示词直接拼进 JSON 字符串，一旦 fixture 里含 `"` 就产出非法 JSON，守卫 fail-open 放过，断言于是「通过」了——但通过的原因是错的。现在用真正的 JSON 编码器构造载荷，并且在加新 fixture 前先确认 23 条既有的上限 fixture 经转义路径仍然被拒。
-- **簿记与任务状态分离。** `<task-dir>/runtime/` 下的心跳、`.start`/`.done`、冷却戳都是 watchdog 自己的簿记，不是任务状态，不要手改。
+- **簿记与任务状态分离。** `<task-dir>/runtime/` 下的 fixed packs、catalog 与冷却戳都是 watchdog 自己的簿记，不是任务状态；所有状态变更经受支持的 helper 完成，绝不手改。
 
 ## 五、orchestration：三层调度
 
