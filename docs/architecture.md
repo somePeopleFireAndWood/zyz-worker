@@ -143,6 +143,27 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 - **测试载荷必须正确转义，否则会「假绿」。** T7 原先把提示词直接拼进 JSON 字符串，一旦 fixture 里含 `"` 就产出非法 JSON，守卫 fail-open 放过，断言于是「通过」了——但通过的原因是错的。现在用真正的 JSON 编码器构造载荷，并且在加新 fixture 前先确认 23 条既有的上限 fixture 经转义路径仍然被拒。
 - **簿记与任务状态分离。** `<task-dir>/runtime/` 下的 fixed packs、catalog 与冷却戳都是 watchdog 自己的簿记，不是任务状态；所有状态变更经受支持的 helper 完成，绝不手改。
 
+### 4.4 fixed-pack 运行时：watchdog 的状态载体
+
+前面反复出现的 observer、fixed pack、PACK_HEADER、catalog、「存活登记表」，底座都是同一个部件：`hooks/scripts/runtime_state.py`（纯标准库 Python，无第三方依赖；`runtime_native.py` 是其可选的加速实现，同一契约）。它是 L0 心跳、L3/L4 观测、存活判定与终态收割的**单一状态源**，落在 `<task-dir>/runtime/` 下，属于 watchdog 自己的簿记（§4.3 末条），不是任务状态。
+
+**为什么是「fixed-pack」而不是普通 JSON 文件。** 这一层的写入者是 hook——它们在工具调用的同步路径上运行、可能被 API-kill 在任意点打断、且多个角色并发写。变长 JSON 的「读-改-写」在这三种压力下不安全（半写的文件、并发覆盖、崩溃后残留半条记录）。所以状态被压成**定长槽位的二进制 pack**：每条记录（PACK_HEADER 主心跳、每个动态角色的 START/HEARTBEAT/DONE/FINALIZED 记录、catalog 目录项、event receipts）都是预分配的固定字节区，配 self-checksum 与代际号，用 `fcntl.flock` 协作锁 + 原子 pwrite + datasync 落盘。崩溃恢复读取时按代际选最新完整记录、丢弃半写的——这正是 T45–T52 门禁反复注入 SIGKILL 要验证的不变量。
+
+**承载什么（读者视角）：**
+
+| 记录 | 谁写 | 用途 |
+|---|---|---|
+| PACK_HEADER 主心跳 | L0 `heartbeat.sh`（Pre/PostToolUse） | `main_heartbeat_epoch`——主 agent 存活与「未武装可见性」（§4.3）的判据 |
+| 动态角色 START/HEARTBEAT | L0 `subagent-track.sh`（SubagentStart）+ 心跳 | 「存活登记表」：START 在、无终态、HEARTBEAT 仍推进 = 该角色还活着，别重派 |
+| 终态 DONE / FINALIZED | SubagentStop 提交 DONE；确认的 API-kill 走 `finalize` 提交 FINALIZED | terminal-first 读取；`terminal_epoch` 是 L3/L4「终态但未收割」检测的时间锚 |
+| catalog + event receipts | 受支持的 `gc-step` / `reconcile-*` helper | 快照数据的 catalog-owned 归属、发布恢复、reconcile-stop 的幂等终态权威 |
+
+**observer 是只读投影。** L3/L4 与 §1 的「确认已武装」都不直接解析 pack，而是走 observer（`_fixed_instance_observation`）拿一份只读快照：group/角色状态、各 epoch、terminal_epoch、inflight。observer 无法验证 catalog/runtime 时报告 tracking-unavailable，**绝不把静默当健康**（§4.3）。
+
+**平台边界（呼应文首）。** catalog genesis 依赖 per-vnode mount identity（Linux `statx(STATX_MNT_ID)`）；macOS 无等价 API，故 Darwin 上整个 fixed-pack 层 fail-closed 为 `genesis-capability-unavailable`——L0 不写实例状态、L3/L4 无角色观测、死角色与「终态但未收割」检测均不可用（状态文件过期分支、L2/L5/L6 仍有效且 fail-open）。
+
+**穷尽验证靠 T45–T52 门禁。** 这个运行时的崩溃恢复语义细到「在每个持久化屏障处 SIGKILL、重放必须要么干净前滚要么 fail-closed 零效应、且终态重放逐字节幂等」。`test-watchdog-hooks.sh` 的 T45–T52 族就是对这套不变量的逐屏障穷尽注入（236 项，覆盖发布/PREVIS/retirement/dense-compaction/reconcile-stop 等崩溃矩阵），在 source-fresh 的 Linux 容器里跑。它的意义不在数量，而在**把运行时对崩溃恢复语义的每一个隐性假设都逼成一条显式断言**——多轮收敛暴露并修掉了 6 个真实的生产不变量缺陷（identity 摘要含易变分配态、retirement 前置存在性、链容量上界、compaction 完成态分类、scratch 权威名与代际调和、reconcile-stop 重放 epoch）。
+
 ## 五、orchestration：三层调度
 
 ### 5.1 为什么分三层
@@ -257,6 +278,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## Inputs` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
 - **改角色提示词**：`agents/<role>.md` 与 `subagents/<role>.md` 必须同改（正文被逐字节比对）。
 - **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog Enforcement` 三处口径要一致。
+- **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。
 
 **已知的复制粘贴面。** helper 之间没有共享库（刻意的：每个脚本要能被单独调用、单独读懂），代价是几个小函数在多个脚本里各存一份——`fm_field`（frontmatter 取值，6 份）与 tilde 展开（9 处内联）。这些副本**必须保持行为一致**：`fm_field` 曾出现过分歧（一部分副本缺少「文件不存在则返回空」的守卫，在 `set -e` 下会直接杀掉调用者），已统一。改其中任一份时，同步改全部。
 
