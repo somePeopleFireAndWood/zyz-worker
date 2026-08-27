@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix an intermittent false FAIL in `scripts/test-rename-and-conventions.sh`
+  T4 Pattern B. The check piped ~28KB of bullet lines into `grep -q` under
+  `set -o pipefail`: `-q` exits at the first match (the target bullet sits
+  ~4.7KB in) and closes the pipe's read end, so when scheduling left the
+  upstream `grep` still writing past the kernel pipe buffer it died of
+  SIGPIPE (exit 141) and pipefail turned a real match into a FAIL. The
+  downstream grep now drains all input (`>/dev/null` instead of `-q`),
+  which removes the race categorically while keeping identical match
+  semantics. Observed twice as a first-run-only flake on an unchanged,
+  passing file; the suite's other `-q` pipelines are not affected (their
+  upstream outputs fit the pipe buffer or their exit status is unused).
 - Move review history out of the design document into standalone
   review-history files (#15). The design-doc template no longer has a
   `## Review History` section; each design document `<basename>.md` records
