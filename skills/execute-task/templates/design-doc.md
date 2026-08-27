@@ -34,4 +34,4 @@
 
 ## User Decisions
 
-## Review History
+<!-- Review history is NOT a section of this document. It lives in a sibling file `<this-doc-basename>.review-history.md` (one per design document), which only the design phase's review loop and human approval read. This document stays the clean final-state spec that implementation-agent and test-agent consume. -->

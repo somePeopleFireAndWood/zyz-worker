@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Move review history out of the design document into standalone
+  review-history files (#15). The design-doc template no longer has a
+  `## Review History` section; each design document `<basename>.md` records
+  its review history in the sibling file `<basename>.review-history.md`
+  (one per design document, created lazily on the first entry — split
+  designs get one per part). Review history only matters to the design
+  phase's review loop and human approval; for the implementation phase it
+  is noise, so implementation-agent / test-agent dispatches send the
+  final-state design document(s) only and never include review-history
+  files, which are also excluded from the status file
+  `## Metadata > Design Document` list. The status file's
+  `## Design Review > Rejected Suggestions` record is unchanged. New
+  SKILL.md `## Review History Files` section defines the convention;
+  main-agent.md's design/implementation workflows and the plugin's own
+  design doc are updated to match, and "discovered during implementation"
+  entries now update the design's `## Testing Plan` to its new final state
+  while the history entry goes to the review-history file.
+
 - Detect terminal-but-unharvested subagent roles as a mitigation for dropped
   subagent-completion notifications. When a role reaches a terminal state
   (clean DONE or adjudicated FINALIZED) but the main agent stays idle since it

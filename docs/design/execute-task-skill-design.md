@@ -193,7 +193,7 @@ Review 循环：
 4. 设计文档初稿完成后，主agent 启动独立 reviewAgent 审查设计文档。
 5. reviewAgent 按设计文档审查标准检查是否存在错误、模糊、遗漏、冲突或不完备。
 6. 主agent 自行决定接受或拒绝 reviewAgent 的每条建议（默认不询问用户）。
-7. 接受时主agent 更新设计文档；拒绝时主agent 在设计文档的 `## Review History` 与 task status 的 `## Design Review > Rejected Suggestions` 记录拒绝原因。
+7. 接受时主agent 更新设计文档；拒绝时主agent 在设计文档旁的独立 review-history 文件（`<设计文档basename>.review-history.md`，每个设计文档一个）与 task status 的 `## Design Review > Rejected Suggestions` 记录拒绝原因。review history 不作为设计文档的章节：它仅对设计阶段的 review 循环与人工审核有意义，设计文档本身保持为干净的终态规格。
 8. 仅当 reviewAgent 的建议会改动 Goals 或 Acceptance Criteria 时，主agent 才回到用户征求决策。
 9. reviewAgent 基于修改后的文档和拒绝原因执行新的 review。
 10. 当 reviewAgent 判断无需修改时，设计 review 循环结束。
@@ -210,7 +210,7 @@ implementation 环节由主agent 调度 implementationAgent、testAgent、review
 - testAgent 根据设计文档开发测试代码。
 - implementationAgent 与 testAgent 可以并行工作。
 - 如果 implementationAgent 在开发中发现设计文档遗漏的重要测试点，应通知主agent。
-- 主agent 在设计文档 `## Review History` 与 task status 中追加 "discovered during implementation" 条目，并通知 testAgent 补充测试代码；仅当新测试点暗示 Goals 或 Acceptance Criteria 变更时，才重新触发设计评审或回到用户。
+- 主agent 将设计文档 `## Testing Plan` 更新为新的终态，并在该设计文档的 review-history 文件与 task status 中追加 "discovered during implementation" 条目，并通知 testAgent 补充测试代码；仅当新测试点暗示 Goals 或 Acceptance Criteria 变更时，才重新触发设计评审或回到用户。
 
 #### 测试执行
 
@@ -409,9 +409,15 @@ implementation 环节可能执行很长时间，且中途可能不稳定。
 ## Open Questions
 
 ## User Decisions
-
-## Review History
 ```
+
+review history 不是设计文档的章节。它保存在设计文档旁的独立文件（每个设计文档一个）：
+
+```text
+.zyz-worker/tasks/<task-id>/design.review-history.md
+```
+
+该文件仅供设计阶段的 review 循环与人工审核使用；实现阶段的 subAgent 只接收终态设计文档，不接收 review-history 文件。
 
 ## 子 Agent 协作规则
 
