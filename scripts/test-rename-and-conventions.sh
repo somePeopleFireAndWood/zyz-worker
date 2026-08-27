@@ -420,7 +420,12 @@ check_lrs_pattern_b() {
 
     # Bullet lines beginning with "- " that contain the marker substring,
     # case-insensitively.  -F keeps the marker literal.
-    if grep -i -n '^- ' "$file" | grep -i -F -q -- "$bullet_marker"; then
+    # NOTE: no -q on the downstream grep — under `set -o pipefail`, -q exits
+    # on the first match and closes the pipe's read end, so the upstream grep
+    # can die of SIGPIPE (141) mid-write and the whole pipeline flakes to
+    # FAIL despite the match. >/dev/null keeps the exit semantics while the
+    # downstream reads all input.
+    if grep -i -n '^- ' "$file" | grep -i -F -- "$bullet_marker" >/dev/null; then
         pass "T4 $file [Pattern B] has bullet matching '$bullet_marker'"
     else
         fail "T4 $file [Pattern B] is missing bullet matching '$bullet_marker'"
