@@ -68,7 +68,7 @@
 ### E. README / CLAUDE.md 路径检查
 
 - 并入 `scripts/validate-plugin.sh`
-- 用 grep 抓出文档中所有反引号包裹的路径片段（如 `\`skills/code-development/SKILL.md\``），验证文件真实存在
+- 用 grep 抓出文档中所有反引号包裹的路径片段（如 `\`skills/execute-task/SKILL.md\``），验证文件真实存在
 - 限定扫描范围：`README.md`、`CLAUDE.md`、`docs/conventions/*.md`
 - 预估：~30 行
 
