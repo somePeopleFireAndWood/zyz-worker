@@ -60,6 +60,7 @@ Use these templates when creating task artifacts:
 - The design document is not required to be a single file. For complex tasks, split it into multiple focused documents by domain, module, layer, or step so each document stays internally focused and loads cleanly into the model's context. Simple tasks may keep a single document.
 - When the design is split, record every document path in the status file `## Metadata > Design Document` (one per line) and add a top-level index document that lists and links the parts, so downstream roles can discover the full set.
 - The design document is the source of truth for implementation, testing, and review.
+- Review history lives OUTSIDE the design document, in a standalone review-history file per design document (see Review History Files). The design document itself carries no `## Review History` section: it stays the clean final-state spec, and downstream roles read only the final state.
 - The design document must be clear enough that implementationAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue. This "proceed without asking" license applies only AFTER the human approval at §2 step 8 has actually been given (or a recorded explicit prior skip instruction) — never on the user's silence at the gate.
 - Maintain a task status file for the full workflow: design, implementation, testing, review, and delivery.
 - There must always be exactly one overall task status file that records overall state and progress. Each SubTask may optionally keep its own SubTask-status file recording that SubTask's implementation, test, review, and auto-fix progress, but the single overall status file is mandatory.
@@ -69,11 +70,20 @@ Use these templates when creating task artifacts:
 - The design document and the final report default to the same language as the user in this conversation. Other artifacts (task status, review reports, prompt files) stay in their current language.
 - Long-running tasks must persist progress, decisions, blockers, and the next step into the task status file; the conversation context is for execution only. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
 
+## Review History Files
+
+Review history — rejected findings with reasons, review-loop iterations, and "discovered during implementation" entries — is recorded in a standalone file (or a group of files, one per design document), NOT inside the design document:
+
+- For each design document `<dir>/<basename>.md`, its review history lives in the sibling file `<dir>/<basename>.review-history.md`. Create it lazily on the first entry; a design document with no review events has no review-history file.
+- When the design is split into multiple documents, each part gets its own review-history file under the same naming rule. An entry that spans parts goes into the index document's review-history file.
+- Review-history files matter ONLY to the design phase's review loop and the human approval step. They are noise for the implementation phase: when dispatching implementation-agent, test-agent, or an implementation-phase review, send the final-state design document(s) only — never include review-history files, and do not instruct those roles to read them.
+- Do NOT list review-history files in the status file `## Metadata > Design Document` (that list defines what downstream roles load). The status file's own `## Design Review > Rejected Suggestions` record is unchanged and stays where it is.
+
 ## Automatic Execution Policy
 
 By default, do not ask the user. Inside the workflow loops, each role decides for itself:
 
-- During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
+- During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document's review-history file (see Review History Files below) and the status file `## Design Review > Rejected Suggestions`.
 - During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Implementation Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
 - When a test fails, implementation-agent attributes it in order — change-surface causality, tooling failure, someone else's in-flight edit / environment, and only then a real regression (its `## Test Failure Handling`) — then implementation-agent fixes implementation bugs and test-agent fixes invalid tests. Under parallel execution the third bucket is the most frequent; forcing every failure into "my bug or their bad test" makes agents fix correct code.
 
@@ -168,9 +178,9 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 
 1. Work with the user to produce a Markdown design document from `templates/design-doc.md`. Decide whether one document is enough or whether the design should be split into multiple focused documents (by domain, module, layer, or step). Prefer splitting when the task touches several domains/modules/layers, the Implementation Plan has many steps, or a single document would grow long enough to dilute model context. When splitting, create a short index document that lists and links every part, and reuse the template (in full or partial form) for each part.
 2. Ask the user about unclear requirements, constraints, non-goals, acceptance criteria, risky implementation details, and important tests.
-3. When the design draft is ready, use reviewAgent to review it.
+3. When the design draft is ready, use reviewAgent to review it. On re-review iterations, also pass the design document's review-history file path so reviewAgent can see prior rejection reasons.
 4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals. Do not present findings to the user.
-5. Record rejected findings with reasons in the design document `## Review History` and the status file `## Design Review > Rejected Suggestions`.
+5. Record rejected findings with reasons in the design document's review-history file (see Review History Files) and the status file `## Design Review > Rejected Suggestions`.
 6. Update the design document and status file. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
 7. Repeat review until reviewAgent says no changes are needed.
    This loop runs automatically without user input; only step 8 below is a user touch.
