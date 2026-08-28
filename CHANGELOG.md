@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-28
+
 - **Remove the sibling-worktree fallback from task-pointer resolution (#18).**
   `zyz_task_root` resolves the active task ONLY via the base dir's
   `.zyz-worker/current-task` pointer and the exported `$ZYZ_TASK_DIR`; it no

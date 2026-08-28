@@ -1,6 +1,6 @@
 {
   "name": "zyz-worker",
-  "version": "0.17.0+codex.20260810113729",
+  "version": "0.18.0+codex.20260828034316",
   "description": "Design-first code development workflow for Codex and Claude Code with orchestrated implementation, testing, and review workers.",
   "author": {
     "name": "yu",

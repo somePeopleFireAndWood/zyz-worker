@@ -1,7 +1,7 @@
 {
   "name": "zyz-worker",
   "description": "Design-first code development workflow for Claude Code and Codex: requirements, design, implementation, tests, and review via dedicated agents.",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "author": {
     "name": "yu",
     "url": "https://github.com/somePeopleFireAndWood"
