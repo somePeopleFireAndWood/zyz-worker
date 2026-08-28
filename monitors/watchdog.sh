@@ -84,8 +84,8 @@ UNARMED_REPORTED="false"
 # cries wolf in ordinary sessions is worse than no warning: it trains people to
 # ignore the one that matters. So only speak up when a task plausibly EXISTS but
 # the pointer cannot be found — i.e. some `.zyz-worker/tasks/<id>/` is present
-# (here or in a sibling worktree) yet resolution still came back empty. A repo
-# with no task dirs at all, or one whose task dirs are all finished, stays silent.
+# under the base yet resolution still came back empty. A repo with no task dirs
+# at all, or one whose task dirs are all finished, stays silent.
 zyz_unarmed_is_suspicious() {
     local d
     for d in "$BASE"/.zyz-worker/tasks/*/; do
@@ -108,7 +108,7 @@ while :; do
     root="$(zyz_task_root "$BASE")"
     if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then
         UNARMED_REPORTED="true"
-        printf '[zyz-worker watchdog] NOT ARMED: no task pointer resolved from %s (tried that dir, $ZYZ_TASK_DIR, and sibling git worktrees of the same repo). The watchdog layer is inert for this session — dead subagents will NOT be reported and the idle gate will NOT hold. If an execute-task run is active, its .zyz-worker/current-task is somewhere this cannot see: write the pointer under the session cwd, or make its contents an ABSOLUTE path to the task dir. This is reported once per miss, not per tick.\n' "$BASE"
+        printf '[zyz-worker watchdog] NOT ARMED: no task pointer resolved from %s (tried that dir'"'"'s .zyz-worker/current-task and $ZYZ_TASK_DIR; the resolver deliberately does NOT search sibling worktrees — a task found there may belong to a concurrent session). The watchdog layer is inert for this session — dead subagents will NOT be reported and the idle gate will NOT hold. If an execute-task run is active, write the pointer under the session cwd, or make its contents an ABSOLUTE path to the task dir. This is reported once per miss, not per tick.\n' "$BASE"
     fi
     if [ -n "$root" ]; then
         UNARMED_REPORTED="false"

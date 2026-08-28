@@ -22,8 +22,9 @@
 # - zyz_task_root <base>        the current task directory resolved via the
 #                               `<base>/.zyz-worker/current-task` pointer
 #                               (first line = task-id, or a path relative to
-#                               <base>, or an absolute path), or empty when
-#                               missing/dangling.
+#                               <base>, or an absolute path), else $ZYZ_TASK_DIR
+#                               when exported, or empty when missing/dangling.
+#                               Deliberately NO search beyond these two (#18).
 # - zyz_write_atomic <f> <line> tmpfile+rename single-line write.
 # - zyz_emit_context <ev> <msg> print hookSpecificOutput additionalContext
 #                               JSON for event <ev>.
@@ -40,8 +41,11 @@
 #                               of 4"), making a capped installment legit.
 # - zyz_role_of <agent_type>    agent_type with plugin scope prefix stripped.
 # - zyz_phase_of <status.md>    lowercased "Current Phase" value, or empty.
+# - zyz_phase_terminal <phase>  0 when phase is a terminal spelling (done/
+#                               delivered/completed/closed/... prefix match).
 # - zyz_phase_active <phase>    0 when phase is implementation/testing/
-#                               review/delivery (an active execution phase).
+#                               review/delivery (an active execution phase);
+#                               terminal and design phases are never active.
 # - zyz_epoch_in <file>         first line of <file> as an epoch int.
 # - zyz_cooldown_ok <marker> <sec>
 #                               0 when <sec> has elapsed since the marker's
@@ -253,20 +257,16 @@ zyz_resolve_pointer_at() {
     printf '%s' "$target"
 }
 
-# True when the task dir's status.md reports a terminal phase. A finished task's
-# leftover pointer must never win the worktree fallback below: pointers are never
-# deleted anywhere in this plugin (cleanup removes worktrees, not the pointer
-# inside them), so stale ones accumulate with worktree count and are exactly the
-# wrong-attach candidates a searching resolver would hit. Phase-gating beats a
-# cleanup step because it does not depend on anybody remembering to clean up.
+# True when the task dir's status.md reports a terminal phase (see
+# zyz_phase_terminal for the accepted spellings). Used by the watchdog's
+# unarmed-suspicion gate: completed tasks legitimately leave their directories
+# behind forever, so a terminal task dir is not evidence that a live task lost
+# its pointer.
 zyz_task_is_done() {
     local st="${1:-}/status.md" ph
     [ -f "$st" ] || return 1
     ph="$(zyz_phase_of "$st")"
-    case "$ph" in
-        done) return 0 ;;
-        *) return 1 ;;
-    esac
+    zyz_phase_terminal "$ph"
 }
 
 zyz_task_root() {
@@ -274,8 +274,8 @@ zyz_task_root() {
     local base found
     base="$1"
 
-    # (a) Hot path, unchanged: the pointer directly under the given base. No
-    # fork, no git, byte-identical to the historical behavior on a hit.
+    # (a) Hot path: the pointer directly under the given base. No fork, no git,
+    # byte-identical to the historical behavior on a hit.
     found="$(zyz_resolve_pointer_at "$base")"
     if [ -n "$found" ]; then
         printf '%s' "$found"
@@ -290,63 +290,20 @@ zyz_task_root() {
         return 0
     fi
 
-    # (c) Sibling git worktrees of the same repository.
-    #
-    # Why this direction: the plugin's own git-worktree skill puts new worktrees
-    # OUTSIDE the main checkout (~/.zyz-worker/worktrees/...), so a task can run
-    # — pointer and all — in a tree that the session cwd is not inside. Reducing
-    # a linked worktree to its main checkout (`--show-toplevel` /
-    # `--git-common-dir`) is the direction that already worked; the direction
-    # that was unreachable is main checkout -> sibling worktree, which is what
-    # this enumerates.
-    #
-    # NOT an unbounded upward walk: under the default layout the ancestor chain
-    # climbs through $HOME/.zyz-worker, where a stray pointer would capture every
-    # session under $HOME.
-    #
-    # Newest-first by status.md mtime, because `git worktree list` is ordered by
-    # PATH — with two worktrees holding pointers, first-hit-wins would pick by
-    # alphabetical accident rather than by which task is actually live. Terminal
-    # (`phase: done`) tasks are skipped outright. Residual risk, stated plainly:
-    # two genuinely concurrent execute-task runs in one repo can still attach to
-    # the wrong one, so every fallback hit is logged (a wrong reminder is more
-    # confusing than silence — it must at least be diagnosable).
-    command -v git >/dev/null 2>&1 || return 0
-    local common wt_dir cand best best_mt mt
-    common="$(git -C "$base" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
-    [ -n "$common" ] || return 0
-    best=""; best_mt=""
-    # The main checkout (parent of the common dir) plus each linked worktree.
-    for wt_dir in "$(dirname "$common")" "$common"/worktrees/*/; do
-        [ -d "$wt_dir" ] || continue
-        cand="$wt_dir"
-        # For a linked worktree, <common>/worktrees/<name>/gitdir holds the path
-        # of its .git FILE; the worktree root is that file's parent.
-        if [ -f "${wt_dir%/}/gitdir" ]; then
-            cand="$(head -n1 "${wt_dir%/}/gitdir" 2>/dev/null)"
-            [ -n "$cand" ] || continue
-            cand="$(dirname "$cand")"
-        fi
-        [ -d "$cand" ] || continue
-        [ "$cand" = "$base" ] && continue   # already tried in (a)
-        found="$(zyz_resolve_pointer_at "$cand")"
-        [ -n "$found" ] || continue
-        zyz_task_is_done "$found" && continue
-        mt="$(zyz_mtime "$found/status.md")"
-        [ -n "$mt" ] || mt=0
-        if [ -z "$best_mt" ] || [ "$mt" -gt "$best_mt" ]; then
-            best="$found"; best_mt="$mt"
-        fi
-    done
-    [ -n "$best" ] || return 0
-    # Log the fallback hit so a wrong attach is diagnosable. Rate-limited by the
-    # caller's own cooldowns is not enough here (this runs before any of them),
-    # so keep it to one line appended per resolution; failures are ignored.
-    if [ -d "$best/runtime" ] || mkdir -p "$best/runtime" 2>/dev/null; then
-        printf '%s\tresolved via worktree fallback from base=%s\n' \
-            "$(zyz_iso)" "$base" >> "$best/runtime/task-root-fallback.log" 2>/dev/null || true
-    fi
-    printf '%s' "$best"
+    # Deliberately NOTHING else. There used to be a (c) that enumerated sibling
+    # git worktrees of the same repo and attached to the newest non-done task.
+    # Removed (issue #18, real incident): with two concurrent execute-task runs
+    # in one repo, a session whose own pointer went missing silently attached to
+    # the OTHER session's task, and the watchdog then pushed this session's main
+    # agent — with authoritative-looking, imperative staleness alerts backed by
+    # the Stop gate — to write into a task dir it did not own. A searching
+    # fallback trades a deterministic failure (no pointer -> layer silent, which
+    # the §1 armed check already surfaces) for a probabilistic wrong answer that
+    # is indistinguishable from a correct one. The scenario it covered (task in
+    # a worktree the session cwd is not inside) is handled by the contract that
+    # such pointers hold an ABSOLUTE path, plus $ZYZ_TASK_DIR for orchestrated
+    # spawns.
+    return 0
 }
 
 zyz_phase_of() {
@@ -357,17 +314,38 @@ zyz_phase_of() {
         | sed 's/^[^:]*:*//' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'
 }
 
+zyz_phase_terminal() {
+    # $1 = phase string (already lowercased and space-stripped by zyz_phase_of).
+    # 0 when the phase is a TERMINAL spelling. The documented contract says
+    # `done`, but real sessions write synonyms — the #18 incident's task wrote
+    # `delivered` — and a finished task that is not recognized as terminal keeps
+    # collecting staleness alerts forever (which is what pushed that session to
+    # delete its pointer). Prefix match tolerates annotated forms such as
+    # `done(delivered)` or `completed-awaiting-merge` (zyz_phase_of has already
+    # stripped whitespace).
+    case "${1:-}" in
+        done*|delivered*|complete*|closed*|finished*|cancel*|abandon*) return 0 ;;
+    esac
+    return 1
+}
+
 zyz_phase_active() {
     # $1 = phase string (already lowercased and space-stripped by zyz_phase_of).
     # Returns 0 only for a genuine active EXECUTION phase.
     #
-    # Any phase naming `design` is quiet, and this exclusion must come FIRST:
-    # `*review*` alone would match `design review` / `designreview`, making the
-    # watchdog nag and — worse — making the L4 stop gate block the main agent
-    # from idling at §2 step 8, the one gate the workflow mandates waiting at
-    # indefinitely for human approval. The gate would push for action exactly
-    # where the prompts promise silence. Both SKILL.md `## Watchdog Enforcement`
-    # and the main-agent prompt promise the watchdog stays quiet during design.
+    # Terminal spellings are excluded FIRST: `*deliver*` alone would match
+    # `delivered`, making every layer treat a finished task as active — the L1/
+    # L3/L4 staleness machinery then nags a task that will never write status
+    # again (the #18 incident).
+    zyz_phase_terminal "${1:-}" && return 1
+    # Any phase naming `design` is quiet, and this exclusion must come before
+    # the active match: `*review*` alone would match `design review` /
+    # `designreview`, making the watchdog nag and — worse — making the L4 stop
+    # gate block the main agent from idling at §2 step 8, the one gate the
+    # workflow mandates waiting at indefinitely for human approval. The gate
+    # would push for action exactly where the prompts promise silence. Both
+    # SKILL.md `## Watchdog Enforcement` and the main-agent prompt promise the
+    # watchdog stays quiet during design.
     case "${1:-}" in
         *design*) return 1 ;;
     esac

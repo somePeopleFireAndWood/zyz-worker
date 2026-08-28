@@ -126,7 +126,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 ### 4.3 关键机制
 
-- **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来。现已加**有界兜底**：单 base 命中（热路径不变）→ `$ZYZ_TASK_DIR` → 同仓库的兄弟 worktree（按 `status.md` mtime 取最新、跳过 `phase: done`、每次兜底命中记一行日志）。刻意**不做**无界向上遍历：默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session。
+- **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到再看编排 spawn 导出的 `$ZYZ_TASK_DIR`；两者都没有，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑（两个方向都踩过）**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来（issue #5）。为此曾加过「兄弟 worktree 兜底」，结果反向翻车：同仓两个并发任务时，指针落空的会话**吸附到另一个会话的任务**，看门狗随即以命令式告警＋Stop 闸门推着主 agent 往不属于自己的 status.md 写「当前进度」（issue #18）——兜底把「确定性失败（静默，且已有 §1 armed 检查兜住）」换成了「概率性错挂且外观可信」，是最坏的交换，已删除。现行契约：任务目录不在 session cwd 下时指针内容**必须是绝对路径**；编排场景用 `$ZYZ_TASK_DIR`；解析器**刻意不做任何搜索**（既不枚举兄弟 worktree，也不向上遍历——默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session）。
 - **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求通过只读 fixed-pack observer 确认 PACK_HEADER 中的 `main_heartbeat_epoch` 已推进；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。
 - **固定 START 存在、无 DONE/FINALIZED、HEARTBEAT 仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。observer 无法验证 catalog/runtime 时只能报告 tracking unavailable，不能把静默当成健康。
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
