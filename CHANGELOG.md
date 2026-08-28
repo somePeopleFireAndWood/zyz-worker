@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Remove the sibling-worktree fallback from task-pointer resolution (#18).**
+  `zyz_task_root` resolves the active task ONLY via the base dir's
+  `.zyz-worker/current-task` pointer and the exported `$ZYZ_TASK_DIR`; it no
+  longer enumerates sibling git worktrees. Real incident: with two concurrent
+  execute-task runs in one repo, a session whose own pointer went missing
+  silently attached to the OTHER session's task, and the watchdog then drove
+  imperative, authoritative-looking staleness alerts (backed by the Stop
+  gate) pushing that session's main agent to write "current progress" into a
+  status file it did not own. The fallback traded a deterministic failure
+  (no pointer → layer silent, which the §1 armed check already surfaces) for
+  a probabilistic wrong attach indistinguishable from a correct one; the
+  scenario it covered is handled by the absolute-path pointer contract
+  (SKILL.md §1 step 4) plus `$ZYZ_TASK_DIR` for orchestrated spawns. The
+  watchdog's NOT ARMED message now states that sibling worktrees are
+  deliberately not searched.
+- **Recognize terminal-phase synonyms (#18 rec 4).** New `zyz_phase_terminal`
+  accepts `done`/`delivered`/`completed`/`closed`/`finished`/`cancelled`/
+  `abandoned` (prefix match, so annotated forms like `done(delivered)` count);
+  `zyz_task_is_done` uses it, and `zyz_phase_active` excludes terminal phases
+  before its active match. Previously `*deliver*` classified a task whose
+  phase said `delivered` as ACTIVE, so L1/L3/L4 staleness machinery nagged a
+  finished task forever — which is exactly what pushed the #18 session to
+  delete its pointer and expose the wrong-attach path.
+- **Document alert-ownership discipline (#18 rec 5).** SKILL.md
+  `## Watchdog Enforcement` and the main-agent prompt now require verifying
+  that a watchdog alert's named path belongs to THIS session's task before
+  writing into it; a mismatch is reported to the user, never written through.
+
 - Fix an intermittent false FAIL in `scripts/test-rename-and-conventions.sh`
   T4 Pattern B. The check piped ~28KB of bullet lines into `grep -q` under
   `set -o pipefail`: `-q` exits at the first match (the target bullet sits

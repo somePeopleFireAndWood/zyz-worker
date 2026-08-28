@@ -464,21 +464,23 @@ for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugi
 done
 
 # ---------------------------------------------------------------------------
-# T10  Pointer resolution across a split base (issue #5).
+# T10  Pointer resolution stays bounded to the session's own base (issue #18).
 #
-# Every pre-existing fixture writes the pointer into the SAME directory it then
-# passes as `cwd`, so the case that actually broke — pointer in tree A, hook cwd
-# in tree B — had no coverage at all, and the missing-pointer no-op was pinned as
-# if it were the only possible outcome. Real consequence: a task run inside a
-# git-worktree-created worktree left every layer inert (no runtime/, two dead
-# subagents unreported, idle gate open) while looking healthy.
+# History: issue #5 added a sibling-worktree fallback here because a task run
+# inside a git-worktree-created worktree left every layer inert. Issue #18
+# removed it after a real incident: with two concurrent execute-task runs in one
+# repo, a session whose own pointer went missing silently attached to the OTHER
+# session's task, and the watchdog then drove imperative staleness alerts
+# (backed by the Stop gate) about a task this session did not own — a
+# probabilistic wrong answer dressed as a real one, strictly worse than the
+# deterministic silence the §1 armed check already surfaces.
 #
-# Guarded here: (a) resolution from the main checkout reaches a pointer held in a
-# sibling worktree; (b) the newest live task wins, NOT the alphabetically first
-# (git worktree list is path-ordered, so first-hit-wins picks by accident);
-# (c) a task whose status.md phase is `done` is skipped, because pointers are
-# never deleted and stale ones accumulate; (d) when nothing resolves the result
-# is still empty with rc 0 — fail-open is preserved, not traded away.
+# Pinned here: (a) a live pointer in a sibling worktree does NOT resolve from
+# the main checkout, and no fallback log appears; (b) $ZYZ_TASK_DIR still
+# resolves (orchestrated spawn path); (c) a pointer under the base holding an
+# ABSOLUTE path into a sibling worktree resolves — the documented contract for
+# worktree-hosted tasks; (d) nothing resolvable -> empty result, rc 0
+# (fail-open preserved).
 # ---------------------------------------------------------------------------
 if command -v git >/dev/null 2>&1; then
     t10_root="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t10.XXXXXX")"
@@ -487,61 +489,69 @@ if command -v git >/dev/null 2>&1; then
         git init -q -b main main >/dev/null 2>&1
         cd main || exit 1
         git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1
-        git worktree add -q ../wtA -b tA >/dev/null 2>&1
         git worktree add -q ../wtB -b tB >/dev/null 2>&1
     ) >/dev/null 2>&1
-    t10_mk() { # $1 worktree, $2 task-id, $3 phase, $4 mtime-stamp
+    t10_mk() { # $1 worktree, $2 task-id, $3 phase
         mkdir -p "$t10_root/$1/.zyz-worker/tasks/$2"
         printf '%s\n' "$2" > "$t10_root/$1/.zyz-worker/current-task"
         printf -- '## Metadata\n\n- Current Phase: %s\n' "$3" > "$t10_root/$1/.zyz-worker/tasks/$2/status.md"
-        [ -n "${4:-}" ] && touch -t "$4" "$t10_root/$1/.zyz-worker/tasks/$2/status.md"
     }
     t10_resolve() { ( . hooks/scripts/lib.sh 2>/dev/null || exit 0; zyz_task_root "$t10_root/main" ); }
 
     if [ -d "$t10_root/wtB" ]; then
-        t10_mk wtB live implementation ""
-        t10_out="$(t10_resolve)"
-        case "$t10_out" in
-            */wtB/.zyz-worker/tasks/live) pass "T10 pointer in a sibling worktree resolves from the main checkout" ;;
-            *) fail "T10 pointer in a sibling worktree resolves from the main checkout" "got [$t10_out]" ;;
-        esac
-
-        # wtA sorts BEFORE wtB but is older: newest must win.
-        t10_mk wtA older implementation 202601010000
-        t10_out="$(t10_resolve)"
-        case "$t10_out" in
-            */wtB/.zyz-worker/tasks/live) pass "T10 newest live task wins over the alphabetically-first stale one" ;;
-            *) fail "T10 newest live task wins over the alphabetically-first stale one" "got [$t10_out]" ;;
-        esac
-
-        # Mark the newest done: a terminal task's leftover pointer must not win.
-        printf -- '## Metadata\n\n- Current Phase: done\n' > "$t10_root/wtB/.zyz-worker/tasks/live/status.md"
-        t10_out="$(t10_resolve)"
-        case "$t10_out" in
-            */wtA/.zyz-worker/tasks/older) pass "T10 phase=done pointer is skipped in favor of a live one" ;;
-            *) fail "T10 phase=done pointer is skipped in favor of a live one" "got [$t10_out]" ;;
-        esac
-
-        # All done -> empty, rc 0 (byte-identical to the historical behavior).
-        printf -- '## Metadata\n\n- Current Phase: done\n' > "$t10_root/wtA/.zyz-worker/tasks/older/status.md"
+        # (a) The concurrent session's live task must stay invisible.
+        t10_mk wtB live implementation
         t10_out="$(t10_resolve)"; t10_rc=$?
         if [ -z "$t10_out" ] && [ "$t10_rc" -eq 0 ]; then
-            pass "T10 no live pointer anywhere -> empty result, rc 0 (fail-open preserved)"
+            pass "T10 live pointer in a sibling worktree does NOT resolve from the main checkout (issue #18)"
         else
-            fail "T10 no live pointer anywhere -> empty result, rc 0" "out=[$t10_out] rc=$t10_rc"
+            fail "T10 live pointer in a sibling worktree does NOT resolve from the main checkout" "out=[$t10_out] rc=$t10_rc"
+        fi
+        if [ ! -e "$t10_root/wtB/.zyz-worker/tasks/live/runtime/task-root-fallback.log" ]; then
+            pass "T10 no fallback log is written into the sibling task dir"
+        else
+            fail "T10 no fallback log is written into the sibling task dir" "task-root-fallback.log exists"
+        fi
+
+        # (b) The explicit override still resolves.
+        t10_out="$( ( . hooks/scripts/lib.sh 2>/dev/null || exit 0; ZYZ_TASK_DIR="$t10_root/wtB/.zyz-worker/tasks/live" zyz_task_root "$t10_root/main" ) )"
+        case "$t10_out" in
+            */wtB/.zyz-worker/tasks/live) pass "T10 exported ZYZ_TASK_DIR still resolves (orchestrated spawn path)" ;;
+            *) fail "T10 exported ZYZ_TASK_DIR still resolves (orchestrated spawn path)" "got [$t10_out]" ;;
+        esac
+
+        # (c) The documented worktree contract: pointer under the session cwd,
+        # contents an ABSOLUTE path to the task dir.
+        mkdir -p "$t10_root/main/.zyz-worker"
+        printf '%s\n' "$t10_root/wtB/.zyz-worker/tasks/live" > "$t10_root/main/.zyz-worker/current-task"
+        t10_out="$(t10_resolve)"
+        case "$t10_out" in
+            */wtB/.zyz-worker/tasks/live) pass "T10 absolute-path pointer under the base reaches a worktree-hosted task" ;;
+            *) fail "T10 absolute-path pointer under the base reaches a worktree-hosted task" "got [$t10_out]" ;;
+        esac
+
+        # (d) Nothing resolvable -> empty, rc 0.
+        rm -f "$t10_root/main/.zyz-worker/current-task"
+        t10_out="$(t10_resolve)"; t10_rc=$?
+        if [ -z "$t10_out" ] && [ "$t10_rc" -eq 0 ]; then
+            pass "T10 no pointer anywhere -> empty result, rc 0 (fail-open preserved)"
+        else
+            fail "T10 no pointer anywhere -> empty result, rc 0" "out=[$t10_out] rc=$t10_rc"
         fi
     else
-        skip "T10 pointer in a sibling worktree resolves from the main checkout (worktree setup failed)"
-        skip "T10 newest live task wins over the alphabetically-first stale one (worktree setup failed)"
-        skip "T10 phase=done pointer is skipped in favor of a live one (worktree setup failed)"
-        skip "T10 no live pointer anywhere -> empty result, rc 0 (fail-open preserved) (worktree setup failed)"
+        skip "T10 live pointer in a sibling worktree does NOT resolve from the main checkout (worktree setup failed)"
+        skip "T10 no fallback log is written into the sibling task dir (worktree setup failed)"
+        skip "T10 exported ZYZ_TASK_DIR still resolves (worktree setup failed)"
+        skip "T10 absolute-path pointer under the base reaches a worktree-hosted task (worktree setup failed)"
+        skip "T10 no pointer anywhere -> empty result, rc 0 (fail-open preserved) (worktree setup failed)"
     fi
     rm -rf "$t10_root"
 else
-    skip "T10 pointer in a sibling worktree resolves from the main checkout (git unavailable)"
-    skip "T10 newest live task wins over the alphabetically-first stale one (git unavailable)"
-    skip "T10 phase=done pointer is skipped in favor of a live one (git unavailable)"
-    skip "T10 no live pointer anywhere -> empty result, rc 0 (fail-open preserved) (git unavailable)"
+    skip "T10 live pointer in a sibling worktree does NOT resolve from the main checkout (git unavailable)"
+    skip "T10 no fallback log is written into the sibling task dir (git unavailable)"
+    skip "T10 exported ZYZ_TASK_DIR still resolves (git unavailable)"
+    skip "T10 absolute-path pointer under the base reaches a worktree-hosted task (git unavailable)"
+    skip "T10 no pointer anywhere -> empty result, rc 0 (fail-open preserved) (git unavailable)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -608,6 +618,18 @@ if [ "$t11_n" -eq 0 ]; then
 else
     fail "T11 no unarmed report when every task dir is already done" "saw $t11_n 'NOT ARMED' lines"
 fi
+
+# (iv) same, with a terminal SYNONYM (issue #18 rec 4): the incident's finished
+#      task wrote `delivered`, which the old done-only literal did not recognize
+#      as terminal — its leftover dir would have kept counting as evidence.
+mkdir -p "$t11_base/synonym/.zyz-worker/tasks/old"
+printf -- '## Metadata\n\n- Current Phase: delivered\n' > "$t11_base/synonym/.zyz-worker/tasks/old/status.md"
+t11_n="$(t11_run "$t11_base/synonym")"
+if [ "$t11_n" -eq 0 ]; then
+    pass "T11 no unarmed report when the finished task wrote a terminal synonym (delivered)"
+else
+    fail "T11 no unarmed report when the finished task wrote a terminal synonym (delivered)" "saw $t11_n 'NOT ARMED' lines"
+fi
 # Point CLAUDE_PROJECT_DIR at the `live` fixture, not the bare base: the report
 # now requires a plausibly-active task (see the suspicion gate above), so a base
 # with no task dirs would print nothing and the assertion would pass/fail for the
@@ -648,15 +670,35 @@ rm -rf "$t11_dir"
 # ---------------------------------------------------------------------------
 t9_phase="$(
     . hooks/scripts/lib.sh 2>/dev/null || exit 0
-    for p in design designreview design-review implementation testing review delivery awaiting-confirmation done; do
+    for p in design designreview design-review implementation testing review delivery awaiting-confirmation done delivered 'done(delivered)' completed closed finished cancelled; do
         if zyz_phase_active "$p"; then printf 'A:%s ' "$p"; else printf 'q:%s ' "$p"; fi
     done
 )"
-t9_want='q:design q:designreview q:design-review A:implementation A:testing A:review A:delivery q:awaiting-confirmation q:done '
+t9_want='q:design q:designreview q:design-review A:implementation A:testing A:review A:delivery q:awaiting-confirmation q:done q:delivered q:done(delivered) q:completed q:closed q:finished q:cancelled '
 if [ "$t9_phase" = "$t9_want" ]; then
-    pass "T9(a) design phases are quiet; only implementation/testing/review/delivery are active"
+    pass "T9(a) design AND terminal phases are quiet; only implementation/testing/review/delivery are active"
 else
     fail "T9(a) zyz_phase_active classification changed" "got [$t9_phase]"
+fi
+
+# Terminal-spelling tolerance (issue #18 rec 4): sessions write synonyms of
+# `done` — the incident's task wrote `delivered`, so `*deliver*` classified a
+# FINISHED task as active and the staleness machinery nagged it forever, which
+# is what pushed that session to delete its pointer. zyz_task_is_done must
+# recognize the same synonym set (it gates the unarmed-suspicion report).
+t9_done="$(
+    . hooks/scripts/lib.sh 2>/dev/null || exit 0
+    d="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t9done.XXXXXX")"
+    for p in done delivered completed closed 'done (delivered)' implementation delivery design; do
+        printf -- '## Metadata\n\n- Current Phase: %s\n' "$p" > "$d/status.md"
+        if zyz_task_is_done "$d"; then printf 'T '; else printf 'f '; fi
+    done
+    rm -rf "$d"
+)"
+if [ "$t9_done" = "T T T T T f f f " ]; then
+    pass "T9(a) zyz_task_is_done accepts terminal synonyms and rejects active/design phases"
+else
+    fail "T9(a) zyz_task_is_done terminal-synonym classification changed" "got [$t9_done]"
 fi
 
 if grep -q 'agent-runtime-state.sh finalize' hooks/scripts/stop-gate-main.sh 2>/dev/null \
