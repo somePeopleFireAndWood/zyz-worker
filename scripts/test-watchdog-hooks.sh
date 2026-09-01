@@ -34,6 +34,13 @@
 # Cross-host Claude/Codex queue consumption and forced-interrupt semantics also
 # require their real host-contract acceptance layer; static prompt checks only
 # prove that the explicit probe protocol was documented.
+#
+# Hook-root coverage ceiling: T2R parses and executes the exact ten command
+# strings in hooks/hooks.json, so it can distinguish precedence, quoting,
+# empty/unset handling, and cwd fallback.  It cannot prove which variables a
+# real Codex or Claude host injects.  That provenance claim belongs to the real
+# host adapter layer in test-codex-adaptation.sh --real; do not read these green
+# checks as proof of host injection behavior or historical-host compatibility.
 
 set -u
 set -o pipefail
@@ -47,7 +54,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.18.1"
+EXPECTED_VERSION="0.18.2"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -110,12 +117,241 @@ for ev in PreToolUse PostToolUse SubagentStart SubagentStop Stop SessionStart; d
         fail "T2 hooks.json registers $ev"
     fi
 done
-if grep -q 'CODEX_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null \
-    && grep -q 'ZYZ_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null \
-    && grep -q 'CLAUDE_PLUGIN_ROOT' hooks/hooks.json 2>/dev/null; then
-    pass "T2 hooks.json resolves Codex/orchestrated/Claude plugin roots"
+# T2R mutation manifest (implementationAgent executes each mutation separately):
+#
+# mechanism                         mutation                         expected red
+# PLUGIN_ROOT > ZYZ_PLUGIN_ROOT     swap those two parameter arms   conflict_all_distinct_prefers_PLUGIN_ROOT_all_ten
+# ZYZ > CLAUDE                      swap those two parameter arms   empty_PLUGIN_ROOT_falls_to_ZYZ_PLUGIN_ROOT_all_ten
+# CLAUDE > legacy CODEX             swap those two parameter arms   empty_first_two_falls_to_CLAUDE_PLUGIN_ROOT_all_ten
+# no cwd fallback                   change final empty arm to `.`   all_unset_success_noop_and_cwd_bait_not_executed_all_ten,
+#                                                                  all_empty_success_noop_and_cwd_bait_not_executed_all_ten
+# empty means absent                change any `:-` to `-`          the named empty_* case for that arm
+# quoted root                       remove execution-path quotes    spaces_in_PLUGIN_ROOT_all_ten
+# ten-command uniformity            alter/omit one command prefix   static_exact_ten_commands_and_targets or
+#                                                                  static_uniform_resolution_prefix_all_ten
+# no-op execution guard             invoke with an empty root       both all_*_success_noop cases
+# fixture premise                   delete selected stub script     harness_degradation_missing_selected_script_is_detected
+#
+# Killed mutations prove only that these written cases discriminate those
+# changes.  They do not prove that no unmodeled host environment exists.
+if command -v python3 >/dev/null 2>&1; then
+    t2r_results="$(mktemp "${TMPDIR:-/tmp}/zyz-hook-root-results.XXXXXX")"
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$REPO_ROOT/hooks/hooks.json" >"$t2r_results" <<'PY'
+import collections
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+manifest_path = sys.argv[1]
+root_vars = ("PLUGIN_ROOT", "ZYZ_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "CODEX_PLUGIN_ROOT")
+resolution = "${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}"
+# Independent full-equality anchor.  The expected target is not derived from
+# the production command under test: doing so would let a command-target swap
+# move both the execution and its oracle together.
+expected_by_id = {
+    "PreToolUse[0].hooks[0]": "heartbeat.sh",
+    "PreToolUse[1].hooks[0]": "dispatch-scope-guard.sh",
+    "PreToolUse[2].hooks[0]": "checkout-guard.sh",
+    "PostToolUse[0].hooks[0]": "heartbeat.sh",
+    "PostToolUse[0].hooks[1]": "status-freshness.sh",
+    "PostToolUse[1].hooks[0]": "post-agent-flush.sh",
+    "SubagentStart[0].hooks[0]": "subagent-track.sh",
+    "SubagentStop[0].hooks[0]": "stop-gate-subagent.sh",
+    "Stop[0].hooks[0]": "stop-gate-main.sh",
+    "SessionStart[0].hooks[0]": "start-watchdog.sh",
+}
+expected_targets = collections.Counter(expected_by_id.values())
+
+def emit(verdict, name, detail=""):
+    clean = str(detail).replace("\t", " ").replace("\n", " ")[:1200]
+    print("\t".join((verdict, name, clean)))
+
+try:
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+except Exception as exc:
+    emit("FAIL", "T2R_manifest_is_JSON_parsed", exc)
+    raise SystemExit(0)
+
+commands = []
+for event, groups in manifest.get("hooks", {}).items():
+    for group_index, group in enumerate(groups):
+        for hook_index, hook in enumerate(group.get("hooks", [])):
+            if hook.get("type") == "command":
+                commands.append((f"{event}[{group_index}].hooks[{hook_index}]", hook.get("command", "")))
+
+targets = []
+prefixes = []
+shape_errors = []
+for command_id, command in commands:
+    marker = "/hooks/scripts/"
+    if command.count(marker) != 1:
+        shape_errors.append(f"{command_id}: marker-count={command.count(marker)}")
+        continue
+    prefix, target = command.split(marker, 1)
+    target = target.split()[0].rstrip("\"'")
+    prefixes.append(prefix)
+    targets.append(target)
+
+actual_targets = collections.Counter(targets)
+actual_by_id = {command_id: target for (command_id, _), target in zip(commands, targets)}
+if len(commands) == 10 and actual_by_id == expected_by_id and actual_targets == expected_targets:
+    emit("PASS", "T2R_static_exact_ten_commands_and_targets")
+else:
+    emit("FAIL", "T2R_static_exact_ten_commands_and_targets",
+         f"count={len(commands)} targets={dict(actual_targets)} shape={shape_errors}")
+
+if len(prefixes) == 10 and len(set(prefixes)) == 1:
+    emit("PASS", "T2R_static_uniform_resolution_prefix_all_ten")
+else:
+    emit("FAIL", "T2R_static_uniform_resolution_prefix_all_ten",
+         f"parsed={len(prefixes)} distinct-prefixes={len(set(prefixes))}")
+
+private_assignments = []
+for command_id, command in commands:
+    if command.count(resolution) != 1:
+        shape_errors.append(f"{command_id}: exact-resolution-count={command.count(resolution)}")
+        continue
+    before = command.split(resolution, 1)[0]
+    match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)=[\"']?$", before)
+    if not match or "zyz" not in match.group(1).lower() or "plugin_root" not in match.group(1).lower():
+        shape_errors.append(f"{command_id}: resolution is not assigned to a private zyz plugin-root variable")
+    else:
+        private_assignments.append(match.group(1))
+if len(private_assignments) == 10 and len(set(private_assignments)) == 1:
+    emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_ten")
+else:
+    emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_ten", "; ".join(shape_errors))
+
+forbidden = []
+for command_id, command in commands:
+    if "/Users/" in command:
+        forbidden.append(f"{command_id}: personal absolute path")
+if not forbidden:
+    emit("PASS", "T2R_static_no_personal_absolute_path")
+else:
+    emit("FAIL", "T2R_static_no_personal_absolute_path", "; ".join(forbidden))
+
+tmp = tempfile.mkdtemp(prefix="zyz hook root test ")
+try:
+    marker_path = os.path.join(tmp, "selection.log")
+    cwd_bait = os.path.join(tmp, "session cwd bait")
+    roots = {
+        "plugin": os.path.join(tmp, "plugin sentinel"),
+        "zyz": os.path.join(tmp, "zyz sentinel"),
+        "claude": os.path.join(tmp, "claude sentinel"),
+        "legacy": os.path.join(tmp, "legacy sentinel"),
+        "spaces": os.path.join(tmp, "selected root containing spaces"),
+        "cwd-bait": cwd_bait,
+    }
+
+    def install_stubs(root, label):
+        scripts = os.path.join(root, "hooks", "scripts")
+        os.makedirs(scripts, exist_ok=True)
+        for target in expected_targets:
+            path = os.path.join(scripts, target)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+                fh.write(f"printf '%s\\n' '{label}|{target}' >> \"$ZYZ_HOOK_ROOT_TEST_MARKER\"\n")
+            os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+
+    for label, root in roots.items():
+        install_stubs(root, label)
+
+    cases = [
+        ("single_PLUGIN_ROOT_all_ten", {"PLUGIN_ROOT": roots["plugin"]}, "plugin"),
+        ("single_ZYZ_PLUGIN_ROOT_all_ten", {"ZYZ_PLUGIN_ROOT": roots["zyz"]}, "zyz"),
+        ("single_CLAUDE_PLUGIN_ROOT_all_ten", {"CLAUDE_PLUGIN_ROOT": roots["claude"]}, "claude"),
+        ("single_legacy_CODEX_PLUGIN_ROOT_all_ten", {"CODEX_PLUGIN_ROOT": roots["legacy"]}, "legacy"),
+        ("conflict_all_distinct_prefers_PLUGIN_ROOT_all_ten", {
+            "PLUGIN_ROOT": roots["plugin"], "ZYZ_PLUGIN_ROOT": roots["zyz"],
+            "CLAUDE_PLUGIN_ROOT": roots["claude"], "CODEX_PLUGIN_ROOT": roots["legacy"],
+        }, "plugin"),
+        ("empty_PLUGIN_ROOT_falls_to_ZYZ_PLUGIN_ROOT_all_ten", {
+            "PLUGIN_ROOT": "", "ZYZ_PLUGIN_ROOT": roots["zyz"],
+            "CLAUDE_PLUGIN_ROOT": roots["claude"], "CODEX_PLUGIN_ROOT": roots["legacy"],
+        }, "zyz"),
+        ("empty_first_two_falls_to_CLAUDE_PLUGIN_ROOT_all_ten", {
+            "PLUGIN_ROOT": "", "ZYZ_PLUGIN_ROOT": "",
+            "CLAUDE_PLUGIN_ROOT": roots["claude"], "CODEX_PLUGIN_ROOT": roots["legacy"],
+        }, "claude"),
+        ("empty_first_three_falls_to_legacy_CODEX_PLUGIN_ROOT_all_ten", {
+            "PLUGIN_ROOT": "", "ZYZ_PLUGIN_ROOT": "", "CLAUDE_PLUGIN_ROOT": "",
+            "CODEX_PLUGIN_ROOT": roots["legacy"],
+        }, "legacy"),
+        ("spaces_in_PLUGIN_ROOT_all_ten", {
+            "PLUGIN_ROOT": roots["spaces"], "ZYZ_PLUGIN_ROOT": roots["zyz"],
+        }, "spaces"),
+        ("all_unset_success_noop_and_cwd_bait_not_executed_all_ten", {}, None),
+        ("all_empty_success_noop_and_cwd_bait_not_executed_all_ten", dict.fromkeys(root_vars, ""), None),
+    ]
+
+    base_env = os.environ.copy()
+    for var in root_vars:
+        base_env.pop(var, None)
+    base_env["ZYZ_HOOK_ROOT_TEST_MARKER"] = marker_path
+
+    def execute(command, values):
+        env = base_env.copy()
+        env.update(values)
+        try:
+            os.unlink(marker_path)
+        except FileNotFoundError:
+            pass
+        run = subprocess.run(["bash", "-c", command], cwd=cwd_bait, env=env,
+                             input=b"{}\n", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            with open(marker_path, encoding="utf-8") as fh:
+                selected = [line.rstrip("\n") for line in fh]
+        except FileNotFoundError:
+            selected = []
+        return run, selected
+
+    for case_name, values, expected_label in cases:
+        errors = []
+        for command_id, command in commands:
+            target = expected_by_id.get(command_id, "<unexpected-command-id>")
+            run, selected = execute(command, values)
+            expected = [] if expected_label is None else [f"{expected_label}|{target}"]
+            if run.returncode != 0 or selected != expected:
+                errors.append(f"{command_id}: rc={run.returncode} selected={selected!r} expected={expected!r} stderr={run.stderr.decode(errors='replace')[:160]!r}")
+        if errors:
+            emit("FAIL", "T2R_" + case_name, " ; ".join(errors))
+        else:
+            emit("PASS", "T2R_" + case_name)
+
+    # Injected-degradation guard for the test infrastructure itself.  A suite
+    # that silently tolerates a missing selected-root script would make every
+    # dynamic precedence result suspect.  Delete one fixture precondition and
+    # require the observation to become distinguishably non-successful.
+    if commands and targets:
+        first_command = commands[0][1]
+        first_target = expected_by_id.get(commands[0][0], targets[0])
+        degraded_path = os.path.join(roots["plugin"], "hooks", "scripts", first_target)
+        os.unlink(degraded_path)
+        degraded_run, degraded_selected = execute(first_command, {"PLUGIN_ROOT": roots["plugin"]})
+        if degraded_run.returncode != 0 and degraded_selected == []:
+            emit("PASS", "T2R_harness_degradation_missing_selected_script_is_detected")
+        else:
+            emit("FAIL", "T2R_harness_degradation_missing_selected_script_is_detected",
+                 f"rc={degraded_run.returncode} selected={degraded_selected!r}")
+finally:
+    shutil.rmtree(tmp)
+PY
+    while IFS="$(printf '\t')" read -r t2r_verdict t2r_name t2r_detail; do
+        case "$t2r_verdict" in
+            PASS) pass "$t2r_name" ;;
+            FAIL) fail "$t2r_name" "$t2r_detail" ;;
+        esac
+    done < "$t2r_results"
+    rm -f "$t2r_results"
 else
-    fail "T2 hooks.json resolves Codex/orchestrated/Claude plugin roots"
+    fail "T2R hook-root contract requires python3" "release gate cannot JSON-parse or execute the ten-command matrix"
 fi
 # The monitor's `when` must be a value Claude Code can actually ARM.
 # Arming compares `when` as an EXACT string against the emitted skill name

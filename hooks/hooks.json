@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/heartbeat.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/heartbeat.sh\"",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/dispatch-scope-guard.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/dispatch-scope-guard.sh\"",
             "timeout": 15
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/checkout-guard.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/checkout-guard.sh\"",
             "timeout": 15
           }
         ]
@@ -39,12 +39,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/heartbeat.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/heartbeat.sh\"",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/status-freshness.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/status-freshness.sh\"",
             "timeout": 15
           }
         ]
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/post-agent-flush.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/post-agent-flush.sh\"",
             "timeout": 15
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/subagent-track.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/subagent-track.sh\"",
             "timeout": 20
           }
         ]
@@ -78,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/stop-gate-subagent.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/stop-gate-subagent.sh\"",
             "timeout": 15
           }
         ]
@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/stop-gate-main.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/stop-gate-main.sh\"",
             "timeout": 20
           }
         ]
@@ -100,7 +100,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}\"/hooks/scripts/start-watchdog.sh",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/start-watchdog.sh\"",
             "timeout": 10
           }
         ]

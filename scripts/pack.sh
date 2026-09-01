@@ -17,15 +17,16 @@
 #     version=<X.Y.Z[+build-meta]>
 #
 # Stderr is empty on the happy path. A non-fatal warning is emitted to stderr
-# when the working tree is dirty (the zip ships the git index content, so any
-# staged-but-uncommitted changes will land in the archive).
+# when the working tree is dirty: `git ls-files` chooses the tracked paths, but
+# the archive reads those paths from the current working tree.
 #
 # ## Side effects
 #
 # - Creates `dist/` at the repo root if missing.
 # - Removes any pre-existing `dist/zyz-worker-<version>.zip` before writing.
-# - Writes `dist/zyz-worker-<version>.zip` containing every file tracked by
-#   `git ls-files` at HEAD (or the current index, see dirty-tree warning).
+# - Writes `dist/zyz-worker-<version>.zip` containing every path tracked by
+#   `git ls-files` in the current index. Regular files use their current
+#   on-disk bytes; symbolic links are stored as links with their exact targets.
 #
 # ## Exit codes
 #
@@ -90,9 +91,13 @@ fi
 #   - one canonical inclusion list (the git index)
 #
 # We use `xargs -0` instead of `zip -@` for portability across BSD (macOS) and
-# GNU. `zip` appends to an existing archive by default, so multi-batch xargs
-# invocations are safe (the `rm -f "$TARGET"` above guarantees a clean start).
-if ! git ls-files -z | xargs -0 zip -q "$TARGET"; then
+# GNU. `zip -y` stores a tracked symbolic link as a symlink entry whose payload
+# is the link target; without it, Info-ZIP follows a directory symlink and can
+# silently turn the tracked link into an empty directory entry. Regular files
+# keep the existing current-working-tree byte semantics. `zip` appends to an
+# existing archive by default, so multi-batch xargs invocations are safe (the
+# `rm -f "$TARGET"` above guarantees a clean start).
+if ! git ls-files -z | xargs -0 zip -q -y "$TARGET"; then
     echo "error: zip failed" >&2
     exit 3
 fi

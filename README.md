@@ -187,7 +187,7 @@ ln -s /path/to/zyz-worker ~/plugins/zyz-worker
 
 Codex 没有 Claude Code 的 slash-command 机制，因此不要输入 `/execute-task`。批量调度时，`ZYZ_AGENT_RUNTIME=auto` 会在 Codex 会话中选择 `codex`；也可显式设置 `ZYZ_AGENT_RUNTIME=codex|claude`，或在任务 frontmatter 中设置 `agent-runtime`。worker 由统一 runtime adapter 生成启动/恢复命令：Codex 使用 `codex -C ...` / `codex resume ...`，Claude 使用 `claude --plugin-dir ...` / `claude --resume ...`。
 
-`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按 `CODEX_PLUGIN_ROOT` / `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` 解析脚本，避免 Codex 将 `./hooks` 错当成 worker cwd 相对路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
+`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按官方 `PLUGIN_ROOT` → 编排注入的 `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` → legacy `CODEX_PLUGIN_ROOT` 解析已安装插件根目录；全部为空时成功 no-op，绝不回退到 worker cwd、源码目录或 marketplace 路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
 
 ### Claude Code
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] — 2026-09-01
+
+- **Resolve hooks from the host-installed plugin root.** All ten hook commands
+  now use the same `PLUGIN_ROOT` → orchestrated `ZYZ_PLUGIN_ROOT` →
+  `CLAUDE_PLUGIN_ROOT` → legacy `CODEX_PLUGIN_ROOT` chain, treating unset and
+  empty values alike. If no host supplies a root, the hook succeeds without
+  running anything instead of resolving a script from the session cwd or a
+  developer-specific source path.
+- **Preserve tracked symbolic links in release archives.** `pack.sh` still uses
+  `git ls-files` as its only inclusion list and reads regular-file bytes from
+  the current working tree, but now stores each tracked symlink as a symlink
+  entry with its exact target instead of dereferencing a directory link into
+  an empty archive directory.
+
 ## [0.18.1] — 2026-09-01
 
 - **Teach the `git-worktree` skill copy-on-miss for untracked-but-required

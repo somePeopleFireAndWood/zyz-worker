@@ -2605,6 +2605,7 @@ T8_SKIP_ALL() {
         "dispatch.md Phase-1 key encoded-cwd non-empty (a)" \
         "dispatch.md worker-mcp-args key present (a-mcp)" \
         "dispatch.md worker-mcp-args defaults to --strict-mcp-config (a-mcp)" \
+        "dispatch.md agent-runtime=claude for Claude fixture (a-runtime)" \
         "dispatch.md tmux-window-id matches ^@[0-9]+\$ (a)" \
         "dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a)" \
         "dispatch.md shell-pid is a positive integer (a)" \
@@ -2837,8 +2838,23 @@ run_T8() {
     # --- Invoke spawn (2 args; spawn no longer has --auto-start) ---------
     # We unset CLAUDE_PLUGIN_ROOT in the spawn subshell so plugin-root is
     # derived deterministically from $SCRIPT_DIR/.. == repo root, regardless
-    # of the caller's environment.  Invoke from $TMPROOT (not a git repo) to
-    # mirror T6's cwd-independence posture.
+    # of the caller's environment.  This is intentionally a CLAUDE fixture:
+    # it asserts Claude's --strict-mcp-config policy and Claude Phase-2
+    # pid/session/transcript/recovery fields.  A Codex-hosted test process
+    # exports CODEX_CI/CODEX_THREAD_ID, so inheriting auto-detection silently
+    # changes the fixture's subject to Codex.  Clear both host-identity baits
+    # and select Claude explicitly at the process boundary.
+    #
+    # Coverage ceiling: this pins the fixture runtime; it does not test auto
+    # detection.  Auto-detection belongs to test-codex-adaptation.sh.
+    # Mutation: remove the two unsets AND the ZYZ_AGENT_RUNTIME=claude prefix
+    # while running from a Codex host.  Expected red cases include
+    # "worker-mcp-args defaults to --strict-mcp-config", the Claude Phase-2
+    # field cases, and the Claude recovery-body cases.  Changing the explicit
+    # runtime to codex must turn those same named cases red.
+    #
+    # Invoke from $TMPROOT (not a git repo) to mirror T6's cwd-independence
+    # posture.
     #
     # Capture stdout and stderr into SEPARATE files: the PLUGIN_ROOT warn
     # (expected/benign — see above) goes to stderr and must NOT be treated as
@@ -2849,10 +2865,11 @@ run_T8() {
     (
         cd "$TMPROOT" || exit 99
         unset CLAUDE_PLUGIN_ROOT
+        unset CODEX_CI CODEX_THREAD_ID
         # Also unset ZYZ_WORKER_MCP so the a-mcp assertion below exercises the
         # DEFAULT policy (none -> --strict-mcp-config), not the caller's env.
         unset ZYZ_WORKER_MCP
-        bash "$spawn" "$TASK_ID" "$LIST_DIR" </dev/null
+        ZYZ_AGENT_RUNTIME=claude bash "$spawn" "$TASK_ID" "$LIST_DIR" </dev/null
     ) >"$spawn_out_file" 2>"$spawn_err_file"
     spawn_rc=$?
 
@@ -2901,6 +2918,7 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
         done
         skip "T8 dispatch.md worker-mcp-args key present (a-mcp) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md worker-mcp-args defaults to --strict-mcp-config (a-mcp) (skipped: dispatch.md absent)"
+        skip "T8 dispatch.md agent-runtime=claude for Claude fixture (a-runtime) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md tmux-window-id matches ^@[0-9]+\$ (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md tmux-pane-id matches ^%[0-9]+\$ (a) (skipped: dispatch.md absent)"
         skip "T8 dispatch.md shell-pid is a positive integer (a) (skipped: dispatch.md absent)"
@@ -2987,6 +3005,14 @@ $(sed 's/^/      | /' "$spawn_err_file" 2>/dev/null)"
         T8_PASS "dispatch.md worker-mcp-args defaults to --strict-mcp-config (a-mcp)"
     else
         T8_FAIL "dispatch.md worker-mcp-args='$mcp_val', expected '--strict-mcp-config' under the default policy (a-mcp)"
+    fi
+
+    local t8_agent_runtime
+    t8_agent_runtime="$(t8_fm "$DISPATCH" agent-runtime 2>/dev/null || true)"
+    if [ "$t8_agent_runtime" = "claude" ]; then
+        T8_PASS "dispatch.md agent-runtime=claude for Claude fixture (a-runtime)"
+    else
+        T8_FAIL "dispatch.md agent-runtime='$t8_agent_runtime', expected 'claude' for the Claude-specific fixture (a-runtime)"
     fi
 
     # ---- tmux-window-id / tmux-pane-id format ----
@@ -4019,6 +4045,7 @@ TR_POS_SKIP_ALL() {
         "scope=worktree: dispatch.md reuse-claude-effective=n/a" \
         "scope=worktree: dispatch.md reuse-from=<old-id>" \
         "scope=worktree: dispatch.md reuse-scope=worktree" \
+        "scope=worktree: dispatch.md agent-runtime=claude" \
         "scope=worktree: new session zyz-task-<new> is alive" \
         "scope=worktree: new heartbeat file touched (in-pane daemon)" \
         "scope=worktree: heartbeat-window-id empty (new session, in-pane daemon)" \
@@ -4027,12 +4054,14 @@ TR_POS_SKIP_ALL() {
         "scope=both: dispatch.md heartbeat-window-id non-empty" \
         "scope=both: dispatch.md shell-pid == old pane's shell-pid" \
         "scope=both: dispatch.md worktree=<old worktree>" \
+        "scope=both: dispatch.md agent-runtime=claude" \
         "scope=both: a NEW window opened in the reused session" \
         "scope=both: new heartbeat file touched (new-window daemon)" \
         "scope=both: OLD master entry unchanged after reuse" \
         "scope=both: OLD runtime dispatch.md unchanged after reuse" \
         "scope=tmux: dispatch.md worktree == old worktree" \
         "scope=tmux: dispatch.md reuse-claude-effective=true" \
+        "scope=tmux: dispatch.md agent-runtime=claude" \
         "TR-pos fixture teardown clean"
     do
         skip "TR-pos $i (skipped: $reason)"
@@ -4226,9 +4255,20 @@ run_TR_reuse_pos() {
         echo "TR-pos scope=worktree reuse."
     } >"$LIST_DIR/tasks/$NEW_WT_ID.md"
 
+    # All three positive reuse cases below are Claude-container fixtures: the
+    # old dispatch defaults to the legacy Claude runtime and the assertions
+    # exercise "new claude" / "same claude" behavior.  Isolate Codex host
+    # identity and explicitly select Claude for every reuse invocation.
+    # Coverage ceiling: these calls do not exercise runtime auto-detection.
+    # Mutation: remove both unsets and the explicit runtime from all three
+    # blocks on a Codex host.  Expected red: the scope=both and scope=tmux
+    # reuse calls fail with "cannot reuse live claude process as codex", and
+    # their named dispatch/reuse-claude/heartbeat cases fail or skip.
     local wt_rc wt_out
     wt_out="$(
-        cd "$TRPOS_ROOT" && bash "$reuse" "$NEW_WT_ID" "$LIST_DIR" </dev/null 2>&1
+        cd "$TRPOS_ROOT" || exit 99
+        unset CODEX_CI CODEX_THREAD_ID
+        ZYZ_AGENT_RUNTIME=claude bash "$reuse" "$NEW_WT_ID" "$LIST_DIR" </dev/null 2>&1
     )"
     wt_rc=$?
     local WT_DISPATCH="$LIST_DIR/runtime/$NEW_WT_ID/dispatch.md"
@@ -4242,6 +4282,7 @@ $(printf '%s\n' "$wt_out" | sed 's/^/      | /')"
             "scope=worktree: dispatch.md reuse-claude-effective=n/a" \
             "scope=worktree: dispatch.md reuse-from=<old-id>" \
             "scope=worktree: dispatch.md reuse-scope=worktree" \
+            "scope=worktree: dispatch.md agent-runtime=claude" \
             "scope=worktree: new session zyz-task-<new> is alive" \
             "scope=worktree: new heartbeat file touched (in-pane daemon)" \
             "scope=worktree: heartbeat-window-id empty (new session, in-pane daemon)"
@@ -4249,13 +4290,14 @@ $(printf '%s\n' "$wt_out" | sed 's/^/      | /')"
             skip "TR-pos $i (skipped: scope=worktree reuse failed)"
         done
     else
-        local wt_sess wt_wt wt_rce wt_rf wt_rs wt_hbwin
+        local wt_sess wt_wt wt_rce wt_rf wt_rs wt_hbwin wt_runtime
         wt_sess="$(tr_fm "$WT_DISPATCH" tmux-session)"
         wt_wt="$(tr_fm "$WT_DISPATCH" worktree)"
         wt_rce="$(tr_fm "$WT_DISPATCH" reuse-claude-effective)"
         wt_rf="$(tr_fm "$WT_DISPATCH" reuse-from)"
         wt_rs="$(tr_fm "$WT_DISPATCH" reuse-scope)"
         wt_hbwin="$(tr_fm "$WT_DISPATCH" heartbeat-window-id)"
+        wt_runtime="$(tr_fm "$WT_DISPATCH" agent-runtime)"
 
         if [ "$wt_sess" = "$NEW_WT_SESSION" ]; then
             TR_POS_PASS "scope=worktree: dispatch.md tmux-session=zyz-task-<new> (new session)"
@@ -4281,6 +4323,11 @@ $(printf '%s\n' "$wt_out" | sed 's/^/      | /')"
             TR_POS_PASS "scope=worktree: dispatch.md reuse-scope=worktree"
         else
             TR_POS_FAIL "scope=worktree: dispatch.md reuse-scope='$wt_rs' != 'worktree'"
+        fi
+        if [ "$wt_runtime" = "claude" ]; then
+            TR_POS_PASS "scope=worktree: dispatch.md agent-runtime=claude"
+        else
+            TR_POS_FAIL "scope=worktree: dispatch.md agent-runtime='$wt_runtime' != 'claude'"
         fi
         if tmux has-session -t "$NEW_WT_SESSION" 2>/dev/null; then
             TR_POS_PASS "scope=worktree: new session zyz-task-<new> is alive"
@@ -4348,7 +4395,9 @@ $(printf '%s\n' "$wt_out" | sed 's/^/      | /')"
 
     local both_rc both_out
     both_out="$(
-        cd "$TRPOS_ROOT" && bash "$reuse" "$NEW_BOTH_ID" "$LIST_DIR" </dev/null 2>&1
+        cd "$TRPOS_ROOT" || exit 99
+        unset CODEX_CI CODEX_THREAD_ID
+        ZYZ_AGENT_RUNTIME=claude bash "$reuse" "$NEW_BOTH_ID" "$LIST_DIR" </dev/null 2>&1
     )"
     both_rc=$?
     local BOTH_DISPATCH="$LIST_DIR/runtime/$NEW_BOTH_ID/dispatch.md"
@@ -4362,6 +4411,7 @@ $(printf '%s\n' "$both_out" | sed 's/^/      | /')"
             "scope=both: dispatch.md heartbeat-window-id non-empty" \
             "scope=both: dispatch.md shell-pid == old pane's shell-pid" \
             "scope=both: dispatch.md worktree=<old worktree>" \
+            "scope=both: dispatch.md agent-runtime=claude" \
             "scope=both: a NEW window opened in the reused session" \
             "scope=both: new heartbeat file touched (new-window daemon)" \
             "scope=both: OLD master entry unchanged after reuse" \
@@ -4370,12 +4420,13 @@ $(printf '%s\n' "$both_out" | sed 's/^/      | /')"
             skip "TR-pos $i (skipped: scope=both reuse failed)"
         done
     else
-        local both_sess both_rce both_hbwin both_shell both_wt
+        local both_sess both_rce both_hbwin both_shell both_wt both_runtime
         both_sess="$(tr_fm "$BOTH_DISPATCH" tmux-session)"
         both_rce="$(tr_fm "$BOTH_DISPATCH" reuse-claude-effective)"
         both_hbwin="$(tr_fm "$BOTH_DISPATCH" heartbeat-window-id)"
         both_shell="$(tr_fm "$BOTH_DISPATCH" shell-pid)"
         both_wt="$(tr_fm "$BOTH_DISPATCH" worktree)"
+        both_runtime="$(tr_fm "$BOTH_DISPATCH" agent-runtime)"
 
         if [ "$both_sess" = "$TRPOS_OLD_SESSION" ]; then
             TR_POS_PASS "scope=both: dispatch.md tmux-session=<old session>"
@@ -4401,6 +4452,11 @@ $(printf '%s\n' "$both_out" | sed 's/^/      | /')"
             TR_POS_PASS "scope=both: dispatch.md worktree=<old worktree>"
         else
             TR_POS_FAIL "scope=both: dispatch.md worktree='$both_wt' != old worktree '$OLD_WORKTREE'"
+        fi
+        if [ "$both_runtime" = "claude" ]; then
+            TR_POS_PASS "scope=both: dispatch.md agent-runtime=claude"
+        else
+            TR_POS_FAIL "scope=both: dispatch.md agent-runtime='$both_runtime' != 'claude'"
         fi
 
         both_win_after="$(tmux list-windows -t "$TRPOS_OLD_SESSION" 2>/dev/null | wc -l | tr -d ' ')"
@@ -4481,7 +4537,9 @@ $(printf '%s\n' "$both_out" | sed 's/^/      | /')"
 
     local tmux_rc tmux_out
     tmux_out="$(
-        cd "$TRPOS_ROOT" && bash "$reuse" "$NEW_TMUX_ID" "$LIST_DIR" </dev/null 2>&1
+        cd "$TRPOS_ROOT" || exit 99
+        unset CODEX_CI CODEX_THREAD_ID
+        ZYZ_AGENT_RUNTIME=claude bash "$reuse" "$NEW_TMUX_ID" "$LIST_DIR" </dev/null 2>&1
     )"
     tmux_rc=$?
     local TMUX_DISPATCH="$LIST_DIR/runtime/$NEW_TMUX_ID/dispatch.md"
@@ -4490,10 +4548,12 @@ $(printf '%s\n' "$both_out" | sed 's/^/      | /')"
 $(printf '%s\n' "$tmux_out" | sed 's/^/      | /')"
         skip "TR-pos scope=tmux: dispatch.md worktree == old worktree (skipped: scope=tmux reuse failed)"
         skip "TR-pos scope=tmux: dispatch.md reuse-claude-effective=true (skipped: scope=tmux reuse failed)"
+        skip "TR-pos scope=tmux: dispatch.md agent-runtime=claude (skipped: scope=tmux reuse failed)"
     else
-        local tmux_wt tmux_rce
+        local tmux_wt tmux_rce tmux_runtime
         tmux_wt="$(tr_fm "$TMUX_DISPATCH" worktree)"
         tmux_rce="$(tr_fm "$TMUX_DISPATCH" reuse-claude-effective)"
+        tmux_runtime="$(tr_fm "$TMUX_DISPATCH" agent-runtime)"
         if [ "$tmux_wt" = "$OLD_WORKTREE" ]; then
             TR_POS_PASS "scope=tmux: dispatch.md worktree == old worktree"
         else
@@ -4503,6 +4563,11 @@ $(printf '%s\n' "$tmux_out" | sed 's/^/      | /')"
             TR_POS_PASS "scope=tmux: dispatch.md reuse-claude-effective=true"
         else
             TR_POS_FAIL "scope=tmux: dispatch.md reuse-claude-effective='$tmux_rce' != 'true'"
+        fi
+        if [ "$tmux_runtime" = "claude" ]; then
+            TR_POS_PASS "scope=tmux: dispatch.md agent-runtime=claude"
+        else
+            TR_POS_FAIL "scope=tmux: dispatch.md agent-runtime='$tmux_runtime' != 'claude'"
         fi
     fi
 

@@ -252,13 +252,13 @@ L1 每 tick 按 7 分支决策树选下次唤醒间隔（120s 逼近完工 / 180
 
 同一套根级资产供两端复用，各端只有自己的清单：Claude Code 读 `.claude-plugin/plugin.json` 并在根级找 `agents/` `commands/` `skills/` `hooks/`；Codex 读 `.codex-plugin/plugin.json` 并只用根级 `skills/`。`.claude/agents` 与 `.claude/commands` 是指向根级目录的符号链接，让本仓库既能当插件加载、也能直接当项目使用。
 
-Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex resume`，Claude 使用 `claude --plugin-dir` / `claude --resume`。hooks 命令按 `CODEX_PLUGIN_ROOT` → orchestrated `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` 解析（Codex 0.147.0 会把裸 `./hooks` 相对 worker cwd 解析），并同时匹配两端工具名；Codex `SessionStart` 同步 hook 只负责快速拉起脱离的诊断 scanner，不宣称具有 Claude monitor 的会话唤醒能力。
+Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex resume`，Claude 使用 `claude --plugin-dir` / `claude --resume`。hooks 命令按官方 `PLUGIN_ROOT` → orchestrated `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` → legacy/non-canonical `CODEX_PLUGIN_ROOT` 解析已安装插件根；unset 与 empty 都继续回退，全部缺失时成功 no-op，绝不从 worker cwd、源码 checkout 或 marketplace 路径猜测（Codex 0.147.0 会把裸 `./hooks` 相对 worker cwd 解析）。命令同时匹配两端工具名；Codex `SessionStart` 同步 hook 只负责快速拉起脱离的诊断 scanner，不宣称具有 Claude monitor 的会话唤醒能力。
 
-`scripts/pack.sh` 以 `git ls-files` 为唯一装箱清单（天然排除未跟踪与 gitignore 的内容），版本号取自 `.claude-plugin/plugin.json`。
+`scripts/pack.sh` 以 `git ls-files` 为唯一装箱清单（天然排除未跟踪与 gitignore 的内容），版本号取自 `.claude-plugin/plugin.json`。普通文件读取当前工作树字节；tracked symlink 则作为 symlink entry 保存其精确 target，不能解引用成目标内容或空目录。
 
 ## 七、测试策略
 
-六个套件，全部是「跑完不早退」的风格，最后汇总通过数。前五个是纯静态/单元测，不需要网络与 API 配额，可随时全跑：
+七个可执行套件，全部是「跑完不早退」的风格，最后汇总通过数。前六个的默认模式是纯静态/单元或本地 smoke，不需要模型 API 配额，可随时全跑：
 
 | 套件 | 覆盖 |
 |---|---|
@@ -267,6 +267,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 | `test-rename-and-conventions.sh` | 命名与目录约定：不留旧名残留、slash command 别名正文等价、long-running-state 约束块在各角色文件就位 |
 | `test-release-0-5-0.sh` | 发布门禁：三份清单版本一致、打包产物内容、tag 内容 |
 | `test-clean-tmp-skill.sh` | clean-tmp skill 的静态与烟测、文档接线 |
+| `test-codex-adaptation.sh` | Codex manifest、runtime adapter 与 hook 根目录契约；默认本地验证不消耗配额，`--real` 会重装 candidate 并启动真实 Codex smoke（消耗配额） |
 | `test-e2e-layered.sh` | 真 claude 端到端验收（**消耗 API 配额**，需 tmux/git/claude 就位），验证 spawn → L2 起真 claude → 父 shell 不变量 → exactly-once 幂等 → dispatch-bound 绑定 |
 
 一个重要惯例：**文档串也被测试钉住**。SKILL.md 的分支名、README 的目录树条目、模板的枚举值都有 grep 断言——因为这套插件的「行为」很大一部分就写在提示词里，提示词漂移就是行为漂移。

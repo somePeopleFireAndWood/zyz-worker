@@ -13,7 +13,8 @@
 #        -> dispatch-bound (a trivial LLM round-trip materializes the transcript
 #           so orch-check-worker.sh flips dispatch-bound=true)
 #        -> command-resolves (the namespaced `/zyz-worker:execute-task <task-id>`
-#           the driver sends does NOT produce "Unknown command" in the pane)
+#           is accepted by the same live Claude process and advances its
+#           transcript without producing "Unknown command")
 #
 # Usage:
 #     bash scripts/test-e2e-layered.sh [--keep]
@@ -50,12 +51,34 @@
 #       ("trust", "Bypass Permissions", "Yes, I accept") rather than exact full
 #       strings. Between confirmation keystrokes we capture -> match -> send key
 #       -> capture again to confirm the page advanced (never blind-send).
+#       Claude 2.1.251 adds a generic `Enter to confirm · Esc to cancel` footer;
+#       Enter is sent only after the selected row is positively identified as
+#       the accepting choice. A reject-selected or unknown page is never blindly
+#       confirmed.
 #     - Readiness probe has a 30s timeout; on timeout it PRINTS the pane content
 #       for diagnosis rather than hanging.
 #     - `set -uo pipefail`, NO `set -e`, so every assertion result prints.
 #     - No bash-4-only features (no associative arrays) so macOS bash 3.2 runs.
 #     - `mktemp -d` for temp dirs; `pwd -P` where physical paths matter (to
 #       match how orch-spawn-worker.sh records encoded-cwd).
+#
+# Observation ceiling: A5 proves that the live Claude child accepted enough of
+# the namespaced command to persist new transcript state, then remained alive
+# without an Unknown command diagnostic through a short stabilization window.
+# It does not wait for the execute-task workflow to finish. Do not read the
+# green check as workflow-completion proof.
+#
+# Mutation manifest:
+#   confirmation safety -> replace state-aware selection with unconditional
+#     `tmux send-keys ... Enter` -> A2 ready/live-child guard must turn red on a
+#     reject-selected confirmation page;
+#   live-session gate -> remove the direct-child+ready check before A4/A5 -> A4
+#     or A5 must no longer be allowed to send and pass after Claude exits;
+#   positive A5 evidence -> delete transcript-advance requirement -> mutation
+#     is SURVIVED only by the banned absence-only oracle, so A5 must require both
+#     transcript advancement and absence of Unknown command.
+#   A4 response decoration -> remove Claude 2.1.251's `⏺` from the explicit
+#     decoration set -> exact decorated `⏺ PONG` must turn the A4 gate red.
 #
 # Exit codes:
 #     0   all assertions passed (A1.1, A1.2, A2, A3, A4, A5)
@@ -292,13 +315,33 @@ capture() {
 # Return 0 if the pane is showing the trust-folder confirmation page.
 pane_is_trust_page() {
     local content="$1"
-    printf '%s\n' "$content" | grep -qiE 'trust the files|trust this folder|do you trust'
+    printf '%s\n' "$content" | tail -15 | grep -qiE 'trust the files|trust this folder|do you trust'
 }
 
 # Return 0 if the pane is showing the bypass-permissions risk page.
 pane_is_bypass_page() {
     local content="$1"
-    printf '%s\n' "$content" | grep -qiE 'Bypass Permissions mode|bypass permissions\?|Yes, I accept|WARNING:.*[Bb]ypass'
+    printf '%s\n' "$content" | tail -15 | grep -qiE 'Bypass Permissions mode|bypass permissions\?|Yes, I accept|WARNING:.*[Bb]ypass'
+}
+
+# Return 0 for any interactive confirmation surface, including versions whose
+# page-specific heading drifted but whose confirmation footer is stable.
+pane_is_confirmation_page() {
+    local content="$1"
+    pane_is_trust_page "$content" || pane_is_bypass_page "$content" \
+        || printf '%s\n' "$content" | tail -12 | grep -qiE 'Enter to confirm.*Esc to cancel|Esc to cancel.*Enter to confirm'
+}
+
+# The selected row is the only safe basis for Enter. Headings containing words
+# such as "trust" or "accept" are deliberately irrelevant.
+confirmation_accept_selected() {
+    printf '%s\n' "$1" | tail -12 \
+        | grep -qiE '^[[:space:]]*[❯>●].*(Yes|accept|trust|continue|proceed)'
+}
+
+confirmation_reject_selected() {
+    printf '%s\n' "$1" | tail -12 \
+        | grep -qiE '^[[:space:]]*[❯>●].*(No|exit|cancel|decline)'
 }
 
 # Return 0 if the pane looks like a ready claude UI. We accept any of several
@@ -315,10 +358,11 @@ pane_is_bypass_page() {
 # numbered menu option).
 pane_is_ready() {
     local content="$1"
-    if pane_is_trust_page "$content" || pane_is_bypass_page "$content"; then
+    if pane_is_confirmation_page "$content"; then
         return 1
     fi
-    printf '%s\n' "$content" | grep -qE '❯ ([^0-9]|$)|bypass permissions on|Bypass permissions on|Welcome to Claude|/execute-task|for shortcuts'
+    printf '%s\n' "$content" | tail -12 \
+        | grep -qE '❯ ([^0-9]|$)|bypass permissions on|Bypass permissions on|for shortcuts'
 }
 
 # Count claude processes that are direct children of the recorded pane shell.
@@ -331,13 +375,57 @@ claude_child_newest() {
     pgrep -P "$SHELL_PID" -n -x claude 2>/dev/null || true
 }
 
+claude_session_ready_now() {
+    local content
+    content="$(capture)"
+    [ "$(claude_child_count)" = "1" ] \
+        && [ -n "$(claude_child_newest)" ] \
+        && pane_is_ready "$content"
+}
+
+# advance_confirmation_page <captured-content>
+# Returns 0 only after sending Enter to an accepting selected row. If a reject
+# row is selected, move once and re-capture; Enter is still forbidden unless the
+# accepting row is then visibly selected. This is the guard Claude 2.1.251's
+# default "No, exit" selection requires.
+advance_confirmation_page() {
+    local before="$1" selected
+    selected="$before"
+    if confirmation_reject_selected "$selected"; then
+        info "confirmation page has reject/exit selected; sending Down only"
+        tmux send-keys -t "$PANE_ID" Down
+        sleep 1
+        selected="$(capture)"
+    fi
+    if ! confirmation_accept_selected "$selected"; then
+        info "confirmation page accepting row is not positively selected; refusing Enter"
+        return 1
+    fi
+    info "confirmation page accepting row selected; sending Enter"
+    tmux send-keys -t "$PANE_ID" Enter
+    sleep 1
+    [ "$(claude_child_count)" = "1" ]
+}
+
+file_fingerprint() {
+    [ -f "$1" ] || { printf ''; return 0; }
+    cksum "$1" 2>/dev/null | awk '{print $1 ":" $2}'
+}
+
 # ===========================================================================
 # A1 — spawn container-only
 # ===========================================================================
 echo
 echo "=== A1: spawn container-only ==="
 
-SPAWN_OUT="$(bash "$SPAWN_SCRIPT" "$TASK_ID" "$LIST_DIR" 2>&1)"
+# This suite is explicitly the real-Claude acceptance layer. A Codex-hosted
+# parent exports CODEX_CI/CODEX_THREAD_ID; isolate those host identities and
+# force Claude so dispatch.md and worker runtime args match the CLI launched
+# below. Runtime auto-detection is covered by test-codex-adaptation.sh instead.
+SPAWN_OUT="$(
+    unset CODEX_CI CODEX_THREAD_ID
+    ZYZ_AGENT_RUNTIME=claude bash "$SPAWN_SCRIPT" "$TASK_ID" "$LIST_DIR" 2>&1
+)"
 SPAWN_RC=$?
 
 if [ "$SPAWN_RC" -ne 0 ]; then
@@ -377,6 +465,7 @@ fi
 SHELL_PID="$(fm_field "$DISPATCH_FILE" shell-pid)"
 PANE_ID="$(fm_field "$DISPATCH_FILE" tmux-pane-id)"
 DISPATCH_PLUGIN_ROOT="$(fm_field "$DISPATCH_FILE" plugin-root)"
+DISPATCH_RUNTIME="$(fm_field "$DISPATCH_FILE" agent-runtime)"
 
 if [ -z "$SHELL_PID" ] || [ -z "$PANE_ID" ]; then
     fail "A1 dispatch.md missing shell-pid ('$SHELL_PID') or tmux-pane-id ('$PANE_ID')"
@@ -390,6 +479,19 @@ if [ -z "$SHELL_PID" ] || [ -z "$PANE_ID" ]; then
     exit 1
 fi
 info "shell-pid=$SHELL_PID  tmux-pane-id=$PANE_ID  plugin-root=$DISPATCH_PLUGIN_ROOT"
+
+if [ "$DISPATCH_RUNTIME" = "claude" ]; then
+    pass "A1 dispatch.md records agent-runtime=claude for real-Claude E2E"
+else
+    fail "A1 dispatch.md agent-runtime='$DISPATCH_RUNTIME' (expected claude; refusing to launch mismatched CLI/runtime args)"
+    fail "A2 parent-shell invariant (skipped: fixture runtime mismatch)"
+    fail "A3 exactly-once idempotency (skipped: fixture runtime mismatch)"
+    fail "A4 dispatch-bound (skipped: fixture runtime mismatch)"
+    fail "A5 command-resolves (skipped: fixture runtime mismatch)"
+    echo
+    echo "E2E RESULT: $PASSED passed, $FAILED failed"
+    exit 1
+fi
 
 # Assertion A1.2: spawn must NOT have started claude. No claude child of the
 # pane shell should exist yet.
@@ -418,74 +520,33 @@ LAUNCH_CMD="claude --plugin-dir '$LAUNCH_PLUGIN_ROOT' --permission-mode bypassPe
 info "send-keys launch into pane $PANE_ID: $LAUNCH_CMD"
 tmux send-keys -t "$PANE_ID" "$LAUNCH_CMD" Enter
 
-# Confirmation-page loop: capture -> match -> send the right key -> capture
-# again to confirm the page advanced (never blind-send). Loosely matched.
-# We make a bounded number of passes; each page may take a moment to render.
-TRUST_DONE=0
-BYPASS_DONE=0
-CONF_DEADLINE=$(( $(date +%s) + 30 ))
-while [ "$(date +%s)" -lt "$CONF_DEADLINE" ]; do
-    CONTENT="$(capture)"
-
-    # If we already see a ready UI, the confirmation pages are cleared.
-    if pane_is_ready "$CONTENT"; then
-        break
-    fi
-
-    if [ "$TRUST_DONE" -eq 0 ] && pane_is_trust_page "$CONTENT"; then
-        info "trust-folder page detected; sending Enter"
-        tmux send-keys -t "$PANE_ID" Enter
-        # Confirm advance: the trust page text should disappear.
-        sleep 1
-        AFTER="$(capture)"
-        if ! pane_is_trust_page "$AFTER"; then
-            TRUST_DONE=1
-            info "trust-folder page advanced"
-        fi
-        continue
-    fi
-
-    if [ "$BYPASS_DONE" -eq 0 ] && pane_is_bypass_page "$CONTENT"; then
-        # Default cursor is on "No, exit"; Down then Enter selects "Yes, I accept".
-        info "bypass-permissions risk page detected; sending Down then Enter"
-        tmux send-keys -t "$PANE_ID" Down
-        sleep 1
-        tmux send-keys -t "$PANE_ID" Enter
-        sleep 1
-        AFTER="$(capture)"
-        if ! pane_is_bypass_page "$AFTER"; then
-            BYPASS_DONE=1
-            info "bypass-permissions risk page advanced"
-        fi
-        continue
-    fi
-
-    # Neither a known confirmation page nor ready yet — give it a moment.
-    sleep 1
-done
-
-# Readiness probe (<=30s). On timeout, print the pane for diagnosis (no hang).
+# State-aware confirmation/readiness probe (<=45s). A page may change from
+# trust to bypass confirmation, so every iteration reclassifies current state;
+# there are no stale TRUST_DONE/BYPASS_DONE flags and no blind late-page Enter.
 READY=0
-READY_DEADLINE=$(( $(date +%s) + 30 ))
+CLAUDE_WAS_SEEN=0
+READY_DEADLINE=$(( $(date +%s) + 45 ))
 while [ "$(date +%s)" -lt "$READY_DEADLINE" ]; do
     CONTENT="$(capture)"
-    if pane_is_ready "$CONTENT"; then
+    CURRENT_CHILD_COUNT="$(claude_child_count)"
+    if [ "$CURRENT_CHILD_COUNT" = "1" ]; then
+        CLAUDE_WAS_SEEN=1
+    elif [ "$CLAUDE_WAS_SEEN" -eq 1 ]; then
+        info "Claude direct child disappeared during confirmation handling"
+        break
+    fi
+    if [ "$CURRENT_CHILD_COUNT" = "1" ] && pane_is_ready "$CONTENT"; then
         READY=1
         break
     fi
-    # A late-appearing confirmation page can still show up; clear it loosely.
-    if pane_is_trust_page "$CONTENT"; then
-        tmux send-keys -t "$PANE_ID" Enter
-    elif pane_is_bypass_page "$CONTENT"; then
-        tmux send-keys -t "$PANE_ID" Down
-        sleep 1
-        tmux send-keys -t "$PANE_ID" Enter
+    if pane_is_confirmation_page "$CONTENT"; then
+        advance_confirmation_page "$CONTENT" || true
     fi
     sleep 1
 done
 
 if [ "$READY" -ne 1 ]; then
-    fail "A2 claude did not reach a ready prompt within 30s"
+    fail "A2 claude did not remain a direct live child and reach a non-confirmation ready prompt within 45s"
     dump_pane "pane content at readiness timeout" "$(capture)"
 fi
 
@@ -531,31 +592,55 @@ fi
 echo
 echo "=== A4: dispatch-bound (trivial LLM round-trip; CONSUMES API QUOTA) ==="
 
-# Send a trivial prompt to force the first LLM round-trip. The session pointer +
-# transcript files only materialize AFTER that round-trip, which is what flips
-# orch-check-worker.sh dispatch-bound to true.
-info "sending trivial prompt 'reply with PONG' to drive the first LLM round-trip"
-tmux send-keys -t "$PANE_ID" "reply with PONG" Enter
+# Send only after a fresh boundary check proves input still targets the one live
+# Claude child, not a zsh pane left behind by a rejected confirmation page.
+A4_SENT=0
+if claude_session_ready_now; then
+    info "sending trivial prompt 'reply with PONG' to the verified live Claude child"
+    tmux send-keys -t "$PANE_ID" "reply with PONG" Enter
+    A4_SENT=1
+else
+    info "refusing A4 prompt: pane is not one direct live, non-confirmation-ready Claude session"
+fi
 
 # Poll orch-check-worker.sh for dispatch-bound=true (it lazily fills Phase-2 and
 # discovers the transcript once it lands). Up to ~60s.
 A4_BOUND=""
 A4_ALIVE=""
+A4_PONG=0
+A4_READY_AFTER=0
 A4_DEADLINE=$(( $(date +%s) + 60 ))
-while [ "$(date +%s)" -lt "$A4_DEADLINE" ]; do
+while [ "$A4_SENT" -eq 1 ] && [ "$(date +%s)" -lt "$A4_DEADLINE" ]; do
     CHECK_OUT="$(bash "$CHECK_SCRIPT" "$TASK_ID" "$LIST_DIR" 2>/dev/null || true)"
     A4_BOUND="$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^dispatch-bound=//p')"
     A4_ALIVE="$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^session-alive=//p')"
-    if [ "$A4_BOUND" = "true" ]; then
+    A4_CONTENT="$(capture)"
+    # Full-line response equality after an explicit, finite Claude decoration
+    # set: substring containment is banned because the echoed user prompt itself
+    # contains PONG and would satisfy it tautologically. Claude 2.1.251 renders
+    # completed assistant output with `⏺`; older supported UIs use ●/•/*/│.
+    if printf '%s\n' "$A4_CONTENT" | grep -qE '^[[:space:]│●•*⏺]*PONG[[:space:]]*$'; then
+        A4_PONG=1
+    fi
+    if claude_session_ready_now; then
+        A4_READY_AFTER=1
+    else
+        A4_READY_AFTER=0
+    fi
+    if [ "$A4_BOUND" = "true" ] && [ "$A4_ALIVE" = "true" ] \
+        && [ "$A4_PONG" -eq 1 ] && [ "$A4_READY_AFTER" -eq 1 ]; then
         break
     fi
     sleep 3
 done
 
-if [ "$A4_BOUND" = "true" ] && [ "$A4_ALIVE" = "true" ]; then
-    pass "A4 dispatch-bound=true and session-alive=true (worker bound to claude session)"
+if [ "$A4_SENT" -eq 1 ] && [ "$A4_BOUND" = "true" ] && [ "$A4_ALIVE" = "true" ] \
+    && [ "$A4_PONG" -eq 1 ] && [ "$A4_READY_AFTER" -eq 1 ]; then
+    A4_OK=1
+    pass "A4 dispatch-bound/session-alive with PONG and live Claude ready for next input"
 else
-    fail "A4 dispatch-bound='$A4_BOUND' session-alive='$A4_ALIVE' (expected both true within 60s)"
+    A4_OK=0
+    fail "A4 sent=$A4_SENT dispatch-bound='$A4_BOUND' session-alive='$A4_ALIVE' pong=$A4_PONG ready-after=$A4_READY_AFTER (expected all positive within 60s)"
     dump_pane "orch-check-worker.sh output" "$(bash "$CHECK_SCRIPT" "$TASK_ID" "$LIST_DIR" 2>&1 || true)"
     dump_pane "dispatch.md" "$(cat "$DISPATCH_FILE" 2>/dev/null)"
     dump_pane "pane content" "$(capture)"
@@ -567,7 +652,7 @@ fi
 #      already-launched session — no new claude process)
 # ===========================================================================
 echo
-echo "=== A5: command-resolves (no 'Unknown command'; CONSUMES API QUOTA) ==="
+echo "=== A5: command-resolves (positive transcript evidence; CONSUMES API QUOTA) ==="
 
 # Send the exact spelling the L2 orch-driver-agent sends — the namespaced
 # `/zyz-worker:execute-task <task-id>` — into the SAME recorded pane that A2-A4
@@ -576,33 +661,62 @@ echo "=== A5: command-resolves (no 'Unknown command'; CONSUMES API QUOTA) ==="
 # exists as a skill — name collision), so a worker fed the bare form dies at the
 # very first hop with `Unknown command: /execute-task`. The namespaced form must
 # resolve.
-info "sending '/zyz-worker:execute-task $TASK_ID' into pane $PANE_ID"
-tmux send-keys -t "$PANE_ID" "/zyz-worker:execute-task $TASK_ID" Enter
+# The independent positive observation is transcript advancement from a
+# quiescent post-PONG baseline. Pane substring containment is insufficient: the
+# terminal echoes typed input even when zsh, rather than Claude, owns the pane.
+A5_TRANSCRIPT="$(fm_field "$DISPATCH_FILE" transcript-path)"
+A5_BEFORE_FP="$(file_fingerprint "$A5_TRANSCRIPT")"
+A5_SENT=0
+if [ "$A4_OK" -eq 1 ] && [ -n "$A5_TRANSCRIPT" ] && [ -n "$A5_BEFORE_FP" ] \
+    && claude_session_ready_now; then
+    info "sending '/zyz-worker:execute-task $TASK_ID' to verified live Claude child"
+    tmux send-keys -t "$PANE_ID" "/zyz-worker:execute-task $TASK_ID" Enter
+    A5_SENT=1
+else
+    info "refusing A5 command: no live-ready Claude or no quiescent transcript baseline"
+fi
 
-# PASS contract is a NEGATIVE assertion: within the same bounded poll deadline
-# the readiness probe uses (~30s), the pane must NOT contain `Unknown command`.
-# We do NOT reuse pane_is_ready as a positive signal — its alternation already
-# substring-matches `/execute-task`, so the echoed command text would
-# self-satisfy any positive "resolved" check. We only observe that the command
-# RESOLVED (was accepted / the worker began the workflow); we do NOT wait for
-# the execute-task workflow to complete. The EXIT-trap teardown kills the
-# session afterward.
 A5_UNKNOWN=0
+A5_CHILD_LOST=0
+A5_TRANSCRIPT_ADVANCED=0
+A5_STABLE=0
+A5_ADVANCED_AT=""
 A5_DEADLINE=$(( $(date +%s) + 30 ))
-while [ "$(date +%s)" -lt "$A5_DEADLINE" ]; do
+while [ "$A5_SENT" -eq 1 ] && [ "$(date +%s)" -lt "$A5_DEADLINE" ]; do
     A5_CONTENT="$(capture)"
     if printf '%s\n' "$A5_CONTENT" | grep -qF "Unknown command"; then
         A5_UNKNOWN=1
         break
     fi
+    if [ "$(claude_child_count)" != "1" ] || [ -z "$(claude_child_newest)" ]; then
+        A5_CHILD_LOST=1
+        break
+    fi
+    A5_AFTER_FP="$(file_fingerprint "$A5_TRANSCRIPT")"
+    if [ -n "$A5_AFTER_FP" ] && [ "$A5_AFTER_FP" != "$A5_BEFORE_FP" ]; then
+        A5_TRANSCRIPT_ADVANCED=1
+        if [ -z "$A5_ADVANCED_AT" ]; then
+            A5_ADVANCED_AT="$(date +%s)"
+        fi
+    fi
+    # Do not succeed on the first transcript write: an immediate resolver
+    # diagnostic may render just after that write. Keep observing the same
+    # live child and pane for three seconds after positive transcript evidence.
+    if [ "$A5_TRANSCRIPT_ADVANCED" -eq 1 ] \
+        && [ $(( $(date +%s) - A5_ADVANCED_AT )) -ge 3 ]; then
+        A5_STABLE=1
+        break
+    fi
     sleep 1
 done
 
-if [ "$A5_UNKNOWN" -eq 0 ]; then
-    pass "A5 '/zyz-worker:execute-task' resolved (no 'Unknown command' in pane within 30s)"
+if [ "$A5_SENT" -eq 1 ] && [ "$A5_UNKNOWN" -eq 0 ] \
+    && [ "$A5_CHILD_LOST" -eq 0 ] && [ "$A5_TRANSCRIPT_ADVANCED" -eq 1 ] \
+    && [ "$A5_STABLE" -eq 1 ]; then
+    pass "A5 '/zyz-worker:execute-task' handled by live Claude (transcript advanced; child stable; no Unknown command)"
 else
-    fail "A5 pane shows 'Unknown command' — the slash command did NOT resolve"
-    dump_pane "pane content (Unknown command observed)" "$(capture)"
+    fail "A5 sent=$A5_SENT transcript-advanced=$A5_TRANSCRIPT_ADVANCED stable=$A5_STABLE unknown=$A5_UNKNOWN child-lost=$A5_CHILD_LOST — positive live-Claude command handling not proved"
+    dump_pane "pane content at A5 failure" "$(capture)"
 fi
 
 # ===========================================================================

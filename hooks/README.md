@@ -148,9 +148,13 @@ the session cwd contains a `.zyz-worker/current-task` pointer (first line:
 task id, or a task-directory path) resolving to an existing task directory.
 The main agent writes that pointer at workflow §1 Start Task.
 
-The manifest resolves hook scripts through `CODEX_PLUGIN_ROOT`, then the
-orchestrated `ZYZ_PLUGIN_ROOT`, then `CLAUDE_PLUGIN_ROOT`. A bare `./hooks`
-path is not sufficient: Codex 0.147.0 resolves it from the worker cwd. Tool
+The manifest resolves hook scripts through the host-provided `PLUGIN_ROOT`,
+then the orchestrated `ZYZ_PLUGIN_ROOT`, then `CLAUDE_PLUGIN_ROOT`, and finally
+the legacy, non-canonical `CODEX_PLUGIN_ROOT`. Unset and empty values both fall
+through to the next variable. If every root is missing, the hook succeeds as a
+no-op; it never searches the session cwd, a source checkout, or a marketplace
+path. A bare `./hooks` path is not sufficient: Codex 0.147.0 resolves it from
+the worker cwd. Tool
 matchers accept both Claude names (`Agent`, `Bash`) and
 Codex names (`spawn_agent`/`collaboration.spawn_agent`,
 `exec_command`/`functions.exec`). Hook scripts resolve the base directory from

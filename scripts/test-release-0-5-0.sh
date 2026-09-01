@@ -55,7 +55,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
-EXPECTED_VERSION="0.18.1"
+EXPECTED_VERSION="0.18.2"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns. Derived so a version bump only requires editing EXPECTED_VERSION above.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
@@ -370,6 +370,321 @@ run_T3() {
 # ---------------------------------------------------------------------------
 # T4.  pack.sh smoke
 # ---------------------------------------------------------------------------
+
+# Archive-equivalence mutation manifest (implementationAgent executes against
+# a throwaway pack.sh/archive, restoring the candidate after every mutation):
+#
+# mutation                                      required red cases
+# omit every git-mode-120000 path               exact tracked path set,
+#                                               exact entry type/mode,
+#                                               exact symlink targets
+# follow a tracked symlink as regular/dir       exact tracked path set and/or
+#                                               exact entry type/mode,
+#                                               exact symlink targets
+# change one symlink payload target             exact symlink targets
+# change 100755 to 100644 (or inverse)           exact entry type/mode
+# change one regular-file byte                   exact regular-file bytes
+# add one untracked archive entry                exact tracked path set
+#
+# The oracle is deliberately not derived from ZIP members. In candidate mode,
+# an explicitly selected Git tree supplies the exact path/mode set while a
+# defined candidate root supplies current regular bytes and symlink targets.
+# In commit mode, the selected commit/tag supplies both metadata and blob bytes.
+#
+# Coverage ceiling: ZIP names must be safely representable as relative POSIX
+# paths. Optional directory records and `./` components are normalized, but
+# absolute paths, `..`, backslashes, empty components, unsafe directory records,
+# and duplicate normalized names fail closed. Git submodules and non-blob tree
+# entries are outside this plugin archive contract and fail source selection.
+# Git mode 120000 specifies symlink type but no portable permission bits, so the
+# symlink check compares semantic Git mode 120000 plus exact target bytes; regular
+# modes compare exact 0644/0755 permission bits and file type.
+
+t4_skip_archive_equivalence() { # reason
+    local reason="$1"
+    skip "T4 archive oracle selects an explicit tree/commit and byte source ($reason)"
+    skip "T4 archive has exact normalized tracked path set ($reason)"
+    skip "T4 archive entry types and Git modes are exact ($reason)"
+    skip "T4 archive symlink targets are exact ($reason)"
+    skip "T4 archive regular-file bytes are exact ($reason)"
+}
+
+t4_check_archive_equivalence() { # zip-path
+    local zip_path="$1"
+    if ! command -v python3 >/dev/null 2>&1; then
+        t4_skip_archive_equivalence "python3 unavailable"
+        return
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        t4_skip_archive_equivalence "git unavailable"
+        return
+    fi
+
+    local verify_mode="${ZYZ_RELEASE_VERIFY_MODE:-auto}"
+    local verify_treeish="${ZYZ_RELEASE_TREEISH:-}"
+    local candidate_root="${ZYZ_RELEASE_CANDIDATE_ROOT:-$REPO_ROOT}"
+    case "$verify_mode" in
+        auto)
+            if git -C "$REPO_ROOT" rev-parse --verify -q "v${EXPECTED_VERSION}^{commit}" >/dev/null 2>&1; then
+                verify_mode="commit"
+                [ -n "$verify_treeish" ] || verify_treeish="v${EXPECTED_VERSION}"
+            else
+                verify_mode="candidate"
+                [ -n "$verify_treeish" ] || verify_treeish="HEAD"
+            fi
+            ;;
+        candidate)
+            [ -n "$verify_treeish" ] || verify_treeish="HEAD"
+            ;;
+        commit)
+            [ -n "$verify_treeish" ] || verify_treeish="v${EXPECTED_VERSION}"
+            ;;
+        *)
+            fail "T4 archive oracle selects an explicit tree/commit and byte source (invalid ZYZ_RELEASE_VERIFY_MODE='$verify_mode')"
+            skip "T4 archive has exact normalized tracked path set (invalid archive verification mode)"
+            skip "T4 archive entry types and Git modes are exact (invalid archive verification mode)"
+            skip "T4 archive symlink targets are exact (invalid archive verification mode)"
+            skip "T4 archive regular-file bytes are exact (invalid archive verification mode)"
+            return
+            ;;
+    esac
+
+    local oracle_results
+    oracle_results="$(mktemp "${TMPDIR:-/tmp}/zyz-rel-archive-oracle.XXXXXX")"
+    python3 - "$REPO_ROOT" "$zip_path" "$verify_mode" "$verify_treeish" "$candidate_root" >"$oracle_results" <<'PY'
+import os
+import stat
+import subprocess
+import sys
+import zipfile
+
+repo, archive, source_mode, treeish, candidate_root = sys.argv[1:]
+names = (
+    "archive oracle selects an explicit tree/commit and byte source",
+    "archive has exact normalized tracked path set",
+    "archive entry types and Git modes are exact",
+    "archive symlink targets are exact",
+    "archive regular-file bytes are exact",
+)
+
+def clean(value):
+    text = str(value).encode("utf-8", "backslashreplace").decode("utf-8")
+    return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")[:1600]
+
+def emit(ok, name, detail=""):
+    print(("PASS" if ok else "FAIL") + "\tT4 " + name + "\t" + clean(detail))
+
+def git(*args):
+    return subprocess.check_output(["git", "-C", repo, *args], stderr=subprocess.STDOUT)
+
+def normalize_archive_name(name, directory=False):
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise ValueError("empty/NUL archive name")
+    if name.startswith("/") or name.startswith("\\") or "\\" in name:
+        raise ValueError("absolute or backslash archive name: " + repr(name))
+    raw_parts = name.split("/")
+    parts = []
+    for index, part in enumerate(raw_parts):
+        if part == "" and directory and index == len(raw_parts) - 1:
+            continue
+        if part == ".":
+            continue
+        if part in ("", ".."):
+            raise ValueError("unsafe archive component in " + repr(name))
+        parts.append(part)
+    if not parts:
+        raise ValueError("archive name normalizes empty: " + repr(name))
+    return "/".join(parts)
+
+expected = {}
+expected_bytes = {}
+selection_errors = []
+resolved_tree = ""
+resolved_commit = ""
+try:
+    resolved_tree = git("rev-parse", "--verify", treeish + "^{tree}").decode("ascii").strip()
+    if source_mode == "commit":
+        resolved_commit = git("rev-parse", "--verify", treeish + "^{commit}").decode("ascii").strip()
+    tree_raw = git("ls-tree", "-rz", "--full-tree", resolved_tree)
+    for record in tree_raw.split(b"\0"):
+        if not record:
+            continue
+        meta, raw_path = record.split(b"\t", 1)
+        mode_b, kind_b, oid_b = meta.split(b" ", 2)
+        mode = mode_b.decode("ascii")
+        kind = kind_b.decode("ascii")
+        oid = oid_b.decode("ascii")
+        path = os.fsdecode(raw_path)
+        try:
+            canonical_path = normalize_archive_name(path)
+        except Exception as exc:
+            selection_errors.append(f"unsafe selected Git path {path!r}: {exc}")
+            continue
+        if canonical_path != path:
+            selection_errors.append(f"selected Git path is not canonical POSIX-relative: {path!r}")
+            continue
+        if kind != "blob" or mode not in ("100644", "100755", "120000"):
+            selection_errors.append(f"unsupported tree entry {mode} {kind} {path!r}")
+            continue
+        expected[path] = (mode, oid)
+
+    blob_cache = {}
+    candidate_root = os.path.realpath(candidate_root)
+    for path, (mode, oid) in expected.items():
+        if source_mode == "commit":
+            if oid not in blob_cache:
+                blob_cache[oid] = git("cat-file", "blob", oid)
+            expected_bytes[path] = blob_cache[oid]
+            continue
+        source_path = os.path.join(candidate_root, *path.split("/"))
+        try:
+            source_stat = os.lstat(source_path)
+        except OSError as exc:
+            selection_errors.append(f"candidate source missing {path!r}: {exc}")
+            continue
+        if mode == "120000":
+            if not stat.S_ISLNK(source_stat.st_mode):
+                selection_errors.append(f"candidate source {path!r} is not symlink for git mode 120000")
+                continue
+            expected_bytes[path] = os.fsencode(os.readlink(source_path))
+        else:
+            if not stat.S_ISREG(source_stat.st_mode):
+                selection_errors.append(f"candidate source {path!r} is not regular for git mode {mode}")
+                continue
+            executable = bool(stat.S_IMODE(source_stat.st_mode) & 0o111)
+            if executable != (mode == "100755"):
+                selection_errors.append(f"candidate source executable bit disagrees for {path!r}: git={mode}")
+            with open(source_path, "rb") as handle:
+                expected_bytes[path] = handle.read()
+except Exception as exc:
+    selection_errors.append(f"tree/source selection failed: {exc}")
+
+selection_detail = (
+    f"mode={source_mode} treeish={treeish} tree={resolved_tree} "
+    f"commit={resolved_commit or '<candidate-bytes>'} candidate_root={candidate_root} "
+    f"entries={len(expected)} errors={selection_errors[:8]}"
+)
+emit(not selection_errors and bool(resolved_tree) and bool(expected), names[0], selection_detail)
+
+actual = {}
+directory_records = []
+archive_errors = []
+try:
+    with zipfile.ZipFile(archive, "r") as bundle:
+        for info in bundle.infolist():
+            try:
+                normalized = normalize_archive_name(info.filename, info.is_dir())
+            except Exception as exc:
+                archive_errors.append(str(exc))
+                continue
+            if info.is_dir():
+                directory_records.append(normalized)
+                continue
+            if normalized in actual:
+                archive_errors.append(f"duplicate normalized archive path {normalized!r}")
+                continue
+            try:
+                payload = bundle.read(info)
+            except Exception as exc:
+                archive_errors.append(f"cannot read {normalized!r}: {exc}")
+                payload = None
+            unix_mode = (info.external_attr >> 16) & 0xFFFF
+            actual[normalized] = (unix_mode, payload, info.filename, info.create_system)
+except Exception as exc:
+    archive_errors.append(f"archive parse failed: {exc}")
+
+valid_directories = set()
+for path in expected:
+    pieces = path.split("/")
+    for index in range(1, len(pieces)):
+        valid_directories.add("/".join(pieces[:index]))
+unexpected_directories = sorted(set(directory_records) - valid_directories)
+missing = sorted(set(expected) - set(actual))
+extra = sorted(set(actual) - set(expected))
+path_ok = not selection_errors and not archive_errors and not unexpected_directories and not missing and not extra
+emit(path_ok, names[1],
+     f"expected={len(expected)} actual={len(actual)} missing={missing[:12]} extra={extra[:12]} "
+     f"unsafe_or_duplicate={archive_errors[:8]} unexpected_dirs={unexpected_directories[:8]}")
+
+mode_errors = []
+for path, (git_mode, _) in expected.items():
+    row = actual.get(path)
+    if row is None:
+        mode_errors.append(f"missing {path!r} ({git_mode})")
+        continue
+    unix_mode, _, original_name, create_system = row
+    if create_system != 3 or unix_mode == 0:
+        mode_errors.append(f"{path!r} lacks Unix mode metadata: create_system={create_system} mode={oct(unix_mode)}")
+        continue
+    if git_mode == "120000":
+        if not stat.S_ISLNK(unix_mode):
+            mode_errors.append(f"{path!r} expected git mode 120000 symlink, archive mode={oct(unix_mode)}")
+    else:
+        wanted_perm = 0o755 if git_mode == "100755" else 0o644
+        if not stat.S_ISREG(unix_mode) or stat.S_IMODE(unix_mode) != wanted_perm:
+            mode_errors.append(f"{path!r} expected {git_mode}, archive mode={oct(unix_mode)}")
+emit(not selection_errors and not mode_errors, names[2], f"errors={mode_errors[:12]}")
+
+link_errors = []
+for path, (git_mode, _) in expected.items():
+    if git_mode != "120000":
+        continue
+    row = actual.get(path)
+    if row is None:
+        link_errors.append(f"missing symlink {path!r}")
+        continue
+    unix_mode, payload, _, _ = row
+    if not stat.S_ISLNK(unix_mode):
+        link_errors.append(f"{path!r} is not a symlink: mode={oct(unix_mode)}")
+    elif path not in expected_bytes:
+        link_errors.append(f"no independent expected target for {path!r}")
+    elif payload != expected_bytes[path]:
+        link_errors.append(f"{path!r} target bytes differ: archive={payload!r} expected={expected_bytes[path]!r}")
+emit(not selection_errors and not link_errors, names[3],
+     f"tracked_symlinks={sum(1 for mode, _ in expected.values() if mode == '120000')} errors={link_errors[:12]}")
+
+byte_errors = []
+for path, (git_mode, _) in expected.items():
+    if git_mode == "120000":
+        continue
+    row = actual.get(path)
+    if row is None:
+        byte_errors.append(f"missing regular file {path!r}")
+        continue
+    unix_mode, payload, _, _ = row
+    if not stat.S_ISREG(unix_mode):
+        byte_errors.append(f"{path!r} is not regular: mode={oct(unix_mode)}")
+    elif path not in expected_bytes:
+        byte_errors.append(f"no independent expected bytes for {path!r}")
+    elif payload != expected_bytes[path]:
+        byte_errors.append(f"{path!r} byte content differs")
+emit(not selection_errors and not byte_errors, names[4],
+     f"regular_files={sum(1 for mode, _ in expected.values() if mode != '120000')} errors={byte_errors[:12]}")
+PY
+    local oracle_rc=$?
+    if [ "$oracle_rc" -ne 0 ]; then
+        fail "T4 archive equivalence oracle crashed (rc=$oracle_rc, mode=$verify_mode treeish=$verify_treeish candidate_root=$candidate_root)"
+        t4_skip_archive_equivalence "oracle crashed before emitting complete results"
+        rm -f "$oracle_results"
+        return
+    fi
+
+    local verdict description detail result_count=0
+    while IFS="$(printf '\t')" read -r verdict description detail; do
+        [ -n "$verdict" ] || continue
+        result_count=$((result_count + 1))
+        case "$verdict" in
+            PASS) pass "$description${detail:+ — $detail}" ;;
+            FAIL) fail "$description${detail:+ — $detail}" ;;
+            *) fail "T4 archive equivalence oracle emitted unknown verdict '$verdict': $description $detail" ;;
+        esac
+    done <"$oracle_results"
+    rm -f "$oracle_results"
+    if [ "$result_count" -ne 5 ]; then
+        fail "T4 archive equivalence oracle emitted $result_count results, expected exactly 5"
+    fi
+}
+
 run_T4() {
     say_header "T4  pack.sh smoke"
 
@@ -401,6 +716,7 @@ run_T4() {
         do
             skip "T4 $i (pack.sh not runnable)"
         done
+        t4_skip_archive_equivalence "pack.sh not runnable"
         return
     fi
 
@@ -474,6 +790,7 @@ $(printf '%s\n' "$stdout_content" | sed 's/^/      | /')"
         do
             skip "T4 $i (zip artifact missing)"
         done
+        t4_skip_archive_equivalence "zip artifact missing"
         return
     fi
 
@@ -555,6 +872,10 @@ $(printf '%s\n' "$zip_listing" | grep -E "[[:space:]]${prefix//./\\.}" | sed 's/
         check_zip_absent_prefix "dist/"
         check_zip_absent_prefix "docs/superpowers/"
     fi
+
+    # Exact archive/tree equivalence. This is independent of the spot checks
+    # above and is the load-bearing release-content gate.
+    t4_check_archive_equivalence "$zip_path"
 
     # Size sanity: 50KB .. 5MB
     local size_bytes
