@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-09-01
+
+- **Teach the `git-worktree` skill copy-on-miss for untracked-but-required
+  files.** A fresh worktree only holds what git tracks, so gitignored local
+  files a project needs to build/start/test (`conf/test.yaml`, `.env`, local
+  fixtures) are simply absent — and the failure looks like a broken branch
+  rather than a missing file. The skill now carries an on-demand procedure:
+  resolve the main work tree from `git worktree list --porcelain`, verify the
+  path exists there and is untracked (a tracked-but-missing path is a checkout
+  problem that copying would mask), refuse to overwrite, then `cp -p` into the
+  same relative path and report the copy. Invariants: copy rather than symlink
+  (a symlink leaks a worktree's writes into the main tree and every other
+  worktree, defeating the isolation); config/fixture files only — reinstall
+  dependency trees and rebuild outputs instead; never bulk-copy everything
+  gitignored; copied secrets stay untracked; missing in the main work tree too
+  is a stop, not a cue to synthesize from a `.example`; and the copies make a
+  later `git worktree remove` require `--force`.
+
 ## [0.18.0] — 2026-08-28
 
 - **Remove the sibling-worktree fallback from task-pointer resolution (#18).**

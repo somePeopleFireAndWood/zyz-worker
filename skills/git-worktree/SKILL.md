@@ -1,6 +1,6 @@
 ---
 name: git-worktree
-description: Use when the user or another agent needs to run `git worktree add` (create), list, move, remove, lock, unlock, prune, or repair a git worktree. Provides a default target path `~/.zyz-worker/worktrees/${repo}/${branch}` when `git worktree add` is called without an explicit target.
+description: Use when the user or another agent needs to run `git worktree add` (create), list, move, remove, lock, unlock, prune, or repair a git worktree. Provides a default target path `~/.zyz-worker/worktrees/${repo}/${branch}` when `git worktree add` is called without an explicit target. Also covers untracked-but-required local files (e.g. `conf/test.yaml`, `.env`) that a fresh worktree lacks and must be copied from the main work tree.
 ---
 
 # Git Worktree
@@ -112,12 +112,57 @@ Run `git worktree prune` to clean up administrative metadata for worktrees whose
 
 Run `git worktree repair [<path>...]` to fix the bidirectional links between the main repository and its worktrees after the main repository or a worktree was moved.
 
+## Untracked-but-required files (copy-on-miss)
+
+A worktree only ever contains what git tracks on the checked-out branch. Files that the project needs to build, start, or test but that are deliberately not under git management — a local config such as `conf/test.yaml`, an `.env`, a credentials or fixture file listed in `.gitignore` — therefore do **not** exist in a fresh worktree, even though they exist in the main work tree and everything "looks" checked out.
+
+Rule: when work inside a worktree hits a missing file of this kind, copy it from the main work tree into the worktree at the same relative path, then continue. Do not ask the user to place it manually, and do not work around it by editing the code or the test to look elsewhere.
+
+Trigger on demand, not upfront. Do not bulk-copy everything gitignored — that sweeps in `node_modules/`, `.venv/`, `target/`, `dist/`, and build caches. Copy only when a concrete signal points at a concrete path:
+
+- a run/build/test fails with a missing-file error (`no such file or directory`, `config not found`, a loader naming the path);
+- config or code references a path that is absent in the worktree but present in the main work tree.
+
+Procedure:
+
+```bash
+# Main work tree = first entry of `git worktree list --porcelain`.
+MAIN_ROOT="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+REL="conf/test.yaml"   # path relative to the repo root, from the error message
+
+# 1. It must exist in the main work tree.
+test -f "$MAIN_ROOT/$REL" || { echo "not present in main work tree either: $REL"; exit 1; }
+
+# 2. It must be untracked there. A tracked path missing from the worktree is a
+#    checkout/branch problem, not a missing local file — copying would mask it.
+git -C "$MAIN_ROOT" ls-files --error-unmatch "$REL" >/dev/null 2>&1 \
+  && { echo "tracked by git: $REL — investigate the checkout, do not copy"; exit 1; }
+
+# 3. Never overwrite what the worktree already has.
+test -e "$REL" && { echo "already present in worktree: $REL"; exit 0; }
+
+# 4. Copy, preserving mode and timestamps.
+mkdir -p "$(dirname "$REL")"
+cp -p "$MAIN_ROOT/$REL" "$REL"
+echo "copied untracked file from main work tree: $MAIN_ROOT/$REL -> $(pwd)/$REL"
+```
+
+Key invariants:
+
+- **Copy, do not symlink.** A symlink back into the main work tree makes a worktree's writes leak into the main tree and into every other worktree sharing it, which breaks the isolation the worktree exists for. Symlink only when the user explicitly asks, or for a large read-only cache.
+- **Files, not dependency trees.** If what is missing is an installed dependency directory or a build output, install/build it inside the worktree instead of copying. Copy small config, fixture, and credential files.
+- **Report every copy.** Print one line naming source and destination (as above) so the user can see that the worktree is no longer a pure checkout, and record it in the task status file when the task is long-running. Silent copies produce "works in the worktree, fails in CI" mysteries.
+- **A copied secret stays untracked.** These files are gitignored for a reason; after copying, confirm `git status --porcelain` does not list the path (i.e. the worktree's `.gitignore` also covers it) and never stage or commit it.
+- **Missing in the main work tree too is a stop.** Do not synthesize the file from a `.example` template or from guesswork; report it and let the user supply it.
+- Copies are untracked data, so a later `git worktree remove` on that worktree will need `--force` (see `### remove`).
+
 ## Failure modes
 
 - **Target path already exists.** Any file or directory at `$TARGET` (including an empty directory) trips pre-check 1. Do not silently overwrite; report the conflict and suggest either a different path or an explicit `--force`. Typical raw git error if this slips past the pre-check: `fatal: '<path>' already exists`.
 - **Target path is already a registered worktree.** Pre-check 2 fires when the normalized `$TARGET` exactly matches a line in `git worktree list --porcelain`'s worktree entries. Suggest `git worktree remove "$TARGET"` first, or choose a different path. Typical raw git error: `fatal: '<path>' is already checked out at '...'`.
 - **Not inside a git work tree.** `git rev-parse --show-toplevel` exits non-zero. Abort and tell the user to `cd` into a git working tree before retrying. Do not fall back to `pwd`.
 - **Bare repository.** `git rev-parse --show-toplevel` also exits non-zero in a bare repo (stderr contains `fatal: this operation must be run in a work tree`). In this case, ask the user to supply an explicit target path instead of relying on the default rule.
+- **Fresh worktree cannot build, start, or run its tests.** The usual cause is an untracked local file that only exists in the main work tree (`conf/test.yaml`, `.env`, a local fixture). Do not conclude the branch is broken; apply the copy-on-miss procedure above for the specific path named by the error.
 - **Illegal branch name.** Branch names containing characters that git itself rejects are not sanitized by this skill. `git worktree add` will surface the underlying git error. Note that `mkdir -p` may already have created harmless intermediate directories (for example `<project>/..`) before git rejects the branch name; this is an expected side effect, not a bug.
 
 ## Long-Running Considerations
