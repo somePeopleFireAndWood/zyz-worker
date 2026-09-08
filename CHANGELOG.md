@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Give every design document a `## Quick Review` approval surface.** Directly
+  under the user-is-designer banner, above the body: `### Design Summary` (the
+  whole design in a page or less — which modules exist and what each owns, how
+  the work divides, the key algorithms, the end-to-end flow, named as the body
+  names them) and `### Details Needing Your Attention` (implementation details
+  the user should look at before approving, each with why — an irreversible
+  decision, a real trade-off, a performance/security/data-shape consequence, a
+  deviation from local convention, an assumption made absent a user decision;
+  legitimately `none`, and not a second home for `## Open Questions`). The
+  design→implementation approval gate now points the user at this section, so
+  the direction can be judged without reading the whole spec.
+  This section is a SECOND description of the same design — the surface that
+  rots, per #20 — so three rules keep it honest: it is updated in the same edit
+  as the body, never later; when the two disagree the **body wins**; and the
+  repair is to **regenerate the affected part of the summary from the body** as
+  it now stands, not to patch the one sentence that was caught and never to
+  soften the body to match. A stale claim means the summary was derived from a
+  design state that no longer exists, so its neighbours are suspect too.
+  reviewAgent audits summary-vs-body consistency during design review and
+  reports a divergence as blocking (it misleads the approving human), stating
+  the repair as re-derivation rather than a one-line fix. 8 new T6 assertions,
+  four mutation-verified — one of them caught a self-satisfying assertion of my
+  own: a loose `/re-deriv|regenerat/` grep matched unrelated lines elsewhere in
+  SKILL.md and stayed green with the rule deleted, so it is now anchored to the
+  rule's own wording.
+
 - **Make the user's design authoritative in both phases, and gate every change
   to it on the user's prior agreement.** New `## User Design Authority` in
   `SKILL.md` and `prompts/main-agent.md`, plus `#### 3.0.0 Implement the design

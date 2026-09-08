@@ -16,6 +16,18 @@
 > agreement — no role changes the design on its own initiative, in any phase.
 > See SKILL.md `## User Design Authority`.
 
+## Quick Review
+
+<!-- FOR THE USER: read this section alone and you should be able to judge whether the overall direction is right, without reading the rest. Keep it SHORT — it is a map, not a second copy of the design. The sections below are authoritative: if this summary and the body ever disagree, the body wins — the summary is the defect, and it is fixed by RE-DERIVING the affected part from the body as it now stands, not by patching the one wrong sentence and not by editing the body to match. -->
+
+### Design Summary
+
+<!-- The whole design in a page or less: which modules/components exist and what each is responsible for, how the work is divided between them, the key algorithms, and the main flow end to end (a numbered flow or a small diagram is fine). Name things as the body names them — same module and interface names, so the user can navigate from here. -->
+
+### Details Needing Your Attention
+
+<!-- Implementation details the user specifically should look at before approving, one per line, each saying WHY it needs attention (an irreversible or hard-to-change decision; a trade-off with a real alternative; a performance/security/data-shape consequence; a place where the design deviates from local convention; an assumption made in the absence of a user decision). May be EMPTY when there is genuinely nothing of the kind — write "none" rather than manufacturing entries. Do NOT use this as a second home for open questions (`## Open Questions`) or for review history. -->
+
 ## Background
 
 ## Goals

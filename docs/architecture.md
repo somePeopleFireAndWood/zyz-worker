@@ -285,6 +285,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## Inputs` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
 - **改角色提示词**：`agents/<role>.md` 与 `subagents/<role>.md` 必须同改（正文被逐字节比对）。
 - **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## User Design Authority` 与 §3.0.0、`prompts/main-agent.md` 的同名节、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
+- **改设计文档 `## Quick Review`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`SKILL.md` 的 `## Quick Review` 定义（含「正文为准 + 冲突时从正文重新生成」三条）、§2 步骤 1/6/8、`prompts/main-agent.md` 的维护职责、review-agent 两份镜像的一致性核对、以及 T6 断言。注意：该区是设计的**第二份表述面**，所以规则不是「保持同步」而是「冲突时按正文重新生成受影响的整块」。
 - **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## Design Document Edit Discipline` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
 - **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog Enforcement` 三处口径要一致。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。

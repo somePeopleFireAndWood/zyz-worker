@@ -873,6 +873,66 @@ then
 else
     fail "T6 user-is-designer banner is kept content, not scaffolding"
 fi
+# ---- Quick Review: the user's approval surface in every design document.
+if printf '%s' "$dd_tmpl_flat" | grep -qE '## Quick Review' \
+    && printf '%s' "$dd_tmpl_flat" | grep -qE '### Design Summary' \
+    && printf '%s' "$dd_tmpl_flat" | grep -qE '### Details Needing Your Attention'; then
+    pass "T6 design-doc template has Quick Review with both subsections"
+else
+    fail "T6 design-doc template has Quick Review with both subsections"
+fi
+# Quick Review must sit ABOVE the body it summarizes (it is the section the user
+# reads to approve), and OUTSIDE the delete-on-read scaffolding.
+if python3 - <<'PYEOF'
+import sys
+t = open('skills/execute-task/templates/design-doc.md').read()
+q, b, c = t.find('## Quick Review'), t.find('## Background'), t.find('-->')
+sys.exit(0 if -1 < c < q < b else 1)
+PYEOF
+then
+    pass "T6 Quick Review sits above the body and outside the scaffolding"
+else
+    fail "T6 Quick Review sits above the body and outside the scaffolding"
+fi
+# The body-wins precedence AND the regenerate-from-body repair shape: without
+# the second half, a caught divergence gets patched one sentence at a time,
+# which is the accumulation #20 documents.
+# NOTE: the repair-shape grep is anchored to "the summary ... from the body"
+# wording. A loose /re-deriv|regenerat/ matched unrelated lines (reviewAgent's
+# "re-deriving it co-signs", the lane owning "regenerating shared build
+# artifacts") and stayed green with the rule deleted — a self-satisfying
+# assertion of exactly the kind the no-op checklist names.
+if grep -qiE 'body wins' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qiE 'REGENERATING the affected part of the summary from the body' skills/execute-task/SKILL.md 2>/dev/null; then
+    pass "T6 SKILL.md states body-wins + regenerate-from-body"
+else
+    fail "T6 SKILL.md states body-wins + regenerate-from-body"
+fi
+if printf '%s' "$dd_tmpl_flat" | grep -qiE 'body wins' \
+    && printf '%s' "$dd_tmpl_flat" | grep -qiE 'RE-DERIVING the affected part from the body'; then
+    pass "T6 design-doc template states body-wins + regenerate-from-body"
+else
+    fail "T6 design-doc template states body-wins + regenerate-from-body"
+fi
+for f in subagents/review-agent.md agents/review-agent.md; do
+    if grep -qiE 'Quick Review.{0,40}matches the body' "$f" 2>/dev/null \
+        && grep -qiE 're-derive this part of the summary from the body' "$f" 2>/dev/null; then
+        pass "T6 $f audits Quick Review and demands re-derivation"
+    else
+        fail "T6 $f audits Quick Review and demands re-derivation"
+    fi
+done
+if grep -qiE 'Keep `## Quick Review` current' skills/execute-task/prompts/main-agent.md 2>/dev/null \
+    && grep -qiE 'regenerate the affected part' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
+    pass "T6 main-agent owns keeping Quick Review current"
+else
+    fail "T6 main-agent owns keeping Quick Review current"
+fi
+if grep -qE 'Point the user at `## Quick Review`' skills/execute-task/SKILL.md 2>/dev/null; then
+    pass "T6 approval gate points the user at Quick Review"
+else
+    fail "T6 approval gate points the user at Quick Review"
+fi
 if grep -q 'Design-change requests' skills/execute-task/templates/task-status.md 2>/dev/null; then
     pass "T6 task-status records design-change requests"
 else
