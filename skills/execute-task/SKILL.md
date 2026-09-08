@@ -61,6 +61,7 @@ Use these templates when creating task artifacts:
 - When the design is split, record every document path in the status file `## Metadata > Design Document` (one per line) and add a top-level index document that lists and links the parts, so downstream roles can discover the full set.
 - The design document is the source of truth for implementation, testing, and review.
 - Review history lives OUTSIDE the design document, in a standalone review-history file per design document (see Review History Files). The design document itself carries no `## Review History` section: it stays the clean final-state spec, and downstream roles read only the final state.
+- A task's design document records ONLY the final design. A finding that corrects existing text is repaired by editing or deleting that text — never by appending an explanatory annotation beside it; a finding that names something missing is fixed by adding the missing spec (see Design Document Edit Discipline).
 - The design document must be clear enough that implementationAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue. This "proceed without asking" license applies only AFTER the human approval at §2 step 8 has actually been given (or a recorded explicit prior skip instruction) — never on the user's silence at the gate.
 - Maintain a task status file for the full workflow: design, implementation, testing, review, and delivery.
 - There must always be exactly one overall task status file that records overall state and progress. Each SubTask may optionally keep its own SubTask-status file recording that SubTask's implementation, test, review, and auto-fix progress, but the single overall status file is mandatory.
@@ -72,12 +73,30 @@ Use these templates when creating task artifacts:
 
 ## Review History Files
 
-Review history — rejected findings with reasons, review-loop iterations, and "discovered during implementation" entries — is recorded in a standalone file (or a group of files, one per design document), NOT inside the design document:
+Review history — rejected findings with reasons, findings reviewAgent labeled `non-blocking`, review-loop iterations, and "discovered during implementation" entries — is recorded in a standalone file (or a group of files, one per design document), NOT inside the design document:
 
 - For each design document `<dir>/<basename>.md`, its review history lives in the sibling file `<dir>/<basename>.review-history.md`. Create it lazily on the first entry; a design document with no review events has no review-history file.
 - When the design is split into multiple documents, each part gets its own review-history file under the same naming rule. An entry that spans parts goes into the index document's review-history file.
 - Review-history files matter ONLY to the design phase's review loop and the human approval step. They are noise for the implementation phase: when dispatching implementation-agent, test-agent, or an implementation-phase review, send the final-state design document(s) only — never include review-history files, and do not instruct those roles to read them.
 - Do NOT list review-history files in the status file `## Metadata > Design Document` (that list defines what downstream roles load). The status file's own `## Design Review > Rejected Suggestions` record is unchanged and stays where it is.
+
+## Design Document Edit Discipline
+
+This governs a TASK's design document (under the task directory) — not this repository's own `docs/`, and not any document that is itself the deliverable. The two files have disjoint jobs, and the design document must not take on the other one:
+
+| File | Job | Readers |
+|---|---|---|
+| `design.md` (each design document) | the final design spec | implementation-agent / test-agent / the approving human |
+| `design.md.review-history.md` (its sibling) | revision log: annotations, rejection reasons, adjudications, findings labeled non-blocking | the next reviewAgent / the main agent |
+
+The review-history file is not reviewed, produces no findings, and may grow without limit — it is the correct carrier for a paper trail. The design document is a reviewed surface, so anything added to it is a new text face that generates findings.
+
+- **A finding that CORRECTS existing text is repaired by editing or deleting that text, never by appending an explanation beside it.** The correct fix for a rotten number is deleting that number, not writing a paragraph about why it was deleted.
+- **A finding that names something MISSING** — an absent requirement, constraint, acceptance criterion, or under-specified mechanism — is fixed by ADDING the missing spec. That growth is expected; this discipline never argues for under-specifying, and the Design Review Standard keeps missing-requirement findings blocking.
+- **For a correcting fix the document holds flat or shrinks** — measured as `wc -c` before vs after applying the round's accepted findings. A design review round whose net effect is growth with no substantive design change is the failure mode this rule exists to stop; a round that grew because it added a genuinely missing spec is not.
+- **"Why it was changed", "what the previous version got wrong", "corrected in round N" go into `<basename>.review-history.md`** and never into the design body. Round numbers, `前版`/`previous version` references, and `订正`/`corrected` markers do not belong in a final-state spec.
+- **Do not write document-text self-check rules into the design document.** Running a grep costs nothing; writing the grep into the deliverable makes it a reviewed surface, an object of its own scan, and a new coupling point at once — measured, such a block caught ~3 issues the review had missed while itself generating 20+ findings. The design document specifies how to check **code** (mutation targets, positive anchors, no-op classification, carrier ownership — things a compiler and a test suite adjudicate). Checks over the document's own prose are performed, not written down.
+- **When stripping accumulated annotations, do it in one pass and leave no trace of the stripping.** Incremental de-annotation with a note about each removal is just another round of appending. Verify a pure-deletion strip mechanically: the set difference of identifiers and `file:line` coordinates before/after must contain only document self-references — a lost code coordinate means the strip cut into the spec.
 
 ## Automatic Execution Policy
 
@@ -180,8 +199,8 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 2. Ask the user about unclear requirements, constraints, non-goals, acceptance criteria, risky implementation details, and important tests.
 3. When the design draft is ready, use reviewAgent to review it. On re-review iterations, also pass the design document's review-history file path so reviewAgent can see prior rejection reasons.
 4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals. Do not present findings to the user.
-5. Record rejected findings with reasons in the design document's review-history file (see Review History Files) and the status file `## Design Review > Rejected Suggestions`.
-6. Update the design document and status file. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
+5. Record rejected findings with reasons in the design document's review-history file (see Review History Files) and the status file `## Design Review > Rejected Suggestions`. Record findings reviewAgent labeled `non-blocking` in the same review-history file and in the status file `## Design Review > Non-Blocking Findings Recorded To Review History` — they are recorded rather than edited into the design body, and they do not hold back `no-changes-needed`.
+6. Update the design document and status file. Apply an accepted finding that CORRECTS existing text by editing or deleting that text in place — never by appending an explanatory annotation next to it (see Design Document Edit Discipline); the reason for the change goes to the review-history file. An accepted finding that names something MISSING is fixed by adding the missing spec, and that growth is expected. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
 7. Repeat review until reviewAgent says no changes are needed.
    This loop runs automatically without user input; only step 8 below is a user touch.
 8. Wait for explicit final human approval before implementation. The main agent MUST NOT proceed to §3 until the user has given **explicit user approval** — an affirmative, unambiguous go-ahead to enter implementation (a reply to a Goals/Acceptance-Criteria escalation during design is NOT such a go-ahead). On user timeout, silence, or absence, WAIT indefinitely and NEVER self-advance into implementation. The ONLY exception is an **explicit prior skip instruction**: an instruction that explicitly authorizes skipping THIS design→implementation approval (e.g. "design then implement and release directly", "skip approval"). Generic expressions of trust or autonomy ("work autonomously", "I trust you", "I'll be away") do NOT count, and a bare goal statement ("release a version") does NOT count. Before invoking the exception, record the verbatim skip instruction into the status file `## Design Review > Design Approval Record`; do not self-advance on an unrecorded exception.

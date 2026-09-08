@@ -691,6 +691,124 @@ if grep -qi 'staging is not a loophole' skills/execute-task/prompts/main-agent.m
 else
     fail "T6 staged-installment follow-through tracked"
 fi
+# ---- Issue #20: design docs record the final design; repairs edit or delete
+# ---- the wrong text instead of appending annotations.
+#
+# Assertion shape notes (these are anti-deletion guards over PROSE, so each
+# one pins the property that a plausible mutation would break):
+#   - The heading greps are ANCHORED (`^## …$`). The unanchored form was a
+#     no-op for main-agent.md, whose own cross-references at :17 and :158
+#     contain the literal `## Design Document Edit Discipline` in backticks —
+#     so deleting the real heading left the check green.
+#   - The self-check-rule ban grep includes the NEGATION inside the matched
+#     literal. Matching only the noun phrase let the rule be inverted
+#     ("ALWAYS write document-text self-check rules…") with a green suite.
+for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+    if grep -qE '^## Design Document Edit Discipline$' "$f" 2>/dev/null; then
+        pass "T6 $f has the edit-discipline section heading (#20)"
+    else
+        fail "T6 $f has the edit-discipline section heading (#20)"
+    fi
+done
+# Both halves of the repair-shape rule must be present, not just the heading:
+# (a) edit/delete rather than annotate, (b) length holds flat or shrinks.
+for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+    if grep -qiE 'never by appending (an|any) (explanatory )?annotation' "$f" 2>/dev/null \
+        && grep -qiE '(hold flat or shrink|holds flat or shrink)' "$f" 2>/dev/null; then
+        pass "T6 $f states repair shape + no-growth (#20)"
+    else
+        fail "T6 $f states repair shape + no-growth (#20)"
+    fi
+    # The no-growth rule must NOT read as a license to under-specify: a finding
+    # naming something MISSING is fixed by adding the missing spec.
+    if grep -qiE 'MISSING' "$f" 2>/dev/null \
+        && grep -qiE 'growth is expected' "$f" 2>/dev/null; then
+        pass "T6 $f carves out additive findings from no-growth (#20)"
+    else
+        fail "T6 $f carves out additive findings from no-growth (#20)"
+    fi
+done
+# Document-text self-check rules stay OUT of the design document. Polarity is
+# inside the matched literal so the rule cannot be inverted silently.
+for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+    if grep -qiE '(do not|never) write document-text self-check rules into the design document' "$f" 2>/dev/null; then
+        pass "T6 $f bans document-text self-check rules in the design doc (#20)"
+    else
+        fail "T6 $f bans document-text self-check rules in the design doc (#20)"
+    fi
+done
+# #20 rec 2: the design.md vs review-history responsibility boundary, in BOTH
+# of its carriers (the English SKILL.md table and the Chinese design-doc mirror).
+if grep -q '| File | Job | Readers |' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -q 'review-history.md` (its sibling)' skills/execute-task/SKILL.md 2>/dev/null; then
+    pass "T6 SKILL.md carries the design/review-history responsibility table (#20)"
+else
+    fail "T6 SKILL.md carries the design/review-history responsibility table (#20)"
+fi
+if grep -q '### 设计文档的修改形态' docs/design/execute-task-skill-design.md 2>/dev/null; then
+    pass "T6 plugin design doc mirrors the edit-discipline section (#20)"
+else
+    fail "T6 plugin design doc mirrors the edit-discipline section (#20)"
+fi
+if grep -qE '^\*\*f\) 设计文档只记终态' docs/architecture.md 2>/dev/null \
+    && grep -q '改设计阶段的文档纪律' docs/architecture.md 2>/dev/null; then
+    pass "T6 architecture records mechanism f + its coupling-point row (#20)"
+else
+    fail "T6 architecture records mechanism f + its coupling-point row (#20)"
+fi
+# The template note wraps across lines, so match on the whitespace-collapsed
+# file rather than per line (a line-oriented grep silently missed it).
+dd_tmpl_flat="$(tr '\n' ' ' < skills/execute-task/templates/design-doc.md 2>/dev/null | tr -s ' ')"
+if printf '%s' "$dd_tmpl_flat" | grep -qiE 'never by appending an annotation beside it' \
+    && printf '%s' "$dd_tmpl_flat" | grep -qiE 'add a missing spec' \
+    && printf '%s' "$dd_tmpl_flat" | grep -qiE 'DELETE THIS COMMENT'; then
+    pass "T6 design-doc template carries the edit-discipline note (#20)"
+else
+    fail "T6 design-doc template carries the edit-discipline note (#20)"
+fi
+# reviewAgent calibration, in BOTH mirror copies. Body byte-equality of the
+# pair is T14's job further down THIS file (and T10's in
+# scripts/test-orchestration-helpers.sh); presence per copy is this block's.
+for f in subagents/review-agent.md agents/review-agent.md; do
+    if grep -q 'Document-Hygiene Findings Are Non-Blocking' "$f" 2>/dev/null \
+        && grep -qi 'do not let such findings hold `no-changes-needed`' "$f" 2>/dev/null; then
+        pass "T6 $f calibrates doc-hygiene findings non-blocking (#20)"
+    else
+        fail "T6 $f calibrates doc-hygiene findings non-blocking (#20)"
+    fi
+    # The calibration must NOT read as a license to report fewer findings —
+    # that would collide with the "never batch findings" hard limit and the L5
+    # dispatch-scope-guard's anti-scope-reduction posture.
+    if grep -qiE 'never a license to report less' "$f" 2>/dev/null; then
+        pass "T6 $f states non-blocking is a verdict, not less reporting (#20)"
+    else
+        fail "T6 $f states non-blocking is a verdict, not less reporting (#20)"
+    fi
+done
+# The non-blocking destination needs an OWNING RULE, not just a status-file
+# slot: an orphaned template field is filled by nobody.
+for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+    if grep -q 'Non-Blocking Findings Recorded To Review History' "$f" 2>/dev/null; then
+        pass "T6 $f owns the non-blocking recording rule (#20)"
+    else
+        fail "T6 $f owns the non-blocking recording rule (#20)"
+    fi
+done
+if grep -qi 'non-blocking' skills/execute-task/templates/review-report.md 2>/dev/null \
+    && grep -q 'Non-Blocking Findings Recorded To Review History' skills/execute-task/templates/task-status.md 2>/dev/null; then
+    pass "T6 review-report + task-status record non-blocking findings (#20)"
+else
+    fail "T6 review-report + task-status record non-blocking findings (#20)"
+fi
+# L5 must treat the new blocking/non-blocking vocabulary as a scope cap; the
+# change minted that vocabulary, so "report only blocking findings" became a
+# sanctioned-looking way to ask for less.
+if grep -qE '\(high\.severity\|high\.priority\|blocker\|blocking\|critical\|p0\|p1\)' hooks/scripts/lib.sh 2>/dev/null \
+    && grep -q 'non.blocking' hooks/scripts/lib.sh 2>/dev/null; then
+    pass "T6 L5 cap lexicon covers blocking/non-blocking vocabulary (#20)"
+else
+    fail "T6 L5 cap lexicon covers blocking/non-blocking vocabulary (#20)"
+fi
 for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json; do
     if grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE" "$m" 2>/dev/null; then
         pass "T6 $m at $EXPECTED_VERSION"

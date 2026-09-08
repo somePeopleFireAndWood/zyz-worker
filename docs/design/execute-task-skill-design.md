@@ -193,7 +193,7 @@ Review 循环：
 4. 设计文档初稿完成后，主agent 启动独立 reviewAgent 审查设计文档。
 5. reviewAgent 按设计文档审查标准检查是否存在错误、模糊、遗漏、冲突或不完备。
 6. 主agent 自行决定接受或拒绝 reviewAgent 的每条建议（默认不询问用户）。
-7. 接受时主agent 更新设计文档；拒绝时主agent 在设计文档旁的独立 review-history 文件（`<设计文档basename>.review-history.md`，每个设计文档一个）与 task status 的 `## Design Review > Rejected Suggestions` 记录拒绝原因。review history 不作为设计文档的章节：它仅对设计阶段的 review 循环与人工审核有意义，设计文档本身保持为干净的终态规格。
+7. 接受时主agent 更新设计文档（**直接编辑或删除错误的原文，不追加解释性批注**——见「设计文档的修改形态」）；拒绝时主agent 在设计文档旁的独立 review-history 文件（`<设计文档basename>.review-history.md`，每个设计文档一个）与 task status 的 `## Design Review > Rejected Suggestions` 记录拒绝原因。review history 不作为设计文档的章节：它仅对设计阶段的 review 循环与人工审核有意义，设计文档本身保持为干净的终态规格。
 8. 仅当 reviewAgent 的建议会改动 Goals 或 Acceptance Criteria 时，主agent 才回到用户征求决策。
 9. reviewAgent 基于修改后的文档和拒绝原因执行新的 review。
 10. 当 reviewAgent 判断无需修改时，设计 review 循环结束。
@@ -418,6 +418,26 @@ review history 不是设计文档的章节。它保存在设计文档旁的独�
 ```
 
 该文件仅供设计阶段的 review 循环与人工审核使用；实现阶段的 subAgent 只接收终态设计文档，不接收 review-history 文件。
+
+### 设计文档的修改形态
+
+本节约束的是**任务的设计文档**（任务目录下的那份），不含本仓库自身的 `docs/`。两个文件职责互斥，设计文档不得兼任另一个：
+
+| 文件 | 职责 | 读者 |
+|---|---|---|
+| `design.md` | 终态设计规格 | implementationAgent / testAgent / 审批人 |
+| `design.md.review-history.md` | 修订流水账、留痕、裁决理由 | 下一轮 reviewAgent / 主agent |
+
+review-history 不被评审、不产生 findings、想多长都行；设计文档是被评审面，往里加的每一句都是新的被评审文本。因此：
+
+- **订正既有文字**的 finding 靠**直接编辑或删除那段原文，不追加解释性批注**。数字腐烂了就删掉那个数字，不是写一段「为何删掉」。
+- **指出缺失**的 finding（缺需求、缺约束、缺验收标准、机制欠规格）靠**补上缺失的规格**，这种增长是应该的——本节从不主张少写规格。
+- 订正类修改后文档长度应**持平或下降**（以本轮已接受 finding 前后的 `wc -c` 计）。一轮评审净效果是「文档变长而实质技术面无变更」才是要阻止的失效模式；因补上真缺失而变长不是。
+- 「为何这样改」「前版错在哪」「第 N 轮订正」一律记入 review-history 文件，不进设计正文。
+- **不把检查本文档文本的自查规则写进设计文档。** grep 这个动作成本近零；一旦写进交付物，它同时变成被评审面、自己的扫描对象和新耦合点（实测：这类块捕获约 3 项评审未点到的问题，自身产生 20+ 项 findings）。设计文档只写**如何检查代码**的规格——变异靶点、正向锚点、no-op 分类、承载者归属，这些有编译器和测试当裁判。
+- 已积累的留痕要**一趟剥离、不留痕**：删除只检查文档文本的规则块、保留全部检查代码的规格、清理断链，并用「标识符与 `file:line` 坐标的集合差」机械核对是纯删除——消失的坐标必须全是文档自引用，零个代码坐标丢失。增量剥离并逐条记录，本身又是一次追加。
+
+reviewAgent 对应的口径：设计阶段的 finding 若唯一后果是「将来编辑本设计文档的人可能被误导」（无法到达实现、测试与交付行为），标注为**非阻塞**并建议记入 review-history，不要求改设计正文，也不阻止 `no-changes-needed`。分界线是**能否到达产物**，不是措辞的严重程度。
 
 ## 子 Agent 协作规则
 

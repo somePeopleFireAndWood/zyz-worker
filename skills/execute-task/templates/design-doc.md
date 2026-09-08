@@ -34,4 +34,9 @@
 
 ## User Decisions
 
-<!-- Review history is NOT a section of this document. It lives in a sibling file `<this-doc-basename>.review-history.md` (one per design document), which only the design phase's review loop and human approval read. This document stays the clean final-state spec that implementation-agent and test-agent consume. -->
+<!-- DELETE THIS COMMENT once read; it is scaffolding, not part of the spec.
+     Review history is NOT a section of this document — it lives in the sibling
+     `<this-doc-basename>.review-history.md`. This document records only the FINAL
+     design: fix a wrong statement by editing or deleting it, never by appending an
+     annotation beside it; add a missing spec freely. See SKILL.md
+     `## Design Document Edit Discipline`. -->

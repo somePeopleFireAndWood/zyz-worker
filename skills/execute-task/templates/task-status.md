@@ -50,6 +50,7 @@ suppresses only main status freshness, never role/probe/no-output/result-flush. 
 - Latest Review Result:
 - Open Issues:
 - Rejected Suggestions:
+- Non-Blocking Findings Recorded To Review History: (design-phase findings whose only consequence was that a future editor of the design document might be misled — recorded in `<design-doc-basename>.review-history.md` instead of edited into the design body; these do not hold back `no-changes-needed`)
 - Design Approval Record: (before entering implementation, record ONE of: (a) the explicit user approval — what the user said + when/where; or (b) the verbatim explicit prior skip instruction authorizing skipping THIS design→implementation gate. Empty means NOT approved — do not enter implementation. A material change to the approved approach re-arms the gate and requires a fresh entry here.)
 
 ## SubTasks

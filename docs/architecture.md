@@ -104,6 +104,8 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 **e) 版本控制自治且非阻塞。** 提交/推送自己做，不问用户；失败就记录进状态文件继续走，绝不阻塞。但 merge 到 base 永远需要用户显式指令，破坏性操作（force-push / reset --hard / 改历史）一律禁止。
 
+**f) 设计文档只记终态，修缺陷靠删改而非追加。** 设计文档是**被评审面**，review-history 文件不被评审、不产生 findings、想多长都行——所以留痕的正确载体是后者。实测反例：一次 21 轮设计评审里，主控把「修正缺陷」执行成「追加自我批注」，`design.md` 四轮内 127KB→148KB 而实质技术面无变更，432 行交付规格里堆出 81 处「第 N 轮」/77 处「前版」/21 处「订正」，修复速率与新增缺陷速率接近 1:1。机制在于：删掉一个腐烂的数字是 O(1) 无副作用，而追加一段「为何删掉」同时造出**新的被评审文本面 + 新的耦合点 + 一个自身可能写错的东西**（实测确实写错了）。配套两条：**检查文档自身文本的自查规则不写进设计文档**（grep 这个动作免费，写进交付物则它同时变成被评审面、自己的扫描对象和新耦合点——实测这类块捕获约 3 项问题、自身产生 20+ 项 findings）；以及 review-agent 的对应口径——finding 若唯一后果是「将来编辑设计文档的人可能被误导」（到不了实现/测试/交付行为），标为**非阻塞**并建议记入 review-history，不阻止 `no-changes-needed`。分界线是**能否到达产物**，不是措辞严重程度；能产出错代码、无法测的验收标准、遗漏需求、章节冲突、角色得靠猜的歧义，一律照旧阻塞。
+
 ## 四、watchdog 强制层：为什么需要，怎么分层
 
 ### 4.1 动机
@@ -280,6 +282,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改 `dispatch.md` 字段**：模板、spawn 与 reuse 两个 Phase-1 写入点、check 的 Phase-2 回写（必须原样保留复用字段与编号仓字段组，否则首次轮询就会丢）、merge/cleanup/reuse 的仓集读取、崩溃恢复章节、T8 测试。
 - **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## Inputs` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
 - **改角色提示词**：`agents/<role>.md` 与 `subagents/<role>.md` 必须同改（正文被逐字节比对）。
+- **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## Design Document Edit Discipline` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
 - **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog Enforcement` 三处口径要一致。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。
 

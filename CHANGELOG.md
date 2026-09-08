@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Constrain the SHAPE of a design-document repair (#20).** The design phase
+  had a rule for where review history goes (#15) but none for how a design
+  defect gets fixed, so main agents fixed defects by appending self-annotations
+  to the design document instead of editing or deleting the wrong text. Measured
+  on a real 21-round design review: `design.md` grew 127KB → 148KB across four
+  rounds with **no substantive technical change** (the reviewer independently
+  confirmed the technical surface had been stable since round 17), a 432-line
+  delivery spec carried 81 `第 N 轮` / 77 `前版` / 21 `订正` traces, and the
+  fix-to-new-defect rate reached roughly 1:1 — four fixes in round 21 introduced
+  three new defects. The mechanism: deleting a rotten number is O(1) with no
+  side effects, while appending a paragraph about the deletion creates a new
+  reviewed text face, a new coupling point, and something that can itself rot
+  (and did). New `## Design Document Edit Discipline` in both
+  `main-agent.md` and `SKILL.md`: repair by editing or deleting the
+  wrong text and never by annotating it; after a repair the document holds flat
+  or shrinks (measured `wc -c` before vs after the round's accepted findings);
+  "why it changed" / "what the previous version got wrong" /
+  "corrected in round N" go to `<basename>.review-history.md`, which is not
+  reviewed, generates no findings, and may grow without limit. A finding that
+  names something MISSING is explicitly carved out — it is fixed by ADDING the
+  missing spec, and that growth is expected; without the carve-out an agent
+  holding a blocking "AC7 is missing" finding plus an absolute no-growth rule
+  had no compliant move, and the cheapest reconciliation was to under-specify.
+  The discipline is scoped to a task's design document under the task
+  directory, not this repository's own `docs/`. Design workflow step 6 in both
+  files states the repair shape at the point of use, and
+  `templates/design-doc.md` carries the same note as deletable scaffolding.
+- **Keep document-text self-check rules out of the design document (#20).**
+  Performing a grep over the design's own prose is free; writing that grep into
+  the deliverable makes it a reviewed surface, its own scan target, and a new
+  coupling point at once — on the same task, such blocks caught ~3 issues the
+  review had missed while generating 20+ findings of their own (baseline already
+  red, output empty by construction, matching only their own command line, the
+  checklist sitting outside its own scan surface). The design document specifies
+  how to check **code** — mutation targets, positive anchors, no-op
+  classification, carrier ownership — where a compiler and a test suite
+  adjudicate. Also documented: accumulated annotations are stripped in ONE pass
+  leaving no trace of the strip, verified as a pure deletion by the set
+  difference of identifiers and `file:line` coordinates (only document
+  self-references may disappear; zero code coordinates may be lost).
+- **Calibrate reviewAgent: document-hygiene findings are non-blocking (#20).**
+  New `### Document-Hygiene Findings Are Non-Blocking` in both review-agent
+  mirror copies: a design finding whose ONLY consequence is that a future editor
+  of the design document might be misled — unreachable from the implementation,
+  the tests, and the delivered behavior — is labeled `non-blocking`, recommended
+  for the review-history file rather than a design-body edit, and does not hold
+  back `no-changes-needed`. The dividing line is reachability into the artifact,
+  not severity of wording; anything that can produce wrong code, an untestable
+  acceptance criterion, a missed requirement, a conflict, or an ambiguity a role
+  would have to guess at stays a required change. reviewAgent also stops
+  reporting the *absence* of document-text self-check rules as a finding.
+  `non-blocking` is explicitly a **verdict, not a license to report less** —
+  every such finding still appears with its own evidence, so the calibration
+  cannot be misread against the "never batch findings into 'the rest are
+  fine'" hard limit or the L5 dispatch-scope-guard's anti-scope-reduction
+  posture; it changes only where the fix is recorded and whether it can hold
+  back `no-changes-needed`.
+  `templates/review-report.md` labels design-phase findings blocking /
+  non-blocking (and lists only blocking ones as expected-to-land in
+  `## Next Review Input`, so a recorded non-blocking finding is not re-raised
+  every round), and `templates/task-status.md` gains
+  `## Design Review > Non-Blocking Findings Recorded To Review History` — with
+  an owning rule in both the prompt and SKILL.md design workflows, so the field
+  has a writer rather than being an orphaned slot.
+- **Teach the L5 dispatch-scope-guard the new blocking/non-blocking vocabulary
+  (#20).** Minting a severity label created a scope-reduction phrasing the guard
+  did not know: `report only blocking findings`, `blocking findings only`,
+  `skip the non-blocking ones`, `只报阻塞性问题`, `跳过非阻塞的` all passed
+  while the equivalent `blockers only` was denied. `hooks/scripts/lib.sh`
+  extends the existing severity-filter family (rather than adding a new
+  mechanism) with `blocking`/`non-blocking` plus two CJK arms, and extends the
+  matching negation veto so the anti-cap instruction the coverage rules teach
+  the main agent to send (`do not report only blocking findings`, `never skip
+  the non-blocking ones`, `不要只报阻塞性问题`) is still allowed.
+- **Documentation and coupling points.** `docs/architecture.md` gains §3.3 f)
+  (the mechanism plus the measured evidence) and a §8 row listing all seven
+  carriers that must change together; `docs/design/execute-task-skill-design.md`
+  gains `### 设计文档的修改形态`, mirroring the discipline and the reviewAgent
+  calibration in the plugin's own design document.
+
 ## [0.18.2] — 2026-09-01
 
 - **Resolve hooks from the host-installed plugin root.** All ten hook commands

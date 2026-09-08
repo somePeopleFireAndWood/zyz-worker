@@ -31,6 +31,8 @@ implementation-oriented dimensions are registered `n/a: design phase`.
 
 <!-- Numbered, ordered by severity. Numbering feeds the main agent's finding ledger and ## Next Review Input below. -->
 
+<!-- Design-phase review: label each finding `blocking` or `non-blocking` (see reviewAgent `### Document-Hygiene Findings Are Non-Blocking`). A finding whose ONLY consequence is that a future editor of the design document might be misled — unreachable from the implementation, the tests, and the delivered behavior — is `non-blocking`, and its destination is the review-history file, not an edit to the design body. Non-blocking findings do not hold back `no-changes-needed`. Reachability into the artifact is the dividing line, not severity of wording. `non-blocking` is a verdict, NOT a license to report less: every such finding still appears here with its own evidence. -->
+
 ## Independent Reproduction
 
 <!-- Which of the author's verdicts you re-derived by running the decisive checks read-only, and how your own probe aligned against the author's recorded output (byte-for-byte before use as a criterion). A review that only audits the report co-signs the author's tool failures. n/a for a design-phase review. -->
@@ -53,4 +55,4 @@ implementation-oriented dimensions are registered `n/a: design phase`.
 
 ## Next Review Input
 
-<!-- Include the numbered findings expected to have LANDED by the next review, so the next pass verifies landing instead of assuming it. -->
+<!-- Include the numbered findings expected to have LANDED by the next review, so the next pass verifies landing instead of assuming it. List only BLOCKING findings here — a non-blocking finding is recorded in the review-history file and is by construction not going to land in the design body, so listing it makes the next pass verify a landing that was never intended and re-raise it every round. Name those separately as "recorded, not landing". -->

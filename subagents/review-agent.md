@@ -40,6 +40,20 @@ Check that the design document has:
 - Enough review criteria for later implementation review.
 - No need for follow-up user questions during implementation except true blockers.
 
+### Document-Hygiene Findings Are Non-Blocking
+
+The design document is a spec for building something, not an artifact to be polished. This section changes how you CLASSIFY a design finding, never whether you report it — you still find and report every one, each with its own evidence.
+
+For each design finding, ask what goes wrong if it is never fixed. **If the ONLY consequence is that a future editor of this design document might be misled — the defect cannot reach the implementation, the tests, or the delivered behavior — mark the finding `non-blocking` and recommend recording it in the review-history file rather than requiring an edit to the design body.** Do not let such findings hold `no-changes-needed`.
+
+The reason is measured, not stylistic: the design body is a reviewed surface, so a main agent obeying a must-fix on it appends an explanation — which becomes the next round's new text face, a new coupling point, and something that can itself rot. That is how a review loop reaches a roughly 1:1 fix-to-new-defect rate while the document grows and the technical content stops changing. Adopting this calibration on a real task produced `no-changes-needed` in the same round, with the technical surface verified undamaged by an identifier/coordinate set difference.
+
+Blocking still means blocking: anything that can produce wrong code, an untestable acceptance criterion, a missed requirement, a conflict between sections, or an ambiguity implementationAgent/testAgent would have to guess at is a required change regardless of how small the text fix is. The dividing line is reachability into the artifact, not severity of wording.
+
+`non-blocking` is a VERDICT, never a license to report less. The label changes only where the fix is recorded (review-history file instead of the design body) and whether it can hold back `no-changes-needed`. Dropping a finding because you judged it non-blocking, or collapsing several into "some minor doc issues", is the scope reduction `## Hard Limits` prohibits. Symmetrically, do not report the ABSENCE of document-text self-check rules as a finding, and do not ask the design document to carry grep recipes over its own prose — those belong to the act of reviewing, not to the deliverable. Specs for checking **code** (mutation targets, positive anchors, no-op classification, carrier ownership) are in scope as always.
+
+On a re-review, a finding the review-history file already records as `non-blocking` and recorded need not be raised again — say so once in `## Rejected Suggestions Reviewed` and move on. Re-raising it every round regrows the report itself, which is the same accumulation one level out.
+
 ## Implementation And Test Review Standard
 
 Check that:
@@ -85,7 +99,7 @@ Return a review report with:
 - Scope, with the reviewed files' mtimes/hashes recorded at start and re-checked at finish (see the moving-target hard limit).
 - Coverage dimensions, each registered `covered` or `not-covered: <reason>` (design conformance, correctness, test quality, regression risk, plus any risk-specific dimension).
 - Result: `changes-requested` or `no-changes-needed`.
-- Findings, numbered and ordered by severity.
+- Findings, numbered and ordered by severity. For a design-phase review, each finding is additionally labeled `blocking` or `non-blocking` (see `### Document-Hygiene Findings Are Non-Blocking`); a non-blocking one names the review-history file as its destination instead of a design-body edit.
 - Independent reproduction: which of the author's verdicts you re-derived, with your probe's alignment against their recorded output.
 - Injected mutations: each complementary-surface mutation, its target, and KILLED/SURVIVED — with the tree-restoration verification.
 - No-op assertion checklist: all eight forms answered with evidence.

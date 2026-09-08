@@ -444,8 +444,13 @@ zyz_scope_negated() {
     # anti-cap instruction the coverage-registration rules teach the main agent
     # to send ("do not run this as a blockers only review"). Match a negation
     # anywhere ahead of such a trailing `only` in the same clause.
-    printf '%s' "$p" | grep -qE "(do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t[^.;]{0,60}(blocker|critical|high.severity|high.priority|p[01]|severe)[a-z]*( (issue|finding|one|item)s?)? only" && return 0
-    printf '%s' "$p" | grep -qE "^not [^.;]{0,60}(blocker|critical|high.severity|high.priority|p[01]|severe)[a-z]*( (issue|finding|one|item)s?)? only" && return 0
+    printf '%s' "$p" | grep -qE "(do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t[^.;]{0,60}(blocker|blocking|critical|high.severity|high.priority|p[01]|severe)[a-z]*( (issue|finding|one|item)s?)? only" && return 0
+    printf '%s' "$p" | grep -qE "^not [^.;]{0,60}(blocker|blocking|critical|high.severity|high.priority|p[01]|severe)[a-z]*( (issue|finding|one|item)s?)? only" && return 0
+    # Same shape for the "report only blocking findings" / "skip the
+    # non-blocking ones" family added with the #20 non-blocking vocabulary:
+    # the anti-cap instruction ("do not report only blocking findings",
+    # "never skip the non-blocking ones") must keep its veto.
+    printf '%s' "$p" | grep -qE "((do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t|never)[^.;]{0,40}(report|give|return|send|list|skip|drop|omit|ignore|leave out)[^.;]{0,30}(blocking|non.blocking)" && return 0
     printf '%s' "$p" | grep -qE "(more than|beyond) (just|only) (the )?(verdict|conclusion|summary)" && return 0
     printf '%s' "$p" | grep -qE "(不是|不只是|不能只|别只|不要只|不止)(要|给|报|写|看)?" && return 0
     # Careful: bare 不行 also appears in the DEGRADATION idiom "实在不行就先
@@ -526,9 +531,13 @@ do ?n.?t (bother with|need) (the )?(details|specifics|rest)
 do ?n.?t be (exhaustive|thorough|comprehensive)
 a (short |brief |quick )?(summary|verdict|conclusion) (is|will be|would be) (enough|fine|ok|okay|sufficient)
 (enough|fine|ok) (to )?(just )?(give|report) (the )?(verdict|conclusion|summary)
-(high.severity|high.priority|blocker|critical|p0|p1)(s| issues| findings| ones)? only
-(focus |look )?only on (blockers|criticals?|the (worst|top|main|key|important))
+(high.severity|high.priority|blocker|blocking|critical|p0|p1)(s| issues| findings| ones)? only
+(focus |look )?only on (blockers|blocking|criticals?|the (worst|top|main|key|important))
+(report|give|return|send|list) (me )?only (the )?(blocking|blocker|critical|high.severity|high.priority|p[01])[a-z]*( (issue|finding|one|item)s?)?
+(skip|drop|omit|ignore|leave out) (the )?non.blocking( (issue|finding|one|item)s?)?
 (只要|只需|只给|仅给|仅需|只报|只写|只列|只看)[^。；,，]{0,12}(总?结论|结果|摘要|概要|几条|几个|几项|重点|关键|最严重|最重要)
+(只报|只写|只列|只看|只处理|仅报|仅看)[^。；,，]{0,6}阻塞
+(跳过|忽略|不用管|不必管|略过)[^。；,，]{0,6}非阻塞
 (重点|关键|主要|重要)(问题|的?几条|的?几个)?(就行|即可|就好|足矣|即够)
 (挑|选|列|给)[^。；,，]{0,4}(最|前)?(重要|严重|关键)的?(几|[0-9一二三四五六七八九十]+)(条|个|项)
 最严重(的)?[0-9一二三四五六七八九十]+ ?(条|个|项)
