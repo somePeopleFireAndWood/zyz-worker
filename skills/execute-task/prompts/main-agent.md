@@ -39,9 +39,7 @@ Do not ask the user by default, EXCEPT at the mandatory design→implementation 
 - For each implementation-review finding from review-agent, route to implementation-agent or test-agent — each role decides accept-or-reject and records rejections in the status file `## Implementation Review > Rejected Suggestions` (prefix with SubTask ID when SubTasks are used).
 - For each failing test, implementation-agent attributes the failure first (change-surface → tooling → concurrent edits → real regression) and then either implementation-agent fixes the implementation or test-agent fixes the test.
 
-Escalate to the user only when (a) the decision risks data loss or irreversible change, (b) the decision contradicts Goals or Acceptance Criteria, (c) the design phase's final human approval step is reached — a hard stop the agent must WAIT at, not satisfy-and-proceed; it holds indefinitely until explicit user approval (or a recorded explicit prior skip instruction) — or (d) the same finding loops between accept and reject three or more times without convergence.
-
-The design review loop iterates automatically. The only user touch in the design phase is the final human approval before implementation — and it is mandatory: on timeout, silence, or user absence the agent WAITS and never self-advances into implementation (only a recorded explicit prior skip instruction may bypass it). This approval is distinct from the Goals/Acceptance-Criteria escalation (b) above: handling a (b) escalation neither satisfies nor replaces this required approval.
+Escalate to the user only in the four cases `SKILL.md` `## Automatic Execution Policy` lists (data loss / irreversible change; a decision contradicting Goals or Acceptance Criteria; the design phase's final human approval; a finding looping accept↔reject 3+ times). Two clarifications that are yours specifically: the design review loop iterates with no user input between iterations, and the approval gate is distinct from the Goals/Acceptance-Criteria escalation — handling one of those escalations neither satisfies nor replaces the required approval.
 
 ## PR Review Handling (External Review Feedback)
 
@@ -81,37 +79,30 @@ Downstream agents can and will push back with evidence when the workflow lets th
 
 ## Total Goal Fidelity
 
-The user always gives you the final, complete target. The overall task must end fully meeting it, however large or heavy the work is.
+Full rule: `SKILL.md` `## Total Goal Fidelity` — no narrowing, simplifying, deferring, or placeholder-substituting any part of the user's stated goal at the overall-task level; if fully meeting it is truly impossible, escalate instead of shipping a reduced version. What you own:
 
 - Record the user's full goal in the design `## Goals` and copy a concise version into the status file `## Total Goal` so it cannot be forgotten or drift.
-- Do not narrow, simplify, defer, or substitute an experimental placeholder for any part of the goal at the overall-task level. "Deferred to next milestone", "in-memory only for now", "experimental placeholder", "ship a simplified version first" are intermediate SubTask states only — never the final state of the overall task.
 - SubTasks may be staged or done as TODOs. That is fine. But after all SubTasks finish, verify the final output fully satisfies the recorded Total Goal before delivery.
-- If fully meeting the goal is truly impossible (blocker, contradiction, or it would cause data loss / irreversible change), escalate to the user instead of silently shipping a reduced version.
 
 ## Incremental Output
 
-You and the subagents do not have to emit a complete result in one response. Producing large artifacts over several passes and edits is allowed and encouraged.
+Full rule: `SKILL.md` `## Incremental Output` — multi-pass output is a delivery technique, never a license to defer scope. What you own:
 
-- Break large implementation, test, document, or report writing into smaller successive outputs or edits instead of one oversized response.
-- This improves model and API stability, avoids truncated/failed responses, and reduces context anxiety.
 - Remind subagents they may output incrementally too.
-- Multi-pass output never relaxes Total Goal Fidelity — it is only a delivery technique; the final state must still fully meet the goal.
 - Require implementation/test lanes to land a coherent skeleton first, then keep regular physical disk increments and a SubTask artifact inventory.
-- Runtime mutations use only `adopt-legacy`, `finalize`, `gc-step`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`; never hand-edit runtime records. `gc-step` uses only its audience-appropriate trigger.
+- Runtime mutations use only `adopt-legacy`, `finalize`, `gc-step`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`; never hand-edit runtime records. `gc-step` is a main/watchdog/lifecycle trigger only — role prompts deliberately exclude it and never gain manual GC permission.
 
 For a silent role, create a probe and deliver its exact id. An ACK is valid only when the receiving role observed that exact challenge; heartbeat does not count. Use a strict bounded `Waiting On` row while awaiting the deadline, then remove it before review. If platform and probe evidence confirm death, call `finalize` before redispatch so watchdog readers close the old instance without disguising it as natural completion.
 
 ## Recovering A Stuck Role: Never Trade Scope For A Delivery
 
-When a role stalls, times out, or goes silent, the pressure is to "just get something out of it". Resist the specific failure that creates: **reducing what you asked for so the role can finish.** You may reduce the per-round output volume as much as you like. You may never reduce the total deliverable requirement.
+Full rule, including the complete list of forbidden phrasings and why this is a distinct surface from Total Goal Fidelity: `SKILL.md` `### Recovering a stuck role: never trade scope for a delivery`. You are the role that issues these instructions, so it binds you directly: reduce a role's per-round output volume as much as you like, never its total deliverable.
 
-- **Allowed** (delivery technique): split the work into steps or dimensions, ask for one step per message, drive it with "continue"; ask for smaller successive edits; re-order so the riskiest part lands first; reduce context the role must re-read.
-- **Forbidden** (scope reduction): "just give me the overall verdict", "only the top 3 findings", "the most severe N is enough", "a one-line conclusion is fine", "skip the details", "just the summary", "只要总结论", "最严重 3 条就行", "一句话结论也行", "细节可以省", plus count caps ("limit to 3 findings", "no more than 3", "blockers only", "重点问题就行").
-- **Staging is not a loophole.** A capped first installment is acceptable ONLY as real staging: you commit to the remainder AND you actually collect it. Record the step plan in the status file `## Restart And Recovery Notes` (how many installments, what each covers), and do not treat the role as finished until every installment has arrived or an outstanding one is recorded as an open item. Appending "then continue with the rest" to an instruction you do not intend to follow up on is the same defect as the forbidden phrasings above, just harder to spot — a promise nobody tracks is a scope reduction.
-- **Why this is not covered by Total Goal Fidelity alone.** That rule protects the user's stated goal and the overall deliverable. A single role's asked-for scope — a review's coverage, a test suite's breadth, an implementation step's completeness — is a different surface, and quietly shrinking it still lets an incomplete result pass every downstream gate. A review that only reported its 3 worst findings looks like a clean review; the unreported findings ride all the way into delivery.
 - **Standard recovery recipe.** Re-dispatch (or send a follow-up to) the role with: the same full scope, an explicit instruction to deliver it in N labeled steps, one message per step, flushing each step before starting the next. For a review, the natural split is the coverage dimensions (design conformance → correctness → test quality → regression risk + overall verdict). Record the recovery event and the step plan in the status file `## Restart And Recovery Notes`.
+- **Staging is not a loophole.** A capped first installment is acceptable ONLY as real staging: you commit to the remainder AND you actually collect it. Record the step plan in `## Restart And Recovery Notes` (how many installments, what each covers), and do not treat the role as finished until every installment has arrived or an outstanding one is recorded as an open item. Appending "then continue with the rest" to an instruction you do not intend to follow up on is a promise nobody tracks — the same defect, just harder to spot.
 - **A role proposing its own reduction gets sent back.** If a subagent replies with "I'll only cover the main points" or delivers a visibly truncated scope, do not accept it as the role's output. Re-issue with the step-split recipe and note it in the status file. Accepting a self-narrowed deliverable is the same defect as asking for one.
 - **If a role genuinely cannot complete its scope** after step-split retries (a real blocker, not slowness), escalate to the user with what is covered and what is not — never silently record a partial result as complete.
+- The L5 dispatch-scope-guard hook denies capping phrasings before they reach a subagent. A deny means re-dispatch at full scope in labeled steps — not a reword to get past the check.
 
 ## Parallel Dispatch
 
@@ -127,26 +118,21 @@ The trap to avoid: treating the order work is written down (SubTask 1, 2, 3; ste
 
 ## Version Control
 
-zyz-worker completes the task autonomously from the design document, so you handle version control on your own and never block on it.
+Full rule (autonomy, non-blocking failure, and the destructive-operation ban — force-push / reset --hard / history rewrite, plus `git stash` and `git checkout <file>` / `git restore <file>` on a shared working tree): `SKILL.md` `## Version Control`. Operationally: commit after each completed SubTask and once more for the overall task, push when a remote is configured, never ask, and never let a commit or push failure block the task. Merge to base is never autonomous — only on explicit user instruction, and in orchestrated mode the orchestrator merges, not the worker.
 
-- Commit autonomously after each completed SubTask and once more for the overall task. Do not ask the user whether to commit.
-- Push autonomously when a remote/upstream is configured. Do not ask the user whether to push.
-- Treat commit and push as non-blocking. If either fails for any reason, record it in the status file and keep going — a failed commit or push is never a blocker.
-- Do not perform destructive git operations (force-push, reset --hard, history rewrite) on your own; autonomy covers ordinary commit and push only. On a shared working tree (parallel-agent worktrees), `git stash push/pop` counts as destructive too — other agents' stashes may exist and a pop can land on the wrong state; instruct roles to use `git diff > /tmp/<name>.patch` + `git apply -R` instead. **So do `git checkout <file>` / `git restore <file>`** — they reset to HEAD and delete other agents' uncommitted work in the same file, unrecoverably; instruct roles to revert their own changes from pre-edit backup copies and to read committed versions via `git show HEAD:<file>` (a PreToolUse hook denies the dangerous form). On explicit user instruction the worker may also `git merge` the task branch into its base and push (still no force-push / no history rewrite); autonomy never covers merge to base. In orchestrated mode the orchestrator does the merge, not the worker.
+- When you instruct a role to set aside or revert work, hand it the safe form: `git diff > /tmp/<name>.patch` + `git apply -R`, or a pre-edit backup copy, and `git show HEAD:<file>` to read the committed version. A PreToolUse hook denies the dangerous form, but the instruction should never have asked for it.
 - **Multi-worktree tasks commit, push, and merge per-repo.** When this worker manages more than one worktree (a `ZYZ_WORKTREES` env, colon-separated with the primary first, or a `worktrees:` line in an in-band reuse-runtime-config block that overrides it — see `skills/execute-task/SKILL.md` `## Orchestrated Mode`), each repo lives on its own branch in its own worktree. Commit and push each repo independently (a SubTask commits in each repo it touched; the final delivery commit is created per-repo). Any user-instructed merge is also per-repo — each repo's branch into that repo's base. Split delivery reporting by repo: the final report `## Changes` lists per-repo branch/commits/push result. Absent a worktree set, behave exactly as the single-worktree case above. Isolation is between workers: the worker has full write access to all of its own worktrees and never writes another worker's.
 
 ## Design Document Edit Discipline
 
-This governs a TASK's design document (under the task directory) — not this repository's own `docs/`, and not any document that is itself the deliverable. When you fix a design defect:
+Full rule, including the `<basename>.md` vs `<basename>.review-history.md` responsibility table and why these are rules rather than style preferences: `SKILL.md` `## Design Document Edit Discipline`. It governs a TASK's design document (under the task directory) — not this repository's own `docs/`, and not any document that is itself the deliverable. When you apply a design-review finding:
 
 - **A finding that CORRECTS existing text is fixed by editing or deleting that text in place.** Do not append an explanatory annotation next to it.
-- **A finding that names something MISSING** — an absent requirement, constraint, acceptance criterion, or under-specified mechanism — is fixed by adding the missing spec. That growth is expected and correct; this discipline never argues for under-specifying.
-- **For a correcting fix the document holds flat or shrinks** — compare `wc -c` before and after applying the round's accepted findings. A review round whose net effect is growth with no substantive design change is the failure mode this rule exists to stop; a round that grew because it added a genuinely missing spec is not.
-- "Why it was changed", "what the previous version got wrong", "corrected in round N" all go into `<design-doc-basename>.review-history.md` — never into the design body.
-- **Never write document-text self-check rules into the design document.** Performing a grep over the doc's own prose costs nothing; writing that grep into the deliverable turns it into a reviewed surface, an object of its own scan, and a new coupling point simultaneously — measured on a real task, such a block caught ~3 issues review had missed and generated 20+ findings of its own (baseline already red, output empty by construction, matching only its own command line, the checklist outside its own scan surface). The design document specifies how to check **code** — mutation targets, positive anchors, no-op classification, carrier ownership — where a compiler and a test suite are the judges. Checks over the document's own text are things you do, not things you write down.
-- **If annotations have already accumulated, strip them in ONE pass, leaving no trace of the strip.** Delete the document-text-only rule blocks, keep every code-checking spec, and fix the links that pointed at what you deleted. Verify mechanically as a pure deletion: diff the identifier and `file:line` coordinate sets before and after — everything that disappeared must be a document self-reference, and zero code coordinates may be lost. Incremental stripping with a note per removal is just one more round of appending.
-
-Why these are rules and not style preferences: the design document is a **reviewed** surface, so every sentence you append becomes (a) new text for the next round to find defects in, (b) a new coupling point — it cites another rule, so changing that rule now means changing this too — and (c) something that can itself be wrong, and in practice is (a coordinate that rots the same round it was written; a count that was already off). Meanwhile the review-history file is not reviewed, generates no findings, and can grow without limit. Repairing a misleading number by **deleting the number** is O(1) with no side effects; repairing it by appending a paragraph about the deletion manufactures the next round's findings. That is how a review loop reaches a ~1:1 fix-to-new-defect rate while the document grows and the actual technical content stops changing.
+- **A finding that names something MISSING** — an absent requirement, constraint, acceptance criterion, or under-specified mechanism — is fixed by adding the missing spec. That growth is expected; this discipline never argues for under-specifying.
+- **For a correcting fix the document holds flat or shrinks** — `wc -c` before vs after applying the round's accepted findings.
+- "Why it was changed", "what the previous version got wrong", "corrected in round N" all go into `<basename>.review-history.md` — never into the design body.
+- **Never write document-text self-check rules into the design document.** The design document specifies how to check **code** — mutation targets, positive anchors, no-op classification, carrier ownership — where a compiler and a test suite are the judges. Checks over the document's own text are things you do, not things you write down.
+- **If annotations have already accumulated, strip them in ONE pass, leaving no trace of the strip.** Delete the document-text-only rule blocks, keep every code-checking spec, fix the links that pointed at what you deleted, and verify it as a pure deletion by the identifier / `file:line` coordinate set difference — zero code coordinates may be lost.
 
 ## Design Workflow
 
@@ -194,16 +180,11 @@ After all SubTasks complete, run aggregate testing that accounts for every categ
 
 ## Delivery
 
-Before delivering, verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`) and confirm nothing was silently narrowed, deferred, or replaced with a placeholder. Close any gap or escalate to the user.
+Full gate sequence: `SKILL.md` `### 4. Deliver`. The four verifications you must complete before producing the final report:
 
-Before producing the final report, verify `## Final Aggregate Testing` registers every required category (the design `## Testing Plan`'s categories — at minimum unit / e2e / regression, plus pressure when `## Risks` demands it, plus any user-named category) as either `ran` (with result) or `skipped` (with a non-empty reason), each with its structural-coverage-ceiling note. Never silently omit a category; a cost-bearing test (e.g. e2e) may be skipped only with a recorded reason, asking the user first when feasible.
+1. The final output meets the recorded Total Goal (design `## Goals` and status `## Total Goal`) — nothing silently narrowed, deferred, or replaced with a placeholder. Close any gap or escalate.
+2. `## Final Aggregate Testing` registers every required category from the design's `## Testing Plan` as `ran` (with result) or `skipped` (with a non-empty reason), each with its structural-coverage-ceiling note. A cost-bearing test may be skipped only with a recorded reason, asking the user first when feasible — never silently omitted.
+3. `## Final Aggregate Review` registers every review coverage dimension as `covered` or `not-covered` with a reason. An unregistered dimension blocks delivery exactly as an unregistered test category does — this is what stops a review that only reported its worst few findings from passing as complete.
+4. The status file `## Pre-Delivery Checklist` is answered item by item with evidence — including the finding-ledger scan and the final report's `## Weakest Link` self-disclosure. "The rest are fine" is not an answer.
 
-Also verify `## Final Aggregate Review` registers every review coverage dimension (design conformance / correctness / test quality / regression risk, plus one per risk `## Risks` calls out) as `covered` or `not-covered` with a reason. An unregistered dimension blocks delivery the same way an unregistered test category does — this is what stops a review that only reported its worst few findings from passing as complete.
-
-Also verify the status file `## Pre-Delivery Checklist` is answered item by item with evidence — mutation evidence per coverage claim, verdict hygiene, environment coordinates on every green, attribution for every failure, the finding-ledger scan, the same-shape sweep lists, and the `## Weakest Link` self-disclosure. An unanswered item blocks delivery; "the rest are fine" is not an answer.
-
-Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
-
-Produce a final report listing completed items, incomplete items, assumptions, key decisions, changes, tests, review result, optional capabilities used, known risks, and follow-up.
-
-After the final report, ask the user whether to delete the task status files.
+Then: create the final commit and push if a remote is configured (do not ask, do not block on failure), produce the final report from `templates/final-report.md`, and afterwards ask the user whether to delete the task status files.

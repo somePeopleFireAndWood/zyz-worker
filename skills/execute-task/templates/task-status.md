@@ -157,45 +157,39 @@ Shared-file hotspots: (declared at dispatch time when parallel SubTasks append t
 
 ## Pre-Delivery Checklist
 
-(Answer EVERY item before §4 delivery — per item, with evidence; an unanswered item blocks delivery the same way an unregistered test category does. Batching into "the rest are fine" is prohibited. Items marked (∥) apply only when ≥2 lanes ran concurrently.)
+(Answer EVERY item before §4 delivery, with evidence; an unanswered item blocks delivery like an unregistered test category. "The rest are fine" is prohibited. (∥) = only when ≥2 lanes ran concurrently. This is a VERIFICATION pass — the rules live in the role prompts: testAgent `## Assertion Shape Rules`, reviewAgent `## No-Op Assertion Checklist`, implementationAgent `## Verdict Hygiene` and `## Test Failure Handling`.)
 
 A. Test effectiveness
-1. Every mechanism claimed covered has a killed mutation on record (mutate → red → restore byte-identical)? List them. An unevidenced "covered" claim does not stand.
-2. Every mutation has positive evidence it REACHED the code under test (sentinel/log/probe)? For each survived mutation, the five causes ruled out one by one: lucky input / redundant arm / assertion unrelated to mechanism / mutation missed the mechanism / fixture gives both sides the same value?
-3. Every assertion's expected value comes from an independent anchor (recorded real-system output), not from the same rule the code under test uses?
-4. Every classification arm has a violable expectation (not just total-classification)?
-5. Bidirectional rules guarded in both directions?
-6. Guard/counter assertions proven able to go red (before/after delta, event forced once)?
-7. "What these tests do NOT prove" written down with the mechanism-level reason and the layer that could prove it?
+1. Every mechanism claimed covered has a killed mutation on record? Cross-check the per-SubTask `Mutations:` rows against `## Final Aggregate Testing > Mutation Evidence`.
+2. Every mutation had positive evidence it REACHED the code under test, and every SURVIVED one had the five causes ruled out (lucky input / redundant arm / assertion unrelated / mutation missed / fixture gives both sides the same value)?
+3. Assertion shapes audited against testAgent's rules?
+4. "What these tests do NOT prove" written down, with the mechanism-level reason and the layer that could prove it?
 
 B. Verdict hygiene
-8. Every pipeline verdict takes its exit code from the judged segment (no `cmd | head && echo OK`)?
-9. No grep-as-success-proof; failures enumerated from structured output with totals cross-checked (pass + skip = total)?
-10. Every `ran:` result reports executed case/package count vs baseline?
-11. Every grep-count used as evidence had its matched lines read, not just `-c`?
-12. No shell builtin/reserved names as variables; failure messages carry raw observed values, not only counts?
+5. Every verdict meets implementationAgent's `## Verdict Hygiene` rules?
+6. Every `ran:` result reports executed case/package count vs baseline?
 
 C. Environment and coordinates
-13. Every "green" reported with all four coordinates (full command / test DB / port group / process-start vs source-mtime)?
-14. (∥) Each lane held an exclusive full port group (incl. metrics/pprof) and its own test DB, and positively confirmed it was talking to its own instance?
-15. Long-lived processes under test started AFTER the newest source file; restarts did kill-group → port-vacant poll → health check → no stale-binary reuse?
-16. Any state changed via non-production write paths (raw SQL / direct file / cache poke) had the paired production invalidation performed (advance seq / emit event / clear key)?
-17. (∥) Full-suite greens carry before-and-after compile-cleanliness checks (tree not swapped mid-run)?
-18. Interrupted runs' dirty data cleaned before rerun?
-18b. Does this file agree with `git log` and with every `subtasks/*.md`? (If this task was ever resumed: was the cross-check done, and are reconstructed fields marked in `## Status Freshness`?) A main file that lags its own SubTask files is what makes the next recovery expensive.
-18c. Was the watchdog confirmed ARMED for this task (`<task-dir>/runtime/agents/` exists with advancing heartbeats)? If not, say so — an unarmed layer reported nothing all task, so no conclusion here rests on it.
+7. Every "green" carries all four coordinates (recorded in `## Testing` and per-category in `## Final Aggregate Testing`)?
+8. (∥) Each lane held its `## Parallel Resource Leases` row and confirmed it talked to its own instance?
+9. Long-lived processes started AFTER the newest source file; restarts did kill-group → port-vacant poll → health check?
+10. State changed via a non-production write path had the paired production invalidation performed?
+11. (∥) Full-suite greens carry before-and-after compile-cleanliness checks?
+12. Interrupted runs' dirty data cleaned before rerun (`## Restart And Recovery Notes > cleanup done`)?
+13. Does this file agree with `git log` and every SubTask status file? `## Status Freshness` records the cross-check and marks reconstructed fields.
+14. Was the watchdog confirmed ARMED? If not, say so — an unarmed layer reported nothing, so no conclusion here rests on it.
 
 D. Attribution and collaboration
-19. Every failure attributed in order (change-surface causality → tooling → concurrent edit → real regression), rerun used only to prove flakiness, never innocence?
-20. Any "their package is broken" report carries the mtime observation or the owner's confirmation?
-21. After a second failed hypothesis-fix on the same failure, switched to printing intermediates inside the failing artifact?
-22. Finding ledger scanned: no accepted finding with empty `dispatched-to`?
-23. (∥) Reviews were against frozen workspaces; reviewed-file mtimes/hashes matched before and after each review?
+15. Every failure attributed in implementationAgent's four-step order, evidence in `## Testing > Attribution`; rerun used only to prove flakiness, never innocence?
+16. Any "their package is broken" report carries the mtime observation or the owner's confirmation?
+17. After a second failed hypothesis-fix on one failure, switched to printing intermediates inside the failing artifact?
+18. `## Implementation Review` ledger scanned: no accepted finding with an empty `dispatched-to`?
+19. (∥) Every review ran against a frozen workspace (`Frozen At`), mtimes/hashes matching before and after?
 
 E. Scope and self-disclosure
-24. Every rule established this round swept across ALL same-shaped sites with an enumerated per-site verdict list (enumerate the outbound surface, don't recall handled instances)?
-25. Any comments claiming coverage/invariants updated to match what the code now actually does?
-26. `## Weakest Link` filled in — most-likely no-op spot, why suspected, current guard, more direct observation point (or why this is the observation ceiling)?
+20. Every rule established this round swept across ALL same-shaped sites, with an enumerated per-site verdict list?
+21. Any comments claiming coverage or invariants updated to match what the code now does?
+22. The final report's `## Weakest Link` (in `final-report.md`) filled in?
 
 ## Next Actions
 

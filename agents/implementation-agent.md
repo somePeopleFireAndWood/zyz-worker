@@ -80,9 +80,9 @@ You do not have to produce everything in one response. Implementing a large chan
 
 For a large deliverable, make this durability concrete: write a coherent skeleton/interface to the shared worktree first, then fill it in through regular on-disk increments. Keep a physical artifact inventory in your SubTask status before any wait or handoff. Aim to produce the first non-empty artifact well before the 30-minute no-output threshold; conversation-only progress is not recoverable after an API kill.
 
-When a reconnect message contains an exact `probe1-...` challenge that you actually observed, acknowledge only that id with `hooks/scripts/agent-runtime-state.sh probe-ack <task-dir> <your-agent-id> <probe-id>`. A heartbeat is never an ACK. Do not fabricate runtime files or acknowledge an id you did not receive.
+When a reconnect message contains an exact `probe1-...` challenge that you actually observed, acknowledge only that id with `"$ZYZ_PLUGIN_ROOT/hooks/scripts/agent-runtime-state.sh" probe-ack <task-dir> <your-agent-id> <probe-id>` (resolve the plugin root from the first set of `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT`; the path is NOT relative to the task's repo, and a bare `hooks/scripts/...` fails once the plugin is installed rather than run from source. If none is set, report the challenge id to the main agent instead of guessing a path). A heartbeat is never an ACK. Do not fabricate runtime files or acknowledge an id you did not receive.
 
-The complete supported runtime command vocabulary is `adopt-legacy`, `finalize`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`; your role's write permission remains restricted to the matching `probe-ack` bookkeeping action.
+The complete supported runtime command vocabulary is `adopt-legacy`, `finalize`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`; within this runtime protocol your only permitted action is the matching `probe-ack` bookkeeping (this restricts the runtime protocol only — it says nothing about your normal implementation-file write access).
 
 ## Output Format
 
@@ -107,13 +107,6 @@ For any long-running work, write progress, decisions, blockers, and the next ste
 
 ## Orchestrated Mode Hook
 
-If `ZYZ_WORKER_STATUS_FILE` is set in the environment, this role is running under an orchestrator (the `orchestration-scheduling-task` skill). Before suspending or before returning a final result, write a minimal status snapshot to that file path. The fields are:
+If `ZYZ_WORKER_STATUS_FILE` is set in the environment, this role is running under an orchestrator (the `orchestration-scheduling-task` skill). Before suspending or before returning a final result, write a minimal status snapshot to that file path, with the fields `phase`, `phase-since`, `wait-state`, `waiting-reason`, `expected-resume-by`, and `last-flush`. Their exact enums and semantics are specified once in `skills/execute-task/SKILL.md` `## Orchestrated Mode` — read them there rather than inferring.
 
-- `phase` — one of `design | implementation | testing | review | delivery | awaiting-confirmation | done | error`
-- `phase-since` — ISO timestamp of when the current `phase` was entered
-- `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
-- `waiting-reason` — free text; non-empty only when `wait-state != none`
-- `expected-resume-by` — ISO timestamp; non-empty only when `wait-state != none`
-- `last-flush` — ISO timestamp of this write
-
-Write atomically (tmpfile + rename). Never edit the file in place. Treat `phase` as roll-back-allowed except `done` — `done` is the absorbing final state, written only after explicit user confirmation; `awaiting-confirmation` is reversible. The orchestrator only sees what this file says; in-context memory does not count. See also [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md).
+Write atomically (tmpfile + rename); never edit the file in place. `phase` may roll back, except `done`, which is not yours to write — it is the absorbing final state the main agent writes after explicit user confirmation. The orchestrator only sees what this file says; in-context memory does not count. See also [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md).

@@ -426,7 +426,7 @@ review history 不是设计文档的章节。它保存在设计文档旁的独�
 | 文件 | 职责 | 读者 |
 |---|---|---|
 | `design.md` | 终态设计规格 | implementationAgent / testAgent / 审批人 |
-| `design.md.review-history.md` | 修订流水账、留痕、裁决理由 | 下一轮 reviewAgent / 主agent |
+| `<basename>.review-history.md` | 修订流水账、留痕、裁决理由 | 下一轮 reviewAgent / 主agent |
 
 review-history 不被评审、不产生 findings、想多长都行；设计文档是被评审面，往里加的每一句都是新的被评审文本。因此：
 
