@@ -54,7 +54,8 @@ Use these templates when creating task artifacts:
 
 ## Core Rules
 
-- The user leads design. The agent helps clarify, structure, document, and execute.
+- The user leads design. The agent helps clarify, structure, document, and execute. It does not originate the design (see User Design Authority).
+- **The user's design is authoritative in BOTH phases, and every change to it needs the user's prior agreement** (see User Design Authority). This outranks the "do not ask the user by default" posture below.
 - The user's stated requirements are always the final, complete target. The overall task must end fully meeting that target, however large, heavy, or broad it is.
 - Every code task starts with a Markdown design document, regardless of task size.
 - The design document is not required to be a single file. For complex tasks, split it into multiple focused documents by domain, module, layer, or step so each document stays internally focused and loads cleanly into the model's context. Simple tasks may keep a single document.
@@ -98,9 +99,30 @@ The review-history file is not reviewed, produces no findings, and may grow with
 - **Do not write document-text self-check rules into the design document.** Running a grep costs nothing; writing the grep into the deliverable makes it a reviewed surface, an object of its own scan, and a new coupling point at once — measured, such a block caught ~3 issues the review had missed while itself generating 20+ findings. The design document specifies how to check **code** (mutation targets, positive anchors, no-op classification, carrier ownership — things a compiler and a test suite adjudicate). Checks over the document's own prose are performed, not written down.
 - **When stripping accumulated annotations, do it in one pass and leave no trace of the stripping.** Incremental de-annotation with a note about each removal is just another round of appending. Verify a pure-deletion strip mechanically: the set difference of identifiers and `file:line` coordinates before/after must contain only document self-references — a lost code coordinate means the strip cut into the spec.
 
+## User Design Authority
+
+The user's design leads, in the design phase AND the implementation phase. Every role executes that design; no role invents, extends, or "improves" it on its own initiative.
+
+**Design phase — the main agent organizes, it does not design.** Its whole job on the design document is to take what the user described and make it executable: structure the user's flow and architecture into ordered steps, fill in the mechanical detail an implementer would otherwise have to guess (exact fields, signatures, file paths, error cases, test points), name the gaps, and ask. It does NOT introduce a module, a layer, a data flow, or an architectural choice the user did not describe. When something is missing or unclear, ask the user — a documented assumption is for a non-blocking detail, never a substitute for a design decision that is the user's to make.
+
+**Any role, any phase: proposing a change to the design requires the user's prior agreement.** This covers adding, removing, restructuring, or substituting a module, a flow, an interface, a data structure, or any architectural decision — whoever finds the reason (main agent, implementation-agent, test-agent, review-agent). The sequence is fixed:
+
+1. The finding role states it to the main agent: what it found, where (`file:line` or the design section), why the current design does not work, and the smallest option set.
+2. The main agent presents it to the user — the problem and the options, not a fait accompli — and WAITS.
+3. Only after the user agrees does anyone implement it. The main agent then updates the design document to its new final state (see Design Document Edit Discipline) and re-dispatches.
+4. If the user declines, the design stands as written and the role implements it as specified. Record the exchange in the status file.
+
+Never implement first and report the deviation afterwards; never let a "small" architectural adjustment ride in with an unrelated fix. **This overrides the "do not ask the user by default" posture in `## Automatic Execution Policy`**: that posture governs accept/reject decisions on review findings and test-failure attribution *within* the approved design. It never authorizes changing the design itself. A material change to the approved approach additionally re-arms the design→implementation approval gate (§2 step 8).
+
+**Implementation phase — implement the design document exactly, with nothing dropped and nothing contradicted.** implementation-agent and test-agent build exactly what the design specifies; review-agent's first coverage dimension is design conformance in both directions:
+
+- Every element the design calls for is present — no silently skipped step, field, error case, or acceptance criterion. Something that cannot be implemented as written is escalated through the sequence above, not quietly omitted.
+- Nothing contradicts the design — no substituted mechanism, no "equivalent but simpler" structure, no extra module or abstraction the design did not ask for. Convenient-looking latitude is still a design change and needs the user's agreement.
+- review-agent reports a missing or contradicted design element as a blocking finding, and its report says explicitly whether the implementation matches the design element by element (this is a reachability-into-the-artifact finding, so the non-blocking calibration for document hygiene does not apply to it).
+
 ## Automatic Execution Policy
 
-By default, do not ask the user. Inside the workflow loops, each role decides for itself:
+By default, do not ask the user — subject to User Design Authority above, which always wins when the decision would change the user's design. Inside the workflow loops, each role decides for itself:
 
 - During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document's review-history file (see Review History Files below) and the status file `## Design Review > Rejected Suggestions`.
 - During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Implementation Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
@@ -108,11 +130,13 @@ By default, do not ask the user. Inside the workflow loops, each role decides fo
 
 Escalate to the user only when:
 
+- **any role wants to change the design** — add, remove, restructure, or substitute a module, flow, interface, data structure, or architectural decision (see User Design Authority; this one is mandatory, not discretionary, and applies in both phases);
+- a required design element cannot be implemented as written (escalate; never silently omit it);
 - the decision would cause data loss, an irreversible change, or a serious deviation from the agreed Goals / Acceptance Criteria;
 - the design phase reaches the final human approval step (one explicit user touch before implementation starts) — this is a hard stop the agent must WAIT at, not an escalation it can satisfy-and-move-past;
 - the same finding flips between accept and reject across three or more automated iterations without convergence.
 
-The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed. Only §2 step 8 (final human approval before implementation) is a user touch. This design-approval gate is a hard stop, not an escalation the agent can satisfy-and-move-past: absent explicit user approval (or a recorded explicit prior skip instruction), the workflow holds at the design phase indefinitely and does not enter implementation. The "By default, do not ask the user" posture above and the "prefer continuing through non-blocking ambiguity" guidance do NOT apply to this gate.
+The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until review-agent reports no changes needed, EXCEPT that a finding which would change the user's design goes to the user instead of being auto-adjudicated. Only §2 step 8 (final human approval before implementation) is a user touch. This design-approval gate is a hard stop, not an escalation the agent can satisfy-and-move-past: absent explicit user approval (or a recorded explicit prior skip instruction), the workflow holds at the design phase indefinitely and does not enter implementation. The "By default, do not ask the user" posture above and the "prefer continuing through non-blocking ambiguity" guidance do NOT apply to this gate.
 
 ### PR Review Handling (external review feedback)
 
@@ -192,14 +216,14 @@ If the platform cannot enforce these boundaries technically, enforce them proced
 
 ### 2. Design
 
-1. Work with the user to produce a Markdown design document from `templates/design-doc.md`. Decide whether one document is enough or whether the design should be split into multiple focused documents (by domain, module, layer, or step). Prefer splitting when the task touches several domains/modules/layers, the Implementation Plan has many steps, or a single document would grow long enough to dilute model context. When splitting, create a short index document that lists and links every part, and reuse the template (in full or partial form) for each part.
+1. Work with the user to produce a Markdown design document from `templates/design-doc.md`. The main agent ORGANIZES here: it turns the user's described flow and structure into an executable spec — ordered steps, exact fields/signatures/paths, error cases, test points — and never introduces a module, layer, data flow, or architectural choice the user did not describe (see User Design Authority). Decide whether one document is enough or whether the design should be split into multiple focused documents (by domain, module, layer, or step). Prefer splitting when the task touches several domains/modules/layers, the Implementation Plan has many steps, or a single document would grow long enough to dilute model context. When splitting, create a short index document that lists and links every part, and reuse the template (in full or partial form) for each part.
 2. Ask the user about unclear requirements, constraints, non-goals, acceptance criteria, risky implementation details, and important tests.
 3. When the design draft is ready, use reviewAgent to review it. On re-review iterations, also pass the design document's review-history file path so reviewAgent can see prior rejection reasons.
-4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals. Do not present findings to the user.
+4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals. Do not present ordinary findings to the user — EXCEPT a finding that would change the user's design (a module, flow, interface, data structure, or architectural decision): that is not the main agent's to adjudicate and goes to the user with the options (see User Design Authority).
 5. Record rejected findings with reasons in the design document's review-history file (see Review History Files) and the status file `## Design Review > Rejected Suggestions`. Record findings reviewAgent labeled `non-blocking` in the same review-history file and in the status file `## Design Review > Non-Blocking Findings Recorded To Review History` — they are recorded rather than edited into the design body, and they do not hold back `no-changes-needed`.
 6. Update the design document and status file. Apply an accepted finding that CORRECTS existing text by editing or deleting that text in place — never by appending an explanatory annotation next to it (see Design Document Edit Discipline); the reason for the change goes to the review-history file. An accepted finding that names something MISSING is fixed by adding the missing spec, and that growth is expected. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
 7. Repeat review until reviewAgent says no changes are needed.
-   This loop runs automatically without user input; only step 8 below is a user touch.
+   This loop runs automatically without user input, apart from the design-change escalations in step 4; only step 8 below is a scheduled user touch.
 8. Wait for explicit final human approval before implementation. The main agent MUST NOT proceed to §3 until the user has given **explicit user approval** — an affirmative, unambiguous go-ahead to enter implementation (a reply to a Goals/Acceptance-Criteria escalation during design is NOT such a go-ahead). On user timeout, silence, or absence, WAIT indefinitely and NEVER self-advance into implementation. The ONLY exception is an **explicit prior skip instruction**: an instruction that explicitly authorizes skipping THIS design→implementation approval (e.g. "design then implement and release directly", "skip approval"). Generic expressions of trust or autonomy ("work autonomously", "I trust you", "I'll be away") do NOT count, and a bare goal statement ("release a version") does NOT count. Before invoking the exception, record the verbatim skip instruction into the status file `## Design Review > Design Approval Record`; do not self-advance on an unrecorded exception.
 
 Do not enter implementation until both reviewAgent and the user approve the design. Never self-advance from design to implementation on timeout, silence, or user absence — proceed only on explicit user approval, or when the user gave an explicit prior instruction to skip this gate that has been recorded verbatim in the status file `## Design Review > Design Approval Record`.
@@ -215,6 +239,15 @@ The main agent decides on its own whether to split the task into SubTasks. Split
 - the task includes independently verifiable sub-capabilities.
 
 Not splitting is also valid for simple tasks.
+
+#### 3.0.0 Implement the design document exactly
+
+The approved design document is the specification, not a suggestion. Every implementation-phase dispatch carries this: build what the design says, complete and unaltered.
+
+- **Nothing dropped.** Every module, step, field, error case, interface, and acceptance criterion the design names gets implemented. A design element that turns out to be impossible or wrong as written is escalated through User Design Authority — not silently skipped, not deferred to a "later" that never comes, not replaced with a TODO.
+- **Nothing contradicted.** No substituted mechanism, no "equivalent but simpler" structure, no additional module or abstraction the design did not ask for, no reordered flow. Latitude that looks harmless is still a design change and needs the user's prior agreement.
+- **Deviations go through the user, before the code.** Any role that believes the design needs to change states the case to the main agent, which puts it to the user and waits (see User Design Authority). Implement-then-report is a violation even when the result is better.
+- **review-agent audits conformance element by element.** Its design-conformance dimension checks both directions — missing design elements AND unrequested additions — and reports either as a blocking finding with the design section and the `file:line` where the divergence is (or is absent). "Looks consistent with the design" is not an answer; the report states what it checked against what.
 
 #### 3.0.1 Implementation and testing run in parallel by default
 

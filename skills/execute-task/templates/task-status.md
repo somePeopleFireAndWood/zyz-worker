@@ -27,6 +27,10 @@ This is the single mandatory overall task status file. Each SubTask may optional
 - Decision:
 - Reason:
 
+Design-change requests (one row per proposal; every change to a module / flow / interface / data structure / architecture needs the user's PRIOR agreement — see SKILL.md `## User Design Authority`):
+
+- when | proposed by (main/implementation/test/review) | what it would change | why the current design does not work | options offered | user's answer (agreed / declined) | outcome (design updated + re-dispatched / design stands as written)
+
 ## Agent State
 
 - Main Agent:

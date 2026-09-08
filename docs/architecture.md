@@ -96,6 +96,8 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 **a) 设计→实现闸门是硬等待，不是「问一下」。** 沉默、超时、用户不在，都只能继续等，绝不自行推进。唯一例外是用户事先明确说过「跳过审批」，且该原话被逐字记录进 `## Design Review > Design Approval Record`。这条针对的失效模式是：agent 把「用户没回」当成默许，然后一路跑到交付。
 
+**a2) 用户的设计说了算，两个阶段都一样。** 设计阶段主控只做**整理**：把用户描述的流程与结构变成可照做的规格（排步骤、补字段/签名/路径/错误分支/测试点、点出缺口并追问），**不得自行引入用户没描述过的模块、分层、数据流或架构选择**——缺的是设计决策就去问，不能用「记录一条假设」代替。实现阶段则要求**严格照设计文档实现：不缺漏、不违背**（不换机制、不做「等价但更简单」的结构、不加设计没要求的模块或抽象、不重排流程）。任何角色（主控/implementation/test/review）想改模块、流程、接口、数据结构或架构，一律走同一条链：发现者报给主控 → 主控把**问题与选项**交给用户并等待 → 用户同意后才动，随后更新设计文档终态并重派。**先实现后报备是违规**，即使结果更好；「实现不了就静默跳过」是其中最坏的一种，因为它看起来像已完成。这条**优先于**「默认不问用户」——后者只管已批准设计**之内**的评审取舍与失败归因，从不授权改设计本身。review-agent 的 design-conformance 维度因此是**双向逐元素**核对（该有的没少、不该有的没多），任一方向都是阻塞项。
+
 **b) 「注册制」而不是「必须全做」。** 汇总测试的每个类别、汇总评审的每个维度，都必须显式写成 `ran/skipped: <原因>` 或 `covered/not-covered: <原因>`。允许跳过（e2e 烧配额可以跳），但**不允许静默省略**。未注册的类别/维度直接阻塞交付。原理：真正危险的不是「没做」，而是「没做但看起来做了」。
 
 **c) 增量输出 ≠ 缩减范围。** 允许把大产出拆成多条消息（提升 API 稳定性），但禁止在恢复卡死角色时压缩交付要求。「只给最严重 3 条」「一句话结论就行」这类措辞被明确列为禁止项——因为一个只报了 3 条问题的评审，看起来和干净的评审一模一样，剩下的问题会一路混进交付。这条由 L5 hook 在派发前机械拦截。
@@ -282,6 +284,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改 `dispatch.md` 字段**：模板、spawn 与 reuse 两个 Phase-1 写入点、check 的 Phase-2 回写（必须原样保留复用字段与编号仓字段组，否则首次轮询就会丢）、merge/cleanup/reuse 的仓集读取、崩溃恢复章节、T8 测试。
 - **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## Inputs` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
 - **改角色提示词**：`agents/<role>.md` 与 `subagents/<role>.md` 必须同改（正文被逐字节比对）。
+- **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## User Design Authority` 与 §3.0.0、`prompts/main-agent.md` 的同名节、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
 - **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## Design Document Edit Discipline` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
 - **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog Enforcement` 三处口径要一致。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。

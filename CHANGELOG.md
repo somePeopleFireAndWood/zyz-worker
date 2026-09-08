@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Make the user's design authoritative in both phases, and gate every change
+  to it on the user's prior agreement.** New `## User Design Authority` in
+  `SKILL.md` and `prompts/main-agent.md`, plus `#### 3.0.0 Implement the design
+  document exactly`. Three rules: (1) in the design phase the main agent
+  ORGANIZES rather than designs — it turns the user's described flow and
+  structure into an executable spec (ordered steps, exact fields/signatures/
+  paths, error cases, test points), names the gaps and asks, and never
+  introduces a module, layer, data flow, or architectural choice the user did
+  not describe; a missing design decision is a question for the user, not a gap
+  to fill with a documented assumption. (2) Any role in either phase that wants
+  to add, remove, restructure, or substitute a module, flow, interface, data
+  structure, or architectural decision states the case to the main agent, which
+  puts the problem and the smallest option set to the USER and waits — only the
+  user's agreement authorizes it; implement-then-report is a violation even when
+  the result is better, and silently skipping an element that could not be built
+  is the worst form of it because it ships as if complete. (3) In the
+  implementation phase the design document is implemented exactly: nothing
+  dropped (every module, step, field, error case, interface, acceptance
+  criterion) and nothing contradicted (no substituted mechanism, no "equivalent
+  but simpler" structure, no unrequested module or abstraction, no reordered
+  flow).
+  This **outranks** the standing "do not ask the user by default" posture, which
+  governs accept/reject decisions and failure attribution only WITHIN the
+  approved design and never authorizes changing the design itself — the
+  escalation list and design-workflow steps 1/4/7 are updated so the two do not
+  disagree. reviewAgent's design-conformance dimension is now a bidirectional
+  element-by-element audit (missing elements AND unrequested additions), both
+  directions blocking, with the design section and `file:line` named; the
+  document-hygiene non-blocking calibration never applies to it, since these
+  findings reach the artifact. implementationAgent and testAgent gain the
+  matching hard limit and reporting duty; testAgent additionally asserts what
+  the design specifies rather than what it would have designed.
+  `templates/task-status.md` gains a design-change request ledger under
+  `## User Decisions`; `templates/review-report.md` states the bidirectional
+  conformance requirement. 13 new T6 assertions, three mutation-verified.
+
 - **Constrain the SHAPE of a design-document repair (#20).** The design phase
   had a rule for where review history goes (#15) but none for how a design
   defect gets fixed, so main agents fixed defects by appending self-annotations

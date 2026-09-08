@@ -800,6 +800,63 @@ if grep -qi 'non-blocking' skills/execute-task/templates/review-report.md 2>/dev
 else
     fail "T6 review-report + task-status record non-blocking findings (#20)"
 fi
+# ---- User Design Authority: the user's design leads in BOTH phases, and any
+# ---- change to it needs the user's PRIOR agreement.
+if grep -qE '^## User Design Authority$' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qE '^## User Design Authority$' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
+    pass "T6 User Design Authority section in SKILL + prompt"
+else
+    fail "T6 User Design Authority section in SKILL + prompt"
+fi
+# The precedence clause is the load-bearing half: without it the standing
+# "do not ask the user by default" posture swallows the new rule.
+if grep -qiE 'outranks the "do not ask the user by default"' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qiE 'always wins' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
+    pass "T6 design-authority outranks the no-ask default"
+else
+    fail "T6 design-authority outranks the no-ask default"
+fi
+# Design phase: the main agent organizes, it does not originate the design.
+if grep -qiE 'does not originate the design' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qiE 'you do not originate it' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
+    pass "T6 main agent organizes rather than originates the design"
+else
+    fail "T6 main agent organizes rather than originates the design"
+fi
+# Implementation fidelity, stated for every executing role.
+if grep -qE '^#### 3\.0\.0 Implement the design document exactly$' skills/execute-task/SKILL.md 2>/dev/null; then
+    pass "T6 SKILL has the implement-exactly section (§3.0.0)"
+else
+    fail "T6 SKILL has the implement-exactly section (§3.0.0)"
+fi
+for f in subagents/implementation-agent.md agents/implementation-agent.md; do
+    if grep -qiE 'nothing dropped, nothing contradicted' "$f" 2>/dev/null \
+        && grep -qiE 'Implement-then-report is a violation' "$f" 2>/dev/null; then
+        pass "T6 $f requires exact design fidelity"
+    else
+        fail "T6 $f requires exact design fidelity"
+    fi
+done
+for f in subagents/review-agent.md agents/review-agent.md; do
+    if grep -qiE 'checked in both directions, element by element' "$f" 2>/dev/null; then
+        pass "T6 $f audits design conformance both ways"
+    else
+        fail "T6 $f audits design conformance both ways"
+    fi
+done
+for f in subagents/test-agent.md agents/test-agent.md subagents/implementation-agent.md agents/implementation-agent.md; do
+    if grep -qiE 'needs the user.s prior agreement' "$f" 2>/dev/null; then
+        pass "T6 $f routes design changes to the user"
+    else
+        fail "T6 $f routes design changes to the user"
+    fi
+done
+if grep -q 'Design-change requests' skills/execute-task/templates/task-status.md 2>/dev/null; then
+    pass "T6 task-status records design-change requests"
+else
+    fail "T6 task-status records design-change requests"
+fi
+
 # L5 must treat the new blocking/non-blocking vocabulary as a scope cap; the
 # change minted that vocabulary, so "report only blocking findings" became a
 # sanctioned-looking way to ask for less.

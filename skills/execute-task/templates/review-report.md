@@ -16,7 +16,7 @@ registration requirement, not a must-cover-everything requirement.)
 For a design-phase review (no implementation or tests exist yet), the
 implementation-oriented dimensions are registered `n/a: design phase`.
 
-- Design Conformance: (covered | not-covered: <reason>)
+- Design Conformance: (covered | not-covered: <reason>) — checked in BOTH directions element by element: nothing the design requires is missing, nothing contradicts it. Name the design section and the `file:line` for each divergence; divergences are BLOCKING.
 - Correctness: (covered | not-covered: <reason> | n/a: design phase)
 - Test Quality: (covered | not-covered: <reason> | n/a: design phase)
 - Regression Risk: (covered | not-covered: <reason> | n/a: design phase)
