@@ -103,6 +103,8 @@ The review-history file is not reviewed, produces no findings, and may grow with
 
 The user's design leads, in the design phase AND the implementation phase. Every role executes that design; no role invents, extends, or "improves" it on its own initiative.
 
+Every design document opens with a short banner naming the user as its designer (see `templates/design-doc.md`). It is KEPT content, not scaffolding: it stays in the filled document so implementation-agent, test-agent, and the approving human all read it, and it is the one part of the template that must not be deleted on read.
+
 **Design phase — the main agent organizes, it does not design.** Its whole job on the design document is to take what the user described and make it executable: structure the user's flow and architecture into ordered steps, fill in the mechanical detail an implementer would otherwise have to guess (exact fields, signatures, file paths, error cases, test points), name the gaps, and ask. It does NOT introduce a module, a layer, a data flow, or an architectural choice the user did not describe. When something is missing or unclear, ask the user — a documented assumption is for a non-blocking detail, never a substitute for a design decision that is the user's to make.
 
 **Any role, any phase: proposing a change to the design requires the user's prior agreement.** This covers adding, removing, restructuring, or substituting a module, a flow, an interface, a data structure, or any architectural decision — whoever finds the reason (main agent, implementation-agent, test-agent, review-agent). The sequence is fixed:

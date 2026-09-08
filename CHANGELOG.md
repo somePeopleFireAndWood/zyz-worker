@@ -41,7 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the design specifies rather than what it would have designed.
   `templates/task-status.md` gains a design-change request ledger under
   `## User Decisions`; `templates/review-report.md` states the bidirectional
-  conformance requirement. 13 new T6 assertions, three mutation-verified.
+  conformance requirement. `templates/design-doc.md` opens with a short KEPT
+  banner naming the user as the document's designer — it stays in the filled
+  document (unlike the delete-on-read scaffolding above it) so
+  implementation-agent, test-agent, and the approving human all read the rule
+  in the artifact itself rather than only in the prompts. 15 new T6 assertions,
+  five mutation-verified — including one that distinguishes the banner being
+  present from the banner sitting outside the scaffolding comment, since a
+  banner nested inside it would vanish from every real design document.
 
 - **Constrain the SHAPE of a design-document repair (#20).** The design phase
   had a rule for where review history goes (#15) but none for how a design

@@ -851,6 +851,28 @@ for f in subagents/test-agent.md agents/test-agent.md subagents/implementation-a
         fail "T6 $f routes design changes to the user"
     fi
 done
+# The design-doc template opens with a KEPT banner (not scaffolding) naming the
+# user as the designer, so every task's design.md carries it to its readers.
+if printf '%s' "$dd_tmpl_flat" | grep -qiE 'The user is the designer of this document' \
+    && printf '%s' "$dd_tmpl_flat" | grep -qiE 'nothing dropped, nothing contradicted'; then
+    pass "T6 design-doc template opens with the user-is-designer banner"
+else
+    fail "T6 design-doc template opens with the user-is-designer banner"
+fi
+# The banner must sit OUTSIDE the delete-on-read scaffolding comment, or it
+# vanishes from every filled document.
+if python3 - <<'PYEOF'
+import sys
+t = open('skills/execute-task/templates/design-doc.md').read()
+b = t.find('The user is the designer of this document')
+c = t.find('-->')
+sys.exit(0 if b > c > -1 else 1)
+PYEOF
+then
+    pass "T6 user-is-designer banner is kept content, not scaffolding"
+else
+    fail "T6 user-is-designer banner is kept content, not scaffolding"
+fi
 if grep -q 'Design-change requests' skills/execute-task/templates/task-status.md 2>/dev/null; then
     pass "T6 task-status records design-change requests"
 else
