@@ -18,13 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legitimately `none`, and not a second home for `## Open Questions`). The
   design→implementation approval gate now points the user at this section, so
   the direction can be judged without reading the whole spec.
-  This section is a SECOND description of the same design — the surface that
-  rots, per #20 — so three rules keep it honest: it is updated in the same edit
-  as the body, never later; when the two disagree the **body wins**; and the
-  repair is to **regenerate the affected part of the summary from the body** as
-  it now stands, not to patch the one sentence that was caught and never to
-  soften the body to match. A stale claim means the summary was derived from a
-  design state that no longer exists, so its neighbours are suspect too.
+  A summary goes stale the same way a design body does — someone APPENDS the
+  correction instead of rewriting what is now wrong ("(now five modules)" bolted
+  onto a sentence that still says four) — so three rules keep it honest: it is
+  updated in the same edit as the body and by rewriting, never by appending;
+  when the two disagree the **body wins**; and the repair is to **regenerate the
+  affected part of the summary from the body** as it now stands, not to patch
+  the one sentence that was caught and never to soften the body to match. A
+  stale claim means the summary was derived from a design state that no longer
+  exists, so its neighbours are suspect too.
   reviewAgent audits summary-vs-body consistency during design review and
   reports a divergence as blocking (it misleads the approving human), stating
   the repair as re-derivation rather than a one-line fix. 8 new T6 assertions,

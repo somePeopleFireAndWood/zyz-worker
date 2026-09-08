@@ -873,6 +873,18 @@ then
 else
     fail "T6 user-is-designer banner is kept content, not scaffolding"
 fi
+# The hazard is the EDIT SHAPE (appending instead of rewriting), not the mere
+# existence of a summary. An earlier revision of this section blamed "being a
+# second description", which mis-states #20: that issue explicitly RECOMMENDS a
+# second carrier (the review-history file) and its verified fix was a pure
+# deletion, not a merge of duplicate surfaces. Pin the causal claim so the
+# wrong one cannot creep back.
+if grep -qiE 'someone APPENDS the correction instead of rewriting' skills/execute-task/SKILL.md 2>/dev/null \
+    && ! grep -qiE 'second description of the same design' skills/execute-task/SKILL.md 2>/dev/null; then
+    pass "T6 summary staleness is attributed to append-instead-of-rewrite"
+else
+    fail "T6 summary staleness is attributed to append-instead-of-rewrite"
+fi
 # ---- Quick Review: the user's approval surface in every design document.
 if printf '%s' "$dd_tmpl_flat" | grep -qE '## Quick Review' \
     && printf '%s' "$dd_tmpl_flat" | grep -qE '### Design Summary' \
@@ -915,7 +927,7 @@ else
     fail "T6 design-doc template states body-wins + regenerate-from-body"
 fi
 for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -qiE 'Quick Review.{0,40}matches the body' "$f" 2>/dev/null \
+    if grep -qiE 'Quick Review.{0,40}still describes the body' "$f" 2>/dev/null \
         && grep -qiE 're-derive this part of the summary from the body' "$f" 2>/dev/null; then
         pass "T6 $f audits Quick Review and demands re-derivation"
     else

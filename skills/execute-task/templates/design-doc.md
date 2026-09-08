@@ -18,7 +18,7 @@
 
 ## Quick Review
 
-<!-- FOR THE USER: read this section alone and you should be able to judge whether the overall direction is right, without reading the rest. Keep it SHORT — it is a map, not a second copy of the design. The sections below are authoritative: if this summary and the body ever disagree, the body wins — the summary is the defect, and it is fixed by RE-DERIVING the affected part from the body as it now stands, not by patching the one wrong sentence and not by editing the body to match. -->
+<!-- FOR THE USER: read this section alone and you should be able to judge whether the overall direction is right, without reading the rest. Keep it SHORT — it is a map, not a second copy of the design. Update it by REWRITING what changed, never by appending a note beside a sentence that is now wrong — that is what turns a summary into a log. The sections below are authoritative: if this summary and the body ever disagree, the body wins — the summary is the defect, and it is fixed by RE-DERIVING the affected part from the body as it now stands, not by patching the one wrong sentence and not by editing the body to match. -->
 
 ### Design Summary
 
