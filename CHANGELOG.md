@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-09-08
+
 - **Give every design document a `## Quick Review` approval surface.** Directly
   under the user-is-designer banner, above the body: `### Design Summary` (the
   whole design in a page or less — which modules exist and what each owns, how
