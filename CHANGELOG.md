@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-09-09
+
+- **Make progressive, dimension-by-dimension review output the DEFAULT, not a
+  permitted option.** Observed failure: reviewAgent ran for a long time and then
+  crashed at the output stage, returning nothing — the whole review lost with
+  not one word delivered. The cause was that its `## Incremental Output` section
+  only *allowed and encouraged* multi-pass delivery, so the model composed the
+  entire report and emitted it in one final turn — the exact emission that
+  fails. Both reviewAgent copies (`subagents/review-agent.md` and
+  `agents/review-agent.md`) now direct the role to emit each part the moment it
+  is finished, as its own message (design conformance → correctness → test
+  quality → regression risk → risk-specific → overall verdict), and explicitly
+  permit revising or extending an already-emitted section in a later message so
+  there is no reason to withhold a finding until it feels "final". The section
+  now names the crash as the failure mode it prevents: each smaller emission is
+  less likely to fail, and what already landed is preserved even if a later turn
+  does. The main agent (`prompts/main-agent.md`) now requests this progressive
+  delivery by default at review dispatch — not only during stuck-role recovery —
+  and records each installment as it arrives.
+
+- **Make SubTasks flow through to completion autonomously — no per-SubTask user
+  approval.** Observed failure: on a multi-SubTask task the workflow finished the
+  earlier SubTasks and then stopped to ask the user whether to run the rest. The
+  rule "do not start SubTask N+1 until SubTask N has all three flags true" is
+  about dependency correctness, but it read like an approval checkpoint.
+  `SKILL.md` §3.B and `prompts/main-agent.md` now state explicitly that once the
+  design→implementation gate (§2 step 8) has been passed, the implementation
+  phase runs to completion on its own: as soon as a SubTask's flags are true (or
+  it is recorded blocked-and-deferred) the next ready SubTask(s) are dispatched
+  immediately, and the only mid-implementation stops are the genuine blocking
+  cases already in `## Automatic Execution Policy` (a role wanting to change the
+  user's design, data loss / irreversible change, a decision contradicting Goals
+  or Acceptance Criteria, or a true blocker). No runtime code changed.
+
 ## [0.19.0] — 2026-09-08
 
 - **Give every design document a `## Quick Review` approval surface.** Directly
