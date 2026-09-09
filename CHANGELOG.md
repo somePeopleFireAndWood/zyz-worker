@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-09-09
+
+- **Dispatch subagents in the main agent's own working directory, not into a
+  git worktree.** On cross-repo / full-stack tasks the main agent could spawn
+  implementationAgent / testAgent / reviewAgent with `isolation: worktree`,
+  landing the subagent in a fresh worktree path that is usually OUTSIDE the
+  session's permitted directories — its file writes were then denied and the
+  role could not work at all (worse when the main agent was itself already
+  inside an orchestrator-created worktree, nesting one worktree in another).
+  `skills/execute-task/prompts/main-agent.md` now carries an explicit rule to
+  default to no isolation so each subagent inherits the main agent's cwd and
+  granted permissions, reserving `isolation: worktree` for the rare
+  isolated-tree lane whose worktree path has been confirmed permitted (and
+  never for ordinary implementation/test/review dispatch). `SKILL.md` §3.0.x no
+  longer recommends `isolation: worktree` as the default escape hatch for
+  mutation / refactor lanes — backup-copy discipline is the default, with the
+  permitted-path caveat spelled out.
+
 ## [0.21.0] — 2026-09-09
 
 - **testAgent gains `Bash`, scoped to self-verifying its OWN test code.** The
