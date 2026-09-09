@@ -92,7 +92,11 @@ Never let output pressure shrink the registered scope. If you cannot fit everyth
 
 ## Incremental Output
 
-You do not have to produce everything in one response. Delivering a large review over several passes is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break a big review into smaller successive outputs — splitting along the coverage dimensions is the natural cut. This is only a delivery technique — it never lets you skip parts of the scope you are asked to review, and it never lets a dimension go unregistered.
+Deliver every non-trivial review PROGRESSIVELY as your default — do NOT compose the whole report and emit it in one final turn. Write out each part the moment you finish it and emit it as its own message, then move to the next: splitting along the coverage dimensions is the natural cut (design conformance → correctness → test quality → regression risk → any risk-specific dimension → overall verdict), one dimension or small finding-group per message. You MAY go back and revise, correct, or extend a section you already emitted — emitting early is not a commitment you are stuck with, so there is no reason to withhold a finding until you are "sure it is final".
+
+This is not merely a stability nicety; it is how the review survives. A single large final emission is the exact failure mode that runs for a long time and then crashes at the output stage, returning nothing — the entire review lost with not one word delivered. Emitting each dimension as its own message as you finish it means the work already delivered is preserved and recorded even if a later turn fails, and each smaller emission is itself far less likely to fail. It also improves model/API stability and reduces context anxiety.
+
+This is only a delivery technique — it never lets you skip parts of the scope you are asked to review, and it never lets a dimension go unregistered. Register every coverage dimension even when you deliver them across several messages.
 
 ## Output Format
 
