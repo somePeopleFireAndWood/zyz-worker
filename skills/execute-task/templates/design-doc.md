@@ -10,7 +10,7 @@
 > **The user is the designer of this document; the agent only organizes it.**
 > Everything below records the design the USER described — the agent's job was to
 > structure it and fill in executable detail, never to introduce a module, flow,
-> interface, data structure, or architectural choice the user did not choose.
+> interface, data structure, key algorithm, or architectural choice the user did not choose.
 > Implement this document exactly: nothing dropped, nothing contradicted. Any
 > role that believes something here must change says so and waits for the user's
 > agreement — no role changes the design on its own initiative, in any phase.

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-09-09
+
+- **Design-phase authority sharpened in the execute-task workflow.** Three
+  gaps between the shipped prompts and the intended "user leads design, the
+  agent only organizes" standard are closed:
+  - **`key algorithm` added to every design-change trigger and conformance
+    enumeration.** The protected-element lists previously read
+    module/flow/interface/data-structure/architecture and omitted algorithms,
+    so a finding that would change a key algorithm could be adjudicated as an
+    ordinary within-design finding instead of escalated to the user. Fixed
+    across `SKILL.md`, `main-agent.md`, both `review-agent.md` and
+    `implementation-agent.md` copies (`agents/` + `subagents/`), and the
+    `design-doc.md` template banner.
+  - **New duty to surface problems in the user's own design, never resolve
+    them silently.** The main agent (with reviewAgent) now actively hunts for
+    and routes to the user four problem kinds in what the user *did* describe —
+    errors, contradictions, ambiguities, and **implicit assumptions that may
+    not hold** — instead of picking an interpretation or encoding a shaky
+    premise as fact. Added to `SKILL.md` `## User Design Authority` / §2 Design
+    and the `main-agent.md` responsibilities + Design Workflow.
+  - **reviewAgent design-review standard now names key algorithms and unstated
+    assumptions** as explicit check items (both `agents/` and `subagents/`
+    copies).
+- Prompt-only change; no runtime, hook, or script behavior changes.
+
 ## [0.22.0] — 2026-09-09
 
 - **New skill `zyz-worker:self-healing-loop`** (closes #21): a reliable
