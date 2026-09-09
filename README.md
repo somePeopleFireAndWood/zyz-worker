@@ -29,6 +29,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - Orchestration Scheduling Task Skill 位于 `skills/orchestration-scheduling-task/SKILL.md`
 - git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
 - clean-tmp Skill 位于 `skills/clean-tmp/SKILL.md`（跨平台安全清理临时目录 + Docker/编译缓存清理面，交互/自动双模式；细节参考资料在 `references/`）
+- self-healing-loop Skill 位于 `skills/self-healing-loop/SKILL.md`（长期定时 agent：session loop + cron watchdog + 哨兵唤醒双层自愈；断链沉睡自愈、进程被杀由 headless 兜底，模板在 `templates/`，唤醒信道分析在 `references/`）
 - Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
 - Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - Orchestration bash helpers 位于 `scripts/orch-*.sh`（其中 `orch-reuse-worker.sh` 用于「复用已完成任务的 tmux/worktree 创建新任务」——见下方 *容器复用*）
@@ -352,11 +353,20 @@ subagents/
 │   │       └── question-answer.md
 │   ├── git-worktree/
 │   │   └── SKILL.md
-│   └── clean-tmp/
+│   ├── clean-tmp/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   │       ├── macos-tmpdir-trap.md
+│   │       └── socket-liveness.md
+│   └── self-healing-loop/
 │       ├── SKILL.md
+│       ├── templates/
+│       │   ├── watchdog.sh
+│       │   ├── monitor-sentinel.sh
+│       │   ├── loop_state.md
+│       │   └── uninstall.sh
 │       └── references/
-│           ├── macos-tmpdir-trap.md
-│           └── socket-liveness.md
+│           └── wakeup-channel.md
 ├── subagents/
 │   ├── README.md
 │   ├── implementation-agent.md

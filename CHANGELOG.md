@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-09-09
+
+- **New skill `zyz-worker:self-healing-loop`** (closes #21): a reliable
+  long-running, on-schedule agent that lives in a Claude Code session and heals
+  itself when the wake-up chain breaks. A bare session `/loop` (self-scheduled
+  via `ScheduleWakeup`) silently sleeps after one network/API blip snaps the
+  chain; this skill adds a two-layer **loop + watchdog** architecture. The
+  **loop** (living half) runs in the main session and executes due tasks; the
+  **watchdog** (dead half, a `*/20 * * * *` cron script) reads the same state
+  file and, on a miss, first writes a sentinel file that a persistent Monitor
+  turns into a fresh turn so the live session back-fills with full context, then
+  falls back to headless `claude -p` only if a grace period passes. One
+  `/zyz-worker:self-healing-loop <task>` turn installs the watchdog + crontab
+  line, arms the sentinel Monitor, and starts the loop; `uninstall <name>` tears
+  it down. Ships `skills/self-healing-loop/SKILL.md`, four `templates/`
+  (`watchdog.sh`, `monitor-sentinel.sh`, `loop_state.md`, `uninstall.sh`), a
+  `references/wakeup-channel.md` deep-dive, and `commands/self-healing-loop.md`.
+  Design lessons baked in: the wake-up channel must be push-style (sentinel +
+  Monitor wakes a slept session; cross-session `SendMessage` cannot); the Monitor
+  is re-armed on every loop wake-up because it does not self-heal; the watchdog
+  writes the sentinel unconditionally rather than pre-checking liveness from
+  unstable fields; and idempotency (today's date in the state row) plus an
+  `mkdir` mutex prevent double-runs. `<NOTIFY>` reuses the existing IM layer
+  (`~/.zyz-worker/notify.json`, see `docs/notify.md`). Documented boundary,
+  stated in every artifact: self-healing covers a broken/slept chain, NOT a
+  killed process — headless protects business continuity but restoring the
+  resident loop takes one manual re-launch. Installing the crontab line is a
+  system-level change and requires explicit user confirmation.
+
 ## [0.21.1] — 2026-09-09
 
 - **Dispatch subagents in the main agent's own working directory, not into a
