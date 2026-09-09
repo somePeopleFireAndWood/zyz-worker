@@ -19,7 +19,7 @@ trap 'tmux kill-session -t "$TEST_SESSION" >/dev/null 2>&1 || true; rm -rf "$TMP
 pass=0
 fail=0
 skipped=0
-EXPECTED_VERSION="0.20.0"
+EXPECTED_VERSION="0.21.0"
 # Release-specific mutation sentinel: a base-version bump alone also changes
 # the cache path, but the approved candidate-install procedure explicitly
 # requires a fresh cachebuster so a stale same-base cache can never be reused.

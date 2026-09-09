@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-09-09
+
+- **testAgent gains `Bash`, scoped to self-verifying its OWN test code.** The
+  role previously had no shell, so it could not compile what it wrote and the
+  "delivered ≠ compilable" class of defect (leaked `</content>` tags, missing
+  helpers, arity mismatches) always leaked downstream to implementationAgent /
+  the main agent. testAgent now (a) MUST compile / type-check / vet / lint its
+  tests and fix syntax, import, type, and arity errors before handoff, and (b)
+  MAY smoke-run its own lightweight cases (`-run`-scoped to what it just wrote,
+  no test DB / ports / network, nothing heavy / e2e / concurrent) purely as
+  private authoring feedback. The smoke-run is deliberately NOT a verdict: its
+  result is not reported to the main agent and never substitutes for or
+  short-circuits the authoritative run — that keeps it out of the verdict chain
+  so it cannot be mistaken for a green signal. The writer-does-not-certify-green
+  separation is preserved intact: testAgent still must not run the full suite to
+  declare it green, must not run heavy / e2e / DB-backed / concurrent suites, and
+  must not execute the `## Mutation Manifest` or the injected-degradation
+  manifest — implementationAgent runs those and returns per-entry
+  KILLED/SURVIVED, so a test's author is never the sole judge of that test's
+  result. Changed in `agents/test-agent.md` + `subagents/test-agent.md` (bodies
+  kept byte-identical), and the boundary docs `skills/execute-task/SKILL.md`
+  (§Role Boundaries) and `docs/architecture.md` (role table + rationale; the
+  rationale no longer claims review-agent is the *only* Bash-carrying role).
+
 ## [0.20.0] — 2026-09-09
 
 - **IM stop-notifications: get pinged when a workflow needs you, finishes,
