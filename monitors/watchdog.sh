@@ -77,6 +77,20 @@ trap watchdog_cleanup EXIT
 # agent learns the layer is not protecting it, then stay quiet; re-arm resets it.
 UNARMED_REPORTED="false"
 
+# IM stop-notifier bridge (best-effort, fail-open). When a finding is emitted
+# for the main agent, also forward a `stuck` event to the user's configured IM
+# via hooks/scripts/notify.sh — this is the reuse of the existing monitor layer
+# for the "agent got stuck / a role likely died" slice of abnormal
+# interruption. Backgrounded so a slow IM command never delays the scan; the
+# notifier itself is config-gated, workflow-scoped, and cooldown-limited, so
+# calling it on every finding is safe. NOTE: a whole-process crash takes this
+# monitor down with it, so this covers stalls, not host death.
+NOTIFY_SH="$SCRIPT_DIR/../hooks/scripts/notify.sh"
+notify_stuck() { # $1 = task root, $2 = short message
+    [ -x "$NOTIFY_SH" ] || return 0
+    "$NOTIFY_SH" --event stuck --task-root "$1" --message "$2" >/dev/null 2>&1 &
+}
+
 # But this monitor is armed `when: always`, so it starts in EVERY session —
 # including the overwhelming majority that never run execute-task. Reporting a
 # bare resolution miss there is a false alarm that tells the user dead subagents
@@ -162,22 +176,27 @@ except Exception:pass
                     stale)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role %s (%s) has been silent for %s min with no clean finish — verify platform state, send an exact reconnect probe, and after confirmed death use agent-runtime-state.sh finalize before re-dispatch.\n' "$key" "$role_line" "$((age / 60))"
+                        notify_stuck "$root" "role $role_line silent $((age / 60)) min with no clean finish"
                         ;;
                     tracking)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-tracking-$key-$detail.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role %s (%s) has fixed-pack tracking state %s — reconcile the exact persisted event when available; do not treat an unverifiable instance as healthy quiet.\n' "$key" "$role_line" "$detail"
+                        notify_stuck "$root" "role $role_line has unreconciled tracking state ($detail)"
                         ;;
                     probe)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-probe-$key-$detail.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] reconnect probe %s for role instance %s is overdue without an explicit matching ACK; heartbeat alone is not an ACK. Query platform running/inflight state now and follow the bounded recovery protocol.\n' "$detail" "$key"
+                        notify_stuck "$root" "reconnect probe for role $role_line is overdue without ACK"
                         ;;
                     no-output)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-no-output-$key.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role instance %s has reached the no-output threshold and its fixed LIVE_INVENTORY baseline still matches the current descriptor-bounded physical tree; the lane may be lost.\n' "$key"
+                        notify_stuck "$root" "role $role_line reached the no-output threshold; the lane may be lost"
                         ;;
                     unharvested)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role %s (%s) completed (DONE/FINALIZED) but appears UNPROCESSED — the main agent has been idle since it finished, so its completion may not have been delivered (backup signal on the watchdog path). Read its result SubTask file under %s/subtasks/ and its durable log, record it in %s, then continue.\n' "$key" "$role_line" "$root" "$status_file"
+                        notify_stuck "$root" "role $role_line finished but its result is unprocessed"
                         ;;
                 esac
             done <<EOF
@@ -192,6 +211,7 @@ EOF
                     if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
                         printf '[zyz-worker watchdog] status file %s is %s min stale during active phase %s — persist current progress, active roles, blockers, and next step into it now.\n' \
                             "$status_file" "$((age / 60))" "$phase"
+                        notify_stuck "$root" "status file $((age / 60)) min stale during active phase $phase"
                     fi
                 fi
             fi

@@ -1,5 +1,5 @@
 {
-  "description": "zyz-worker watchdog: deterministic liveness heartbeats, status-freshness reminders, dispatch-side scope guard, shared-worktree checkout guard, subagent exit gate, and main-agent stop gate for the execute-task workflow. All hooks fail open and no-op unless a .zyz-worker/current-task pointer resolves. Set ZYZ_HOOKS_DISABLE=1 to disable (ZYZ_SCOPE_GUARD_DISABLE=1 for the scope guard alone; ZYZ_CHECKOUT_GUARD_DISABLE=1 for the checkout guard alone).",
+  "description": "zyz-worker watchdog: deterministic liveness heartbeats, status-freshness reminders, dispatch-side scope guard, shared-worktree checkout guard, subagent exit gate, main-agent stop gate, and IM stop-notifier for the execute-task workflow. All hooks fail open and no-op unless a .zyz-worker/current-task pointer resolves. Set ZYZ_HOOKS_DISABLE=1 to disable (ZYZ_SCOPE_GUARD_DISABLE=1 for the scope guard alone; ZYZ_CHECKOUT_GUARD_DISABLE=1 for the checkout guard alone; ZYZ_NOTIFY_DISABLE=1 for the IM notifier alone).",
   "hooks": {
     "PreToolUse": [
       {
@@ -91,6 +91,43 @@
             "type": "command",
             "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/stop-gate-main.sh\"",
             "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/notify.sh\"",
+            "async": true,
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/notify.sh\"",
+            "async": true,
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zyz_hook_plugin_root=\"${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}}\"; if [ -z \"$zyz_hook_plugin_root\" ]; then exit 0; fi; \"$zyz_hook_plugin_root/hooks/scripts/notify.sh\"",
+            "async": true,
+            "timeout": 15
           }
         ]
       }

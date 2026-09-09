@@ -400,6 +400,55 @@ author agent's transcript.
   misread as checkout targets.
 - Supported agents: all — the incident's command came from a subagent.
 
+## scripts/notify.sh — L7
+
+The IM stop-notifier. Forwards "the agent stopped" events to a
+user-configured command (Feishu / Telegram / any webhook / any shell) so the
+user is pinged when the workflow needs them, finishes, fails, or stalls. See
+[../docs/notify.md](../docs/notify.md) for the config schema and ready-to-paste
+Feishu / Telegram / webhook recipes.
+
+- Trigger points (all registered `async: true`, so IM latency never slows the
+  workflow; each also carries a `timeout` backstop):
+  - `Notification` (matcher `*`; the script maps `notification_type`):
+    `permission_prompt` / `agent_needs_input` / `elicitation_dialog` /
+    `elicitation_url_dialog` → **needs_input**; `agent_completed` /
+    `idle_prompt` → **completed**; every other type is ignored. These fire only
+    when the user is away (~6s for a permission prompt, ~60s after an idle
+    finish), so an actively-typing user is not pinged.
+  - `StopFailure` → **failed** (API-error terminations: rate_limit /
+    authentication / overloaded / server_error — the error text becomes the
+    message).
+  - `SessionEnd` → **session_end** (graceful close only; OFF by default).
+  - Direct invocation `notify.sh --event stuck --task-root <dir> --message <m>`
+    from `../monitors/watchdog.sh` on a silent-role / stale-status /
+    unharvested finding → **stuck**.
+- Inputs: hook JSON on stdin (hook mode) or `--event/--title/--message/
+  --task-root/--base/--session-id` (direct mode); config
+  `~/.zyz-worker/notify.json` (override with `$ZYZ_NOTIFY_CONFIG`).
+- Config keys: `enabled` (bool), `command` (string; receives the event as
+  `ZYZ_NOTIFY_*` env vars and as a JSON object on stdin), `events` (optional
+  whitelist — when absent the default set is
+  `needs_input`/`completed`/`failed`/`stuck`, i.e. `session_end` excluded),
+  `cooldown_sec` (optional, default 30; per-category), `include_message`
+  (optional, default true — set false to send the category/task without any
+  free-text message content).
+- Scope: like every other hook it no-ops unless a `.zyz-worker/current-task`
+  pointer resolves, so ordinary interactive sessions are never notified.
+- Failure behavior: fail open — missing input/config/parser/pointer, a
+  disabled config, a filtered event, or an active cooldown exits 0 with no side
+  effect; a failing user command never propagates.
+- **Coverage boundary (honest):** a true whole-process death — `kill -9`, OOM,
+  terminal close, network/SSH drop — fires no hook and takes the watchdog
+  monitor down with it, so it is NOT covered. `stuck` catches the in-session
+  case (a role went silent / the workflow stalled while the process is still
+  alive). Reliable crash-of-the-host detection would need a fully external
+  daemon (a possible future addition).
+- Disable: `ZYZ_NOTIFY_DISABLE=1` turns off just the notifier;
+  `ZYZ_HOOKS_DISABLE=1` the whole layer.
+- Supported agents: main agent (Notification/StopFailure/SessionEnd are
+  main-session events) plus the watchdog monitor (stuck).
+
 ## ../monitors/watchdog.sh — L3
 
 See `monitors/monitors.json`: a background monitor armed with

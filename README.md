@@ -35,6 +35,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 提示词式 SubAgent 定义位于 `subagents/`
 - Watchdog hooks（execute-task 确定性监督层：心跳、状态新鲜度、退出/停止门禁）位于 `hooks/hooks.json` 与 `hooks/scripts/`，详见 `hooks/README.md`
 - Watchdog 后台监视器位于 `monitors/monitors.json` 与 `monitors/watchdog.sh`（execute-task 触发时启动，发现角色静默/状态过期时唤醒主 agent）
+- IM 停止通知（agent 需要你回答、任务完成、异常中断、卡死时经自定义命令推送到飞书/Telegram/任意 webhook）位于 `hooks/scripts/notify.sh`，配置在 `~/.zyz-worker/notify.json`，用法与飞书/Telegram 示例见 [docs/notify.md](docs/notify.md)
 - 整体架构说明位于 `docs/architecture.md`（各 skill / subAgent / 脚本 / hook 的职责与主体原理）
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`

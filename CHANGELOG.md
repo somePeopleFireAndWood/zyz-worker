@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-09-09
+
+- **IM stop-notifications: get pinged when a workflow needs you, finishes,
+  fails, or stalls.** New `hooks/scripts/notify.sh` (L7) forwards the
+  hook-catchable "agent stopped" events to a user-configured command, so a
+  long-running `execute-task` / `orchestrate-tasks` run can be left unattended.
+  It ships one mechanism — a custom command — that receives the event as
+  `ZYZ_NOTIFY_*` env vars and a JSON object on stdin; `docs/notify.md` carries
+  ready-to-paste Feishu / Telegram / generic-webhook recipes. Configuration
+  lives in `~/.zyz-worker/notify.json` (`enabled`, `command`, optional `events`
+  whitelist, `cooldown_sec`, `include_message`); secrets never enter the repo.
+  Event sources: `Notification` (permission_prompt / agent_needs_input /
+  elicitation → **needs_input**; agent_completed / idle_prompt → **completed**),
+  `StopFailure` (API-error terminations → **failed**), `SessionEnd` (graceful
+  close → **session_end**, OFF by default), and the existing L3 watchdog, which
+  now also fires **stuck** on a silent-role / stale-status / unharvested
+  finding (the requested reuse of the monitor layer). All three new hooks are
+  registered `async: true`, so IM latency never slows the workflow, and every
+  path is workflow-scoped (no `.zyz-worker/current-task` pointer → no
+  notification) and fail-open. `needs_input` / `completed` ride Claude Code's
+  idle/permission timers, so an actively-typing session is never spammed.
+  Honest coverage boundary, documented: a true whole-process death (kill -9,
+  OOM, terminal close, network drop) fires no hook and takes the monitor down
+  with it, so it is not covered; `stuck` catches the in-session stall.
+  Disable with `ZYZ_NOTIFY_DISABLE=1` (just the notifier) or
+  `ZYZ_HOOKS_DISABLE=1` (the whole layer). New `scripts/test-notify-hook.sh`
+  (21 checks) covers event→category mapping, scope/config gating, the
+  default-vs-explicit event set, `include_message` redaction, per-category
+  cooldown, and the watchdog `stuck` path; T2R in `scripts/test-watchdog-hooks.sh`
+  now validates all thirteen registered hook commands.
+
+- **Fix an incomplete 0.19.1 release.** 0.19.1 bumped only the two Claude
+  manifests and the changelog, leaving `.codex-plugin/plugin.json` and all four
+  test suites' `EXPECTED_VERSION` at 0.19.0 — which left the version-consistency
+  checks (T6 and friends) red. 0.20.0 brings every version location back in sync
+  (three manifests + `test-watchdog-hooks.sh` / `test-codex-adaptation.sh` /
+  `test-clean-tmp-skill.sh` / `test-release-0-5-0.sh`) and ships the
+  previously-missing release archive.
+
 ## [0.19.1] — 2026-09-09
 
 - **Make progressive, dimension-by-dimension review output the DEFAULT, not a

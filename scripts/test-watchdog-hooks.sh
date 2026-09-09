@@ -54,7 +54,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.19.0"
+EXPECTED_VERSION="0.20.0"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -120,15 +120,15 @@ done
 # T2R mutation manifest (implementationAgent executes each mutation separately):
 #
 # mechanism                         mutation                         expected red
-# PLUGIN_ROOT > ZYZ_PLUGIN_ROOT     swap those two parameter arms   conflict_all_distinct_prefers_PLUGIN_ROOT_all_ten
-# ZYZ > CLAUDE                      swap those two parameter arms   empty_PLUGIN_ROOT_falls_to_ZYZ_PLUGIN_ROOT_all_ten
-# CLAUDE > legacy CODEX             swap those two parameter arms   empty_first_two_falls_to_CLAUDE_PLUGIN_ROOT_all_ten
-# no cwd fallback                   change final empty arm to `.`   all_unset_success_noop_and_cwd_bait_not_executed_all_ten,
-#                                                                  all_empty_success_noop_and_cwd_bait_not_executed_all_ten
+# PLUGIN_ROOT > ZYZ_PLUGIN_ROOT     swap those two parameter arms   conflict_all_distinct_prefers_PLUGIN_ROOT_all_thirteen
+# ZYZ > CLAUDE                      swap those two parameter arms   empty_PLUGIN_ROOT_falls_to_ZYZ_PLUGIN_ROOT_all_thirteen
+# CLAUDE > legacy CODEX             swap those two parameter arms   empty_first_two_falls_to_CLAUDE_PLUGIN_ROOT_all_thirteen
+# no cwd fallback                   change final empty arm to `.`   all_unset_success_noop_and_cwd_bait_not_executed_all_thirteen,
+#                                                                  all_empty_success_noop_and_cwd_bait_not_executed_all_thirteen
 # empty means absent                change any `:-` to `-`          the named empty_* case for that arm
-# quoted root                       remove execution-path quotes    spaces_in_PLUGIN_ROOT_all_ten
-# ten-command uniformity            alter/omit one command prefix   static_exact_ten_commands_and_targets or
-#                                                                  static_uniform_resolution_prefix_all_ten
+# quoted root                       remove execution-path quotes    spaces_in_PLUGIN_ROOT_all_thirteen
+# thirteen-command uniformity            alter/omit one command prefix   static_exact_thirteen_commands_and_targets or
+#                                                                  static_uniform_resolution_prefix_all_thirteen
 # no-op execution guard             invoke with an empty root       both all_*_success_noop cases
 # fixture premise                   delete selected stub script     harness_degradation_missing_selected_script_is_detected
 #
@@ -163,6 +163,9 @@ expected_by_id = {
     "SubagentStart[0].hooks[0]": "subagent-track.sh",
     "SubagentStop[0].hooks[0]": "stop-gate-subagent.sh",
     "Stop[0].hooks[0]": "stop-gate-main.sh",
+    "Notification[0].hooks[0]": "notify.sh",
+    "StopFailure[0].hooks[0]": "notify.sh",
+    "SessionEnd[0].hooks[0]": "notify.sh",
     "SessionStart[0].hooks[0]": "start-watchdog.sh",
 }
 expected_targets = collections.Counter(expected_by_id.values())
@@ -200,16 +203,16 @@ for command_id, command in commands:
 
 actual_targets = collections.Counter(targets)
 actual_by_id = {command_id: target for (command_id, _), target in zip(commands, targets)}
-if len(commands) == 10 and actual_by_id == expected_by_id and actual_targets == expected_targets:
-    emit("PASS", "T2R_static_exact_ten_commands_and_targets")
+if len(commands) == 13 and actual_by_id == expected_by_id and actual_targets == expected_targets:
+    emit("PASS", "T2R_static_exact_thirteen_commands_and_targets")
 else:
-    emit("FAIL", "T2R_static_exact_ten_commands_and_targets",
+    emit("FAIL", "T2R_static_exact_thirteen_commands_and_targets",
          f"count={len(commands)} targets={dict(actual_targets)} shape={shape_errors}")
 
-if len(prefixes) == 10 and len(set(prefixes)) == 1:
-    emit("PASS", "T2R_static_uniform_resolution_prefix_all_ten")
+if len(prefixes) == 13 and len(set(prefixes)) == 1:
+    emit("PASS", "T2R_static_uniform_resolution_prefix_all_thirteen")
 else:
-    emit("FAIL", "T2R_static_uniform_resolution_prefix_all_ten",
+    emit("FAIL", "T2R_static_uniform_resolution_prefix_all_thirteen",
          f"parsed={len(prefixes)} distinct-prefixes={len(set(prefixes))}")
 
 private_assignments = []
@@ -223,10 +226,10 @@ for command_id, command in commands:
         shape_errors.append(f"{command_id}: resolution is not assigned to a private zyz plugin-root variable")
     else:
         private_assignments.append(match.group(1))
-if len(private_assignments) == 10 and len(set(private_assignments)) == 1:
-    emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_ten")
+if len(private_assignments) == 13 and len(set(private_assignments)) == 1:
+    emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen")
 else:
-    emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_ten", "; ".join(shape_errors))
+    emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen", "; ".join(shape_errors))
 
 forbidden = []
 for command_id, command in commands:
@@ -264,31 +267,31 @@ try:
         install_stubs(root, label)
 
     cases = [
-        ("single_PLUGIN_ROOT_all_ten", {"PLUGIN_ROOT": roots["plugin"]}, "plugin"),
-        ("single_ZYZ_PLUGIN_ROOT_all_ten", {"ZYZ_PLUGIN_ROOT": roots["zyz"]}, "zyz"),
-        ("single_CLAUDE_PLUGIN_ROOT_all_ten", {"CLAUDE_PLUGIN_ROOT": roots["claude"]}, "claude"),
-        ("single_legacy_CODEX_PLUGIN_ROOT_all_ten", {"CODEX_PLUGIN_ROOT": roots["legacy"]}, "legacy"),
-        ("conflict_all_distinct_prefers_PLUGIN_ROOT_all_ten", {
+        ("single_PLUGIN_ROOT_all_thirteen", {"PLUGIN_ROOT": roots["plugin"]}, "plugin"),
+        ("single_ZYZ_PLUGIN_ROOT_all_thirteen", {"ZYZ_PLUGIN_ROOT": roots["zyz"]}, "zyz"),
+        ("single_CLAUDE_PLUGIN_ROOT_all_thirteen", {"CLAUDE_PLUGIN_ROOT": roots["claude"]}, "claude"),
+        ("single_legacy_CODEX_PLUGIN_ROOT_all_thirteen", {"CODEX_PLUGIN_ROOT": roots["legacy"]}, "legacy"),
+        ("conflict_all_distinct_prefers_PLUGIN_ROOT_all_thirteen", {
             "PLUGIN_ROOT": roots["plugin"], "ZYZ_PLUGIN_ROOT": roots["zyz"],
             "CLAUDE_PLUGIN_ROOT": roots["claude"], "CODEX_PLUGIN_ROOT": roots["legacy"],
         }, "plugin"),
-        ("empty_PLUGIN_ROOT_falls_to_ZYZ_PLUGIN_ROOT_all_ten", {
+        ("empty_PLUGIN_ROOT_falls_to_ZYZ_PLUGIN_ROOT_all_thirteen", {
             "PLUGIN_ROOT": "", "ZYZ_PLUGIN_ROOT": roots["zyz"],
             "CLAUDE_PLUGIN_ROOT": roots["claude"], "CODEX_PLUGIN_ROOT": roots["legacy"],
         }, "zyz"),
-        ("empty_first_two_falls_to_CLAUDE_PLUGIN_ROOT_all_ten", {
+        ("empty_first_two_falls_to_CLAUDE_PLUGIN_ROOT_all_thirteen", {
             "PLUGIN_ROOT": "", "ZYZ_PLUGIN_ROOT": "",
             "CLAUDE_PLUGIN_ROOT": roots["claude"], "CODEX_PLUGIN_ROOT": roots["legacy"],
         }, "claude"),
-        ("empty_first_three_falls_to_legacy_CODEX_PLUGIN_ROOT_all_ten", {
+        ("empty_first_three_falls_to_legacy_CODEX_PLUGIN_ROOT_all_thirteen", {
             "PLUGIN_ROOT": "", "ZYZ_PLUGIN_ROOT": "", "CLAUDE_PLUGIN_ROOT": "",
             "CODEX_PLUGIN_ROOT": roots["legacy"],
         }, "legacy"),
-        ("spaces_in_PLUGIN_ROOT_all_ten", {
+        ("spaces_in_PLUGIN_ROOT_all_thirteen", {
             "PLUGIN_ROOT": roots["spaces"], "ZYZ_PLUGIN_ROOT": roots["zyz"],
         }, "spaces"),
-        ("all_unset_success_noop_and_cwd_bait_not_executed_all_ten", {}, None),
-        ("all_empty_success_noop_and_cwd_bait_not_executed_all_ten", dict.fromkeys(root_vars, ""), None),
+        ("all_unset_success_noop_and_cwd_bait_not_executed_all_thirteen", {}, None),
+        ("all_empty_success_noop_and_cwd_bait_not_executed_all_thirteen", dict.fromkeys(root_vars, ""), None),
     ]
 
     base_env = os.environ.copy()
@@ -351,7 +354,7 @@ PY
     done < "$t2r_results"
     rm -f "$t2r_results"
 else
-    fail "T2R hook-root contract requires python3" "release gate cannot JSON-parse or execute the ten-command matrix"
+    fail "T2R hook-root contract requires python3" "release gate cannot JSON-parse or execute the thirteen-command matrix"
 fi
 # The monitor's `when` must be a value Claude Code can actually ARM.
 # Arming compares `when` as an EXACT string against the emitted skill name
