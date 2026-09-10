@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-09-10
+
+- **Mandatory test-layer coverage hardened in the execute-task design phase.**
+  Practice surfaced tasks delivered with no end-to-end test at all, badly
+  hurting delivery quality. The design-doc template's `## Testing Plan` section
+  is rewritten from a soft note into a HARD requirement: every design MUST plan
+  concrete, scenario-specific cases and flows for all three layers — unit,
+  regression, and end-to-end (e2e) — with e2e explicitly not skippable on the
+  grounds that "unit tests cover it"; omitting any of the three now requires an
+  explicit written reason plus the user's agreement. Pressure/stress tests
+  remain a scenario-driven judgement call (throughput, concurrency, data
+  volume, latency/capacity SLOs, or a `## Risks` performance/capacity entry),
+  planned with concrete load targets when warranted.
+- `SKILL.md` §2 step 1 gains a matching instruction: the design phase must
+  design the actual test cases and flows the task needs from its real scenario,
+  treating unit/regression/e2e as a hard floor and judging pressure testing by
+  scenario — with the rationale (shipped-without-e2e regressions) recorded so
+  the emphasis is not silently softened later.
+
 ## [0.23.0] — 2026-09-09
 
 - **Design-phase authority sharpened in the execute-task workflow.** Three

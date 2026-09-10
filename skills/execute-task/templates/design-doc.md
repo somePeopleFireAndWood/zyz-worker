@@ -50,7 +50,17 @@
 
 ## Testing Plan
 
-<!-- The categories named here are AUTHORITATIVE for the delivery gate: the status file's `## Final Aggregate Testing` registers exactly these, one line each. unit/e2e/regression/pressure are standing examples, not a ceiling — a category named here (frontend tests, per-SDK e2e, …) gets its own registration line and is never absorbed into another slot.
+<!-- MANDATORY — this is a HARD requirement, not a suggestion. Practice has shown tasks delivered with NO e2e test at all, which badly hurts delivery quality; that must not recur.
+
+     This design MUST plan ALL THREE of the following layers, each with CONCRETE, scenario-specific test cases and flows designed for THIS task (not a generic checklist — enumerate the actual cases, inputs, and end-to-end paths this task needs):
+       - Unit tests — the smallest-unit correctness cases (normal + boundary + error paths).
+       - Regression tests — protect existing behavior the change touches or could disturb.
+       - End-to-end (e2e) tests — exercise the full real path a user/caller actually takes, across real boundaries; NEVER skip this because "unit tests cover it" — the two layers have opposite structural limits and are not substitutes.
+     Omitting any of these three requires an EXPLICIT, written reason here (and the user's agreement) — silence is not a valid skip.
+
+     Pressure / stress tests — DECIDE from the requirement scenario whether they are needed (high throughput, concurrency, large data volume, latency/capacity SLOs, or a `## Risks` entry calling out performance/capacity). If needed, plan them here with concrete load/targets; if not, state briefly why they are not needed for this scenario.
+
+     The categories named here are AUTHORITATIVE for the delivery gate: the status file's `## Final Aggregate Testing` registers exactly these, one line each. unit/e2e/regression/pressure are the standing floor, not a ceiling — a further category named here (frontend tests, per-SDK e2e, …) gets its own registration line and is never absorbed into another slot.
      For a fix / repair / backfill / migration or other data-mutating script, specify how it is validated on fabricated representative data BEFORE it touches real data: what to fabricate (normal + boundary + error), how the repaired result is verified, and idempotency / rollback. -->
 
 ## Acceptance Criteria
