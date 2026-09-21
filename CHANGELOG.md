@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-09-21
+
+- **Pure-signal main-agent state machine gates idle nags while the main agent
+  waits on the user.** Previously the L3 background watchdog and L4 stop-gate
+  could not tell "the main agent is legitimately waiting for a user answer"
+  (an AskUserQuestion panel, a permission prompt, an MCP elicitation — possibly
+  for hours) apart from "the main agent is stuck", so they kept injecting
+  role-silence / status-stale / stuck events into the main agent's context.
+  A single per-task state file `<task-dir>/runtime/main-state` (states
+  `working` / `awaiting-user` / `idle` / `ended`) is now written atomically by
+  hooks at platform-confirmed transition points, and the watchdog/stop-gate
+  read it to suppress main-agent-attributed nags while the main agent is
+  waiting or stopped. **No TTL** — the gate is a pure string compare and never
+  reads a timestamp, so a wait of any length (hours away from the keyboard) is
+  never misread as a stall; the state is only left by a later
+  timestamp-updating signal (UserPromptSubmit / a main-agent tool call / Stop /
+  SessionEnd).
+- **Real subagent deaths are still reported (A-scope).** Suppression covers
+  only main-agent-attributed events; a genuinely dead or silent subagent role
+  (stale / unharvested / tracking / probe / no-output) is reported as before,
+  and its stuck IM push bypasses the gate (new `notify.sh --origin
+  main|subagent` split) so an away user is still paged about a real death.
+- **New `idle` IM event.** When the main agent stops during an active phase,
+  a dedicated `idle` notification tells the user "the agent stopped and handed
+  back" via the configured IM — separating the user-facing notification path
+  from the monitor→main-agent nag path, which is now silenced. Added to the
+  default notify event set (opt out via `events` in `notify.json`).
+- New hook `hooks/scripts/main-state.sh` on `UserPromptSubmit` / `Stop` /
+  `SessionEnd`; `hooks/scripts/heartbeat.sh` records `working` on each
+  main-agent tool call. Known limitation (accepted, documented): a main-agent
+  tool that truly hangs after a permission grant is not status-stale-reported
+  while in the suppressed state — the deliberate cost of the no-TTL design.
+
 ## [0.24.0] — 2026-09-10
 
 - **Mandatory test-layer coverage hardened in the execute-task design phase.**
