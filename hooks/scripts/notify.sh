@@ -34,7 +34,10 @@
 # - Hook mode: hook JSON on stdin (hook_event_name, notification_type?, cwd,
 #   session_id?, message?, title?, error?, reason?).
 # - Direct mode: `--event <category> [--title T] [--message M]
-#   [--base DIR | --task-root DIR] [--session-id S]`.
+#   [--base DIR | --task-root DIR] [--session-id S] [--origin main|subagent]`.
+#   `--origin` (default main) splits stuck delivery (F2): a main-origin stuck
+#   (status-stale derived) is suppressed while the main agent is awaiting-user /
+#   idle; a subagent-origin stuck (a truly dead role) bypasses that suppression.
 # - Config file `~/.zyz-worker/notify.json` (override with $ZYZ_NOTIFY_CONFIG).
 # - env: ZYZ_HOOKS_DISABLE=1 or ZYZ_NOTIFY_DISABLE=1 skips the whole notifier.
 #
@@ -42,14 +45,19 @@
 #
 #   { "enabled": true,
 #     "command": "…user shell command…",
-#     "events": ["needs_input","completed","failed","stuck"],  // optional
+#     "events": ["needs_input","completed","failed","stuck","idle"], // optional
 #     "cooldown_sec": 30,          // optional, default 30
 #     "include_message": true }    // optional, default true
 #
 # When "events" is absent the default set is
-# needs_input/completed/failed/stuck (session_end excluded). The user command
-# receives the event both as ZYZ_NOTIFY_* environment variables and as a JSON
-# object on stdin.
+# needs_input/completed/failed/stuck/idle (session_end excluded). The user
+# command receives the event both as ZYZ_NOTIFY_* environment variables and as
+# a JSON object on stdin. The `idle` event (main agent stopped and handed back
+# in an active phase) is fired in the background by main-state.sh on Stop.
+# A Notification whose raw notification_type is one of permission_prompt /
+# agent_needs_input / elicitation_dialog / elicitation_url_dialog / idle_prompt
+# also records the main-agent state as `awaiting-user` (before the config gate,
+# so the state machine works even with no notify.json).
 #
 # ## Outputs
 #
@@ -87,6 +95,7 @@ arg_message=""
 arg_base=""
 arg_root=""
 arg_session=""
+arg_origin="main"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --event) category="${2:-}"; shift 2 ;;
@@ -95,6 +104,7 @@ while [ "$#" -gt 0 ]; do
         --base) arg_base="${2:-}"; shift 2 ;;
         --task-root) arg_root="${2:-}"; shift 2 ;;
         --session-id) arg_session="${2:-}"; shift 2 ;;
+        --origin) arg_origin="${2:-}"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -140,7 +150,7 @@ else
 fi
 
 case "$category" in
-    needs_input|completed|failed|stuck|session_end) ;;
+    needs_input|completed|failed|stuck|session_end|idle) ;;
     *) exit 0 ;;
 esac
 
@@ -154,6 +164,30 @@ if [ -z "$root" ]; then
     root="$(zyz_task_root "$base")"
 fi
 [ -n "$root" ] || exit 0
+
+# ---- main-agent state machine: record awaiting-user (before config gate) ----
+# The state write must not depend on whether the user configured IM (notify.json):
+# even with no config, a "needs your response" Notification records awaiting-user.
+# Judgement is on the RAW notification_type (ntype), not the folded category,
+# because idle_prompt folds to category=completed yet is semantically "idle,
+# awaiting user input" (Goal 5). set -u safe: hook_event/ntype are unset in
+# direct mode and for StopFailure/SessionEnd, so guard with ${var:-} and require
+# hook_event == Notification first.
+if [ "${hook_event:-}" = Notification ]; then
+    case "${ntype:-}" in
+        permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog|idle_prompt)
+            zyz_main_state_set "$root" awaiting-user ;;
+    esac
+fi
+
+# ---- stuck IM origin gate (F2) ----------------------------------------------
+# main-origin stuck (status-stale derived) is suppressed while the main agent is
+# awaiting-user / idle; subagent-origin stuck (a truly dead/silent role) bypasses
+# the suppression so an offline user is still paged. set -u safe throughout.
+if [ "${category:-}" = stuck ] && [ "${arg_origin:-main}" = main ] \
+    && zyz_main_state_suppresses "$root"; then
+    exit 0
+fi
 
 # ---- config -----------------------------------------------------------------
 config="${ZYZ_NOTIFY_CONFIG:-$HOME/.zyz-worker/notify.json}"
@@ -198,7 +232,7 @@ notify_event_enabled() {
         jq -e --arg c "$1" '
             if has("events")
             then ((.events // []) | index($c) != null)
-            else (["needs_input","completed","failed","stuck"] | index($c) != null)
+            else (["needs_input","completed","failed","stuck","idle"] | index($c) != null)
             end' "$config" >/dev/null 2>&1
         return $?
     fi
@@ -212,7 +246,7 @@ try:
     if "events" in d:
         allowed = d.get("events") or []
     else:
-        allowed = ["needs_input", "completed", "failed", "stuck"]
+        allowed = ["needs_input", "completed", "failed", "stuck", "idle"]
     sys.exit(0 if cat in allowed else 1)
 except Exception:
     sys.exit(1)
@@ -250,6 +284,7 @@ if [ -z "$event_title" ]; then
         failed)      event_title="Agent interrupted by an error" ;;
         stuck)       event_title="Agent appears stuck" ;;
         session_end) event_title="Session ended" ;;
+        idle)        event_title="Agent stopped and handed back" ;;
     esac
 fi
 [ "$include_message" = "true" ] || event_message=""

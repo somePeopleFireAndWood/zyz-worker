@@ -26,6 +26,12 @@ never acknowledge probes.
 
 A bounded wait is written only inside the single `## Agent State` section of `status.md` as `- Waiting On: instance-key=<key>; since-epoch=<unix>; next-check-epoch=<unix>; reason=<single-line text>`. All rows must be valid, unique, unexpired, and within `ZYZ_WAIT_MAX_SEC`. A valid set suppresses main status-stale only.
 
+## Main-agent state machine (pure signal driven, no TTL)
+
+Separate from the fixed-pack subagent protocol above, the main agent's own liveness is a single-line file `<task-dir>/runtime/main-state` holding `<state> <epoch>`, where `<state>` ∈ `working` / `awaiting-user` / `idle` / `ended`. Hooks write it at platform-verified transitions: `UserPromptSubmit` and every main-agent `PreToolUse`/`PostToolUse` heartbeat → `working`; a `Notification` whose raw `notification_type` is `permission_prompt` / `agent_needs_input` / `elicitation_dialog` / `elicitation_url_dialog` / `idle_prompt` → `awaiting-user`; `Stop` → `idle` (with overwrite immunity: an existing `awaiting-user` is NOT overwritten, so the user is not falsely declared "handed back to"); `SessionEnd` → `ended`.
+
+L3 (watchdog) and L4 (stop gate) read this via `zyz_main_state_suppresses`, which returns true when the state is `awaiting-user` OR `idle`. The suppression is a pure string compare — **the epoch is written for diagnostics only and is NEVER read for a time comparison, so there is no TTL and a 15-hour wait never "expires"**. While suppressed, the main-agent-attributed **status-stale** finding is silenced (L3 stdout + its main-origin `stuck` IM; L4's status-stale block clause). The manual `Waiting On:` guard and this signal-driven state are complementary and OR-combined: either being active suppresses status-stale. A missing / corrupt state file fails open to full alerting. Subagent-attributed findings are never suppressed (see L3/L4).
+
 ## Public runtime bounds
 
 | Environment | Default | Valid values |
@@ -361,6 +367,17 @@ passes every downstream gate looking clean.
   idling at §2 step 8 — the one gate the workflow mandates waiting at
   indefinitely for human approval — while the prompts promise silence during
   design. `zyz_phase_active` applies the `design` exclusion first.
+- **Status-stale is doubly gated (main-state machine).** The status-stale
+  attribution clause fires only when neither the manual `Waiting On:` guard
+  (`zyz_status_waiting`) nor the signal-driven main-state suppression
+  (`zyz_main_state_suppresses`, true when the main agent is `awaiting-user` /
+  `idle`) is active — so the gate never blocks idle merely because the main
+  agent legitimately stopped to wait on the user or hand back. The stale-role
+  and unharvested clauses are subagent-attributed and are NOT gated: L4 still
+  blocks and names a dead/unharvested subagent even while suppressed (A option).
+  L4 only reads main-state; main-state.sh (also on `Stop`) only writes it, so
+  the two are order-independent, and because `idle` and `awaiting-user` suppress
+  status-stale identically the block reason is the same whichever ran first.
 - **The block must be satisfiable by compliance.** The gate never asks callers
   to hand-edit runtime. A clean role submits DONE through SubagentStop; a role
   confirmed dead by platform/probe evidence is finalized with the supported
@@ -415,22 +432,41 @@ Feishu / Telegram / webhook recipes.
     `elicitation_url_dialog` → **needs_input**; `agent_completed` /
     `idle_prompt` → **completed**; every other type is ignored. These fire only
     when the user is away (~6s for a permission prompt, ~60s after an idle
-    finish), so an actively-typing user is not pinged.
+    finish), so an actively-typing user is not pinged. Independently of the IM
+    category, a Notification whose raw `notification_type` is `permission_prompt`
+    / `agent_needs_input` / `elicitation_dialog` / `elicitation_url_dialog` /
+    `idle_prompt` also records the main-agent state `awaiting-user` (before the
+    config gate, so the state machine works even without a configured IM). The
+    judgement reads the raw type, not the folded category, so `idle_prompt`
+    (folded to `completed` for IM) still records `awaiting-user`.
   - `StopFailure` → **failed** (API-error terminations: rate_limit /
     authentication / overloaded / server_error — the error text becomes the
     message).
   - `SessionEnd` → **session_end** (graceful close only; OFF by default).
-  - Direct invocation `notify.sh --event stuck --task-root <dir> --message <m>`
-    from `../monitors/watchdog.sh` on a silent-role / stale-status /
-    unharvested finding → **stuck**.
+  - Direct invocation `notify.sh --event stuck --task-root <dir> --message <m>
+    [--origin main|subagent]` from `../monitors/watchdog.sh` on a silent-role /
+    stale-status / unharvested finding → **stuck**.
+  - Direct invocation `notify.sh --event idle --task-root <dir>` from
+    `main-state.sh` on a `Stop` that wrote `idle` during an active phase →
+    **idle** ("agent stopped and handed back"). The active-phase filter and the
+    "actually wrote idle (not immunity-skipped)" condition live in main-state.sh;
+    notify.sh only config-gates + cooldowns + sends.
+- **stuck origin split (F2).** `--origin` (default `main`) decides whether a
+  `stuck` IM survives main-state suppression: a **main-origin** stuck (the
+  watchdog's status-stale finding) is dropped (`exit 0`) while the main agent is
+  `awaiting-user` / `idle`, but a **subagent-origin** stuck (a truly dead/silent
+  role) bypasses the gate and is always sent, so an offline user is still paged.
+  needs_input IMs are not gated — only main-origin stuck is.
 - Inputs: hook JSON on stdin (hook mode) or `--event/--title/--message/
-  --task-root/--base/--session-id` (direct mode); config
+  --task-root/--base/--session-id/--origin` (direct mode); config
   `~/.zyz-worker/notify.json` (override with `$ZYZ_NOTIFY_CONFIG`).
 - Config keys: `enabled` (bool), `command` (string; receives the event as
   `ZYZ_NOTIFY_*` env vars and as a JSON object on stdin), `events` (optional
   whitelist — when absent the default set is
-  `needs_input`/`completed`/`failed`/`stuck`, i.e. `session_end` excluded),
-  `cooldown_sec` (optional, default 30; per-category), `include_message`
+  `needs_input`/`completed`/`failed`/`stuck`/`idle`, i.e. `session_end`
+  excluded; add or drop `idle` here to control the "stopped and handed back"
+  ping), `cooldown_sec` (optional, default 30; per-category — the `idle`
+  category cools down via `runtime/nag/notify-idle.last`), `include_message`
   (optional, default true — set false to send the category/task without any
   free-text message content).
 - Scope: like every other hook it no-ops unless a `.zyz-worker/current-task`
@@ -447,7 +483,8 @@ Feishu / Telegram / webhook recipes.
 - Disable: `ZYZ_NOTIFY_DISABLE=1` turns off just the notifier;
   `ZYZ_HOOKS_DISABLE=1` the whole layer.
 - Supported agents: main agent (Notification/StopFailure/SessionEnd are
-  main-session events) plus the watchdog monitor (stuck).
+  main-session events) plus the watchdog monitor (stuck) and main-state.sh
+  (idle).
 
 ## ../monitors/watchdog.sh — L3
 
@@ -469,6 +506,19 @@ gate's, since L3 cannot cross-check `background_tasks` and a healthy role
 may reason without tool calls; its message asks the main agent to VERIFY,
 not blindly restart), `ZYZ_WATCHDOG_STATUS_STALE_SEC` (default 1800),
 cooldown `ZYZ_WATCHDOG_COOLDOWN_SEC` (default 900).
+
+**Main-state gating + origin split.** Each tick reads the main-agent state file
+(`zyz_main_state_suppresses`, true when `awaiting-user` / `idle`). While
+suppressed, the **status-stale** finding is silenced — both its stdout line and
+its main-origin `stuck` IM — because it is attributed to the main agent, which
+is legitimately not working. This is a pure string compare (no epoch, no TTL),
+so a multi-hour user wait never re-triggers it. The **subagent** findings
+(stale / tracking / probe / no-output / unharvested) are NEVER suppress-gated
+(A option): their stdout is always emitted and their `stuck` IMs carry
+`--origin subagent`, so notify.sh forwards them to the user even while
+suppressed and even offline. The status-stale `stuck` uses `--origin main` (the
+default), which notify.sh drops under suppression. A missing/corrupt state file
+fails open to full alerting.
 
 The instance loop no longer blindly skips terminal instances: non-terminal
 ones take the existing stale-liveness / tracking-unarmed / probe-overdue /

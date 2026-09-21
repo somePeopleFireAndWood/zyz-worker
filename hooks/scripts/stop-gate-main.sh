@@ -122,7 +122,14 @@ EOF
     fi
 fi
 
-if [ "$status_age" -gt "$status_stale_sec" ] && ! zyz_status_waiting "$status_file"; then
+# Status-stale attribution clause. Gated by BOTH the manual Waiting On guard
+# (zyz_status_waiting) AND the signal-driven main-state suppression
+# (zyz_main_state_suppresses is true when the main agent is awaiting-user /
+# idle): either being active means the main agent is legitimately not writing
+# status, so status-stale must not block idle. The stale-role and unharvested
+# clauses are NOT gated — those are subagent-attributed (A option).
+if [ "$status_age" -gt "$status_stale_sec" ] && ! zyz_status_waiting "$status_file" \
+    && ! zyz_main_state_suppresses "$root"; then
     [ -n "$reason" ] && reason="${reason} "
     reason="${reason}The overall status file (${status_file}) is $((status_age / 60)) minutes stale for an active phase (${phase}). Persist current progress, active roles, blockers, and the next step into it before idling."
 fi

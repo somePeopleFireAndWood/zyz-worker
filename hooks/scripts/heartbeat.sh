@@ -83,4 +83,11 @@ if command -v python3 >/dev/null 2>&1; then
         "${agent_type:-main}" >/dev/null 2>&1 || true
 fi
 
+# Main-agent state machine: every main-agent tool call refreshes `working`,
+# which is the primary signal that pulls the state back out of awaiting-user
+# once the user answers. Independent of the runtime_state.py python3 path above:
+# reaching here (past the §zyz_json_ok gate and the main-branch split) is enough
+# to record liveness even when python3 is unavailable for the heartbeat mutator.
+zyz_main_state_set "$root" working
+
 exit 0

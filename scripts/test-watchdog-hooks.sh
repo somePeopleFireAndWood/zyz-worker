@@ -154,6 +154,10 @@ resolution = "${PLUGIN_ROOT:-${ZYZ_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PL
 # the production command under test: doing so would let a command-target swap
 # move both the execution and its oracle together.
 expected_by_id = {
+    # main-state machine (task main-state-machine): UserPromptSubmit newly
+    # mounts main-state.sh, and it is appended (not moved) alongside the
+    # existing Stop→stop-gate-main.sh and SessionEnd→notify.sh entries.
+    "UserPromptSubmit[0].hooks[0]": "main-state.sh",
     "PreToolUse[0].hooks[0]": "heartbeat.sh",
     "PreToolUse[1].hooks[0]": "dispatch-scope-guard.sh",
     "PreToolUse[2].hooks[0]": "checkout-guard.sh",
@@ -163,9 +167,11 @@ expected_by_id = {
     "SubagentStart[0].hooks[0]": "subagent-track.sh",
     "SubagentStop[0].hooks[0]": "stop-gate-subagent.sh",
     "Stop[0].hooks[0]": "stop-gate-main.sh",
+    "Stop[0].hooks[1]": "main-state.sh",
     "Notification[0].hooks[0]": "notify.sh",
     "StopFailure[0].hooks[0]": "notify.sh",
     "SessionEnd[0].hooks[0]": "notify.sh",
+    "SessionEnd[0].hooks[1]": "main-state.sh",
     "SessionStart[0].hooks[0]": "start-watchdog.sh",
 }
 expected_targets = collections.Counter(expected_by_id.values())
@@ -203,13 +209,13 @@ for command_id, command in commands:
 
 actual_targets = collections.Counter(targets)
 actual_by_id = {command_id: target for (command_id, _), target in zip(commands, targets)}
-if len(commands) == 13 and actual_by_id == expected_by_id and actual_targets == expected_targets:
+if len(commands) == 16 and actual_by_id == expected_by_id and actual_targets == expected_targets:
     emit("PASS", "T2R_static_exact_thirteen_commands_and_targets")
 else:
     emit("FAIL", "T2R_static_exact_thirteen_commands_and_targets",
          f"count={len(commands)} targets={dict(actual_targets)} shape={shape_errors}")
 
-if len(prefixes) == 13 and len(set(prefixes)) == 1:
+if len(prefixes) == 16 and len(set(prefixes)) == 1:
     emit("PASS", "T2R_static_uniform_resolution_prefix_all_thirteen")
 else:
     emit("FAIL", "T2R_static_uniform_resolution_prefix_all_thirteen",
@@ -226,7 +232,7 @@ for command_id, command in commands:
         shape_errors.append(f"{command_id}: resolution is not assigned to a private zyz plugin-root variable")
     else:
         private_assignments.append(match.group(1))
-if len(private_assignments) == 13 and len(set(private_assignments)) == 1:
+if len(private_assignments) == 16 and len(set(private_assignments)) == 1:
     emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen")
 else:
     emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen", "; ".join(shape_errors))

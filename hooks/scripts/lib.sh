@@ -57,6 +57,24 @@
 # - zyz_runtime_observe <task-dir> <true|false>
 #                               authenticated fixed-pack observer JSON; the
 #                               boolean selects bounded no-output comparison.
+# - zyz_main_state_set <task-dir> <state>
+#                               atomically write `<state> <epoch>` to
+#                               <task-dir>/runtime/main-state; <state> must be
+#                               one of working/awaiting-user/idle/ended, else
+#                               silent no-op (fail-open).
+# - zyz_main_state_get <task-dir>
+#                               print the current main-state string (first
+#                               field), or empty when missing/corrupt/non-
+#                               whitelisted (fail-open).
+# - zyz_main_state_awaiting <task-dir>
+#                               0 when the state is exactly awaiting-user, else
+#                               1. Pure string compare (no epoch/TTL). Used only
+#                               by main-state.sh Stop overwrite immunity.
+# - zyz_main_state_suppresses <task-dir>
+#                               0 when the state is awaiting-user OR idle, else
+#                               1. Pure string compare (no epoch/TTL). The sole
+#                               main-agent-attributed suppression gate for
+#                               L3/L4/notify.
 #
 # ## Failure behavior
 #
@@ -628,4 +646,51 @@ zyz_runtime_observe() {
     command -v python3 >/dev/null 2>&1 || return 0
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || return 0
     python3 "$lib_dir/runtime_state.py" hook-observe "$root" "$include" 2>/dev/null || true
+}
+
+# ---- main-agent state machine (pure signal driven, NO TTL) ------------------
+#
+# A single-line file `<task-dir>/runtime/main-state` holding `<state> <epoch>`.
+# <state> is one of working/awaiting-user/idle/ended. The epoch is written for
+# diagnostics ONLY — the gates below compare the state STRING and never read
+# the epoch, so there is no time-based expiry anywhere (the no-TTL guarantee).
+
+zyz_main_state_set() {
+    # $1 = task dir, $2 = state (working|awaiting-user|idle|ended).
+    # Illegal state or unwritable runtime dir -> silent no-op (fail-open).
+    local dir state
+    dir="${1:-}"; state="${2:-}"
+    [ -n "$dir" ] || return 0
+    case "$state" in
+        working|awaiting-user|idle|ended) ;;
+        *) return 0 ;;
+    esac
+    mkdir -p "$dir/runtime" 2>/dev/null || return 0
+    zyz_write_atomic "$dir/runtime/main-state" "$state $(zyz_now)"
+}
+
+zyz_main_state_get() {
+    # $1 = task dir. Print the current state (first field) when it is in the
+    # whitelist, else empty (missing/corrupt/non-whitelisted -> no state).
+    local file first
+    file="${1:-}/runtime/main-state"
+    [ -f "$file" ] || return 0
+    first="$(head -n1 "$file" 2>/dev/null | awk '{print $1}')"
+    case "$first" in
+        working|awaiting-user|idle|ended) printf '%s' "$first" ;;
+    esac
+}
+
+zyz_main_state_awaiting() {
+    # 0 when the state is exactly awaiting-user. Pure string compare, no epoch.
+    # Used only by main-state.sh Stop overwrite immunity — NOT a suppression gate.
+    [ "$(zyz_main_state_get "${1:-}")" = "awaiting-user" ]
+}
+
+zyz_main_state_suppresses() {
+    # 0 when the state suppresses main-agent-attributed events (awaiting-user or
+    # idle), else 1. Pure string compare, no epoch — the no-TTL guarantee.
+    local s
+    s="$(zyz_main_state_get "${1:-}")"
+    [ "$s" = "awaiting-user" ] || [ "$s" = "idle" ]
 }
