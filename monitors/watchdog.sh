@@ -39,6 +39,19 @@
 # Never exits on scan errors; sleeps and retries. Exits 0 on SIGTERM/INT/HUP
 # or when the base dir disappears. Silent when no current-task pointer.
 #
+# ## Main-agent state gating (pure signal, no TTL)
+#
+# Each tick reads the main-agent state file (<root>/runtime/main-state via
+# zyz_main_state_suppresses). When the main agent is awaiting-user or idle, the
+# STATUS-STALE finding is suppressed — both its stdout and its main-origin stuck
+# IM — because it is attributed to the main agent, which is legitimately not
+# working (waiting on the user / stopped and handed back). This is a string
+# compare only; the state's epoch is never read, so a 15-hour wait never
+# "expires". The SUBAGENT findings (stale / tracking / probe / no-output /
+# unharvested) are NEVER suppressed (A option): their stdout is always emitted
+# and their stuck IMs carry --origin subagent so notify.sh forwards them to the
+# user even offline. A missing/corrupt state file fails open to full alerting.
+#
 # ## Supported agents
 #
 # Observes all roles; talks only to the main agent (via stdout lines).
@@ -86,9 +99,9 @@ UNARMED_REPORTED="false"
 # calling it on every finding is safe. NOTE: a whole-process crash takes this
 # monitor down with it, so this covers stalls, not host death.
 NOTIFY_SH="$SCRIPT_DIR/../hooks/scripts/notify.sh"
-notify_stuck() { # $1 = task root, $2 = short message
+notify_stuck() { # $1 = task root, $2 = short message, $3 = origin (main|subagent)
     [ -x "$NOTIFY_SH" ] || return 0
-    "$NOTIFY_SH" --event stuck --task-root "$1" --message "$2" >/dev/null 2>&1 &
+    "$NOTIFY_SH" --event stuck --task-root "$1" --message "$2" --origin "${3:-main}" >/dev/null 2>&1 &
 }
 
 # But this monitor is armed `when: always`, so it starts in EVERY session —
@@ -129,6 +142,12 @@ while :; do
         status_file="$root/status.md"
         phase="$(zyz_phase_of "$status_file")"
         if zyz_phase_active "$phase"; then
+            # main-state suppression gate (read once per tick). When the main
+            # agent is awaiting-user / idle (zyz_main_state_suppresses), the
+            # status-stale branch below is silenced (main-agent-attributed). The
+            # subagent findings are NEVER suppress-gated (A option) and their
+            # stuck IMs carry --origin subagent to bypass notify.sh's suppression.
+            suppress="$(zyz_main_state_suppresses "$root" && echo 1 || echo 0)"
             # (a) Fixed-pack liveness, tracking, probe, no-output, and
             # terminal-but-unharvested signals. One authenticated observer
             # snapshot owns enumeration; shell never treats pathname membership
@@ -176,27 +195,27 @@ except Exception:pass
                     stale)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role %s (%s) has been silent for %s min with no clean finish — verify platform state, send an exact reconnect probe, and after confirmed death use agent-runtime-state.sh finalize before re-dispatch.\n' "$key" "$role_line" "$((age / 60))"
-                        notify_stuck "$root" "role $role_line silent $((age / 60)) min with no clean finish"
+                        notify_stuck "$root" "role $role_line silent $((age / 60)) min with no clean finish" subagent
                         ;;
                     tracking)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-tracking-$key-$detail.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role %s (%s) has fixed-pack tracking state %s — reconcile the exact persisted event when available; do not treat an unverifiable instance as healthy quiet.\n' "$key" "$role_line" "$detail"
-                        notify_stuck "$root" "role $role_line has unreconciled tracking state ($detail)"
+                        notify_stuck "$root" "role $role_line has unreconciled tracking state ($detail)" subagent
                         ;;
                     probe)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-probe-$key-$detail.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] reconnect probe %s for role instance %s is overdue without an explicit matching ACK; heartbeat alone is not an ACK. Query platform running/inflight state now and follow the bounded recovery protocol.\n' "$detail" "$key"
-                        notify_stuck "$root" "reconnect probe for role $role_line is overdue without ACK"
+                        notify_stuck "$root" "reconnect probe for role $role_line is overdue without ACK" subagent
                         ;;
                     no-output)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-no-output-$key.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role instance %s has reached the no-output threshold and its fixed LIVE_INVENTORY baseline still matches the current descriptor-bounded physical tree; the lane may be lost.\n' "$key"
-                        notify_stuck "$root" "role $role_line reached the no-output threshold; the lane may be lost"
+                        notify_stuck "$root" "role $role_line reached the no-output threshold; the lane may be lost" subagent
                         ;;
                     unharvested)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
                         printf '[zyz-worker watchdog] role %s (%s) completed (DONE/FINALIZED) but appears UNPROCESSED — the main agent has been idle since it finished, so its completion may not have been delivered (backup signal on the watchdog path). Read its result SubTask file under %s/subtasks/ and its durable log, record it in %s, then continue.\n' "$key" "$role_line" "$root" "$status_file"
-                        notify_stuck "$root" "role $role_line finished but its result is unprocessed"
+                        notify_stuck "$root" "role $role_line finished but its result is unprocessed" subagent
                         ;;
                 esac
             done <<EOF
@@ -204,14 +223,17 @@ $runtime_events
 EOF
 
             # (b) stale overall status file during an active phase. Reuses the
-            # $mtime read above for the unharvested predicate.
+            # $mtime read above for the unharvested predicate. Suppressed when
+            # the main agent is awaiting-user / idle (suppress=1): this is a
+            # main-agent-attributed finding, so its stdout and its main-origin
+            # stuck IM both go silent while the main agent is not working.
             if [ -n "$mtime" ]; then
                 age=$(( $(zyz_now) - mtime ))
-                if [ "$age" -gt "$STATUS_STALE" ] && ! zyz_status_waiting "$status_file"; then
+                if [ "$age" -gt "$STATUS_STALE" ] && [ "$suppress" = 0 ] && ! zyz_status_waiting "$status_file"; then
                     if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
                         printf '[zyz-worker watchdog] status file %s is %s min stale during active phase %s — persist current progress, active roles, blockers, and next step into it now.\n' \
                             "$status_file" "$((age / 60))" "$phase"
-                        notify_stuck "$root" "status file $((age / 60)) min stale during active phase $phase"
+                        notify_stuck "$root" "status file $((age / 60)) min stale during active phase $phase" main
                     fi
                 fi
             fi

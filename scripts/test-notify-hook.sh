@@ -190,6 +190,14 @@ else
     fi
 
     # (k) direct stuck mode (watchdog path)
+    # Earlier subtests (permission_prompt / idle_prompt) now legitimately write
+    # main-state=awaiting-user (main-state-machine, F2/F4), which correctly
+    # SUPPRESSES a main-origin stuck. This subtest's intent is "direct --event
+    # stuck delivers on the watchdog path", not "delivers while the main agent
+    # is awaiting the user", so reset the main-state to a non-suppress baseline
+    # first (missing file -> fail-open -> full reporting). Subagent-origin stuck
+    # bypass is covered separately in scripts/test-main-state.sh (unit 6).
+    rm -f "$ROOT/runtime/main-state" 2>/dev/null || true
     write_cfg "{\"enabled\":true,\"command\":\"$CMD\",\"cooldown_sec\":0}"
     : > "$CAP"
     bash "$NOTIFY" --event stuck --task-root "$ROOT" --message "role test-agent silent 25 min"
