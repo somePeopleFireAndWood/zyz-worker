@@ -41,6 +41,8 @@
 # ---------------------------------------------------------------------------
 
 set -u
+# Keep the invoking session's project dir out of zyz_task_root's fallback.
+unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

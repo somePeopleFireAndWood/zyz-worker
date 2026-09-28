@@ -48,6 +48,8 @@
 # Exits 0 iff every check passed; prints PASS/FAIL and a RESULT summary line.
 
 set -u
+# Keep the invoking session's project dir out of zyz_task_root's fallback.
+unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

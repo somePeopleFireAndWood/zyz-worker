@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Fixed: hooks went silent once the agent `cd`-ed away from the project
+  root, so the idle gate never held.** Every hook resolved the task pointer
+  from the payload `cwd` only; Claude Code keeps the shell cwd across Bash
+  calls, so after a `cd .zyz-worker/tasks/<id>` (or `apps/api`) heartbeat /
+  Stop / Notification all found no pointer and no-op'd. `main-state` froze at
+  its last `working`, while the watchdog — resolving from the project dir —
+  kept seeing an active task and nagged for hours (observed: hourly
+  `status file … stale` events for 14 h after a task handed back to the user,
+  the main agent woken each time just to renew a `Waiting On` row).
+  `zyz_task_root` now falls back to the session project dir
+  (`$CODEX_PROJECT_DIR` / `$CLAUDE_PROJECT_DIR`, the dir the watchdog already
+  uses) when the cwd has no pointer; a cwd with its own pointer still wins.
+  This is the session's own launch dir, not a search (#18 unchanged). Hook
+  test suites now unset both variables so the invoking session cannot leak a
+  real task into their sandboxes.
+- **Fixed: the watchdog still nagged every cooldown while the main agent waited
+  on an AskUserQuestion.** The 0.25.0 gate relied on a Notification hook to
+  record `awaiting-user`, but Claude Code does not reliably emit one for an
+  AskUserQuestion dialog (observed: 1 `needs_input` across 10 questions,
+  including a 10-hour wait), and the question's own PreToolUse heartbeat wrote
+  `working` — so the state never left `working` and a `status file … stale`
+  Monitor event fired every 15 minutes for the whole wait. `heartbeat.sh` now
+  records `awaiting-user` on the main agent's PreToolUse of `AskUserQuestion`
+  (the matching PostToolUse, when the user answers, records `working`).
+
 ## [0.25.0] — 2026-09-21
 
 - **Pure-signal main-agent state machine gates idle nags while the main agent

@@ -86,6 +86,8 @@
 #     3   a required dependency (tmux / git / claude) is missing from PATH
 #
 set -uo pipefail
+# Keep the invoking session's project dir out of zyz_task_root's fallback.
+unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 
 # ---------------------------------------------------------------------------
 # 0. Preflight

@@ -22,9 +22,12 @@
 # - zyz_task_root <base>        the current task directory resolved via the
 #                               `<base>/.zyz-worker/current-task` pointer
 #                               (first line = task-id, or a path relative to
-#                               <base>, or an absolute path), else $ZYZ_TASK_DIR
-#                               when exported, or empty when missing/dangling.
-#                               Deliberately NO search beyond these two (#18).
+#                               <base>, or an absolute path), else the same
+#                               pointer under the session project dir
+#                               ($CODEX_PROJECT_DIR / $CLAUDE_PROJECT_DIR), else
+#                               $ZYZ_TASK_DIR when exported, or empty when
+#                               missing/dangling. Deliberately NO search beyond
+#                               these (#18).
 # - zyz_write_atomic <f> <line> tmpfile+rename single-line write.
 # - zyz_emit_context <ev> <msg> print hookSpecificOutput additionalContext
 #                               JSON for event <ev>.
@@ -298,6 +301,23 @@ zyz_task_root() {
     if [ -n "$found" ]; then
         printf '%s' "$found"
         return 0
+    fi
+
+    # (a') The session's own project dir. Hooks pass the payload cwd, which
+    # drifts wherever the agent last `cd`-ed (the task dir, apps/api, ...) and
+    # then has no pointer, while the watchdog resolves from the project dir. The
+    # mismatch silently no-op'd every hook (heartbeat, Stop, Notification) so
+    # main-state froze at `working` and the watchdog, still resolving the task,
+    # nagged through hours of awaiting-user/idle. This is not a search (#18):
+    # it is the one dir this session was launched in — the same one the
+    # watchdog already trusts.
+    local project_dir="${CODEX_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}"
+    if [ -n "$project_dir" ] && [ "$project_dir" != "$base" ]; then
+        found="$(zyz_resolve_pointer_at "$project_dir")"
+        if [ -n "$found" ]; then
+            printf '%s' "$found"
+            return 0
+        fi
     fi
 
     # (b) Explicit override. Only usable where something exported it into the

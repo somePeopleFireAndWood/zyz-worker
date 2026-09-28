@@ -88,6 +88,18 @@ fi
 # once the user answers. Independent of the runtime_state.py python3 path above:
 # reaching here (past the §zyz_json_ok gate and the main-branch split) is enough
 # to record liveness even when python3 is unavailable for the heartbeat mutator.
-zyz_main_state_set "$root" working
+#
+# Exception: PreToolUse of AskUserQuestion is the platform-confirmed moment the
+# main agent blocks on the user, so it records awaiting-user instead. Claude
+# Code does not reliably emit a Notification hook for an AskUserQuestion dialog
+# (observed: 1 needs_input across 10 questions, incl. a 10-hour wait), so
+# notify.sh alone left the state at `working` and the watchdog nagged every
+# cooldown for the whole wait. The matching PostToolUse (the user answered)
+# falls through to `working` below.
+if [ "$(zyz_get hook_event_name)" = PreToolUse ] && [ "$(zyz_get tool_name)" = AskUserQuestion ]; then
+    zyz_main_state_set "$root" awaiting-user
+else
+    zyz_main_state_set "$root" working
+fi
 
 exit 0

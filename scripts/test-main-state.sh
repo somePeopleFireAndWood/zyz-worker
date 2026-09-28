@@ -37,6 +37,9 @@
 
 set -u
 set -o pipefail
+# zyz_task_root falls back to the session project dir; never let the invoking
+# session's own dir leak a real task into this sandbox.
+unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
@@ -459,10 +462,48 @@ else
     clear_state
     printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"Bash"}' "$PROJ" | bash "$HEARTBEAT" 2>/dev/null
     [ "$(read_state)" = working ] && pass "7 main heartbeat (agent_id empty) -> working" || fail "7 main heartbeat -> working" "got [$(read_state)]"
+    # main PreToolUse(AskUserQuestion) -> awaiting-user (no Notification needed)
+    set_state working
+    printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"AskUserQuestion"}' "$PROJ" | bash "$HEARTBEAT" 2>/dev/null
+    [ "$(read_state)" = awaiting-user ] && pass "7 main PreToolUse(AskUserQuestion) -> awaiting-user" || fail "7 main PreToolUse(AskUserQuestion) -> awaiting-user" "got [$(read_state)]"
+    # main PostToolUse(AskUserQuestion) (user answered) -> working
+    printf '{"hook_event_name":"PostToolUse","cwd":"%s","tool_name":"AskUserQuestion"}' "$PROJ" | bash "$HEARTBEAT" 2>/dev/null
+    [ "$(read_state)" = working ] && pass "7 main PostToolUse(AskUserQuestion) -> working" || fail "7 main PostToolUse(AskUserQuestion) -> working" "got [$(read_state)]"
+    # subagent PreToolUse(AskUserQuestion) -> does NOT write main-state
+    clear_state
+    printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"AskUserQuestion","agent_id":"sub-1","agent_type":"implementation-agent"}' "$PROJ" | bash "$HEARTBEAT" 2>/dev/null
+    [ ! -f "$STATE_FILE" ] && pass "7 subagent PreToolUse(AskUserQuestion) -> no main-state write" || fail "7 subagent AskUserQuestion no main-state" "wrote [$(read_state)]"
     # subagent (agent_id set) -> does NOT write main-state
     clear_state
     printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"Bash","agent_id":"sub-1","agent_type":"implementation-agent"}' "$PROJ" | bash "$HEARTBEAT" 2>/dev/null
     [ ! -f "$STATE_FILE" ] && pass "7 subagent heartbeat -> no main-state write" || fail "7 subagent heartbeat no main-state" "wrote [$(read_state)]"
+
+    # 7c: payload cwd drifted into a pointer-less subdir (the agent `cd`-ed into
+    # the task dir). The hooks must still resolve the task via the session
+    # project dir, the same dir the watchdog resolves from; otherwise main-state
+    # freezes and the watchdog nags through the whole wait.
+    DRIFT="$ROOT"
+    clear_state
+    printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"AskUserQuestion"}' "$DRIFT" \
+        | CLAUDE_PROJECT_DIR="$PROJ" bash "$HEARTBEAT" 2>/dev/null
+    [ "$(read_state)" = awaiting-user ] && pass "7c drifted cwd + project dir: PreToolUse(AskUserQuestion) -> awaiting-user" || fail "7c drifted cwd AskUserQuestion" "got [$(read_state)]"
+    set_state working
+    printf '{"hook_event_name":"Stop","cwd":"%s"}' "$DRIFT" | CLAUDE_PROJECT_DIR="$PROJ" bash "$MAIN_STATE" 2>/dev/null
+    [ "$(read_state)" = idle ] && pass "7c drifted cwd + project dir: Stop -> idle" || fail "7c drifted cwd Stop -> idle" "got [$(read_state)]"
+    # control: without a project dir the drifted cwd resolves nothing (no-op)
+    set_state working
+    printf '{"hook_event_name":"Stop","cwd":"%s"}' "$DRIFT" | bash "$MAIN_STATE" 2>/dev/null
+    [ "$(read_state)" = working ] && pass "7c control: drifted cwd without project dir -> no-op" || fail "7c control no-op" "got [$(read_state)]"
+    # a cwd with its own pointer still wins over the project dir
+    OTHER="$SB/other"; mkdir -p "$OTHER/.zyz-worker/tasks/other-task"
+    printf 'other-task\n' > "$OTHER/.zyz-worker/current-task"
+    set_state working
+    printf '{"hook_event_name":"Stop","cwd":"%s"}' "$OTHER" | CLAUDE_PROJECT_DIR="$PROJ" bash "$MAIN_STATE" 2>/dev/null
+    if [ "$(read_state)" = working ] && [ "$(head -n1 "$OTHER/.zyz-worker/tasks/other-task/runtime/main-state" 2>/dev/null | awk '{print $1}')" = idle ]; then
+        pass "7c cwd pointer takes precedence over project dir"
+    else
+        fail "7c cwd pointer precedence" "proj=[$(read_state)]"
+    fi
 fi
 clear_state
 
