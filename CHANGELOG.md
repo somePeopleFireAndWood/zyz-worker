@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-09-28
+
 - **Fixed: Codex workers could not start when a Codex plugin provides an MCP
   server.** With the default `ZYZ_WORKER_MCP=none`,
   `scripts/orch-worker-mcp-args.sh` emitted a lone
