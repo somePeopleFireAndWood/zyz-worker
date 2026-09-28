@@ -25,7 +25,7 @@ implementation-oriented dimensions are registered `n/a: design phase`.
 ## Result
 
 - Status:
-- Reviewer:
+- Reviewer: (`reviewAgent`, or `cross-harness:<harness>` for a cross-harness review session)
 
 ## Findings
 

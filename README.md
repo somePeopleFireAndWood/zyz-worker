@@ -33,6 +33,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
 - Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - Orchestration bash helpers 位于 `scripts/orch-*.sh`（其中 `orch-reuse-worker.sh` 用于「复用已完成任务的 tmux/worktree 创建新任务」——见下方 *容器复用*）
+- 跨 harness 交叉评审脚本位于 `scripts/cross-review.sh`（execute-task 每个评审点在 review-agent 之外，再为本机装着的其它 agent 产品各起一个只读评审会话——见下方 *跨 harness 交叉评审*）
 - 提示词式 SubAgent 定义位于 `subagents/`
 - Watchdog hooks（execute-task 确定性监督层：心跳、状态新鲜度、退出/停止门禁）位于 `hooks/hooks.json` 与 `hooks/scripts/`，详见 `hooks/README.md`
 - Watchdog 后台监视器位于 `monitors/monitors.json` 与 `monitors/watchdog.sh`（execute-task 触发时启动，发现角色静默/状态过期时唤醒主 agent）
@@ -76,13 +77,31 @@ orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型
 
 | 值 | 效果 |
 |---|---|
-| `none`（**默认**） | Claude 加 `--strict-mcp-config`；Codex 对 `codex mcp list --json` 中每个已启用 server 生成 `-c mcp_servers.<name>.enabled=false`。worker **零 MCP**。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
+| `none`（**默认**） | Claude 加 `--strict-mcp-config`；Codex 对 `codex mcp list --json` 中每个已启用 server 生成 `-c mcp_servers.<name>.enabled=false`，并同时重申该 server 自己的传输键（stdio 为 `.command=`、streamable_http 为 `.url=`）。worker **零 MCP**。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
 | `inherit` | 旧行为：不加任何 flag，worker 全量继承宿主全局 `mcpServers` |
 | `<config-path>` | Claude 用 `--strict-mcp-config --mcp-config '<path>'`。Codex 交互 CLI 暂无对等的单文件覆盖参数，因此 fail-closed 回 `none`并告警 |
 
 **共享 server 的安全边界（用 `<config-path>` 前必读）**：把一个烤了凭据的 MCP server 起成常驻进程共享给多个 worker 时——(1) **不要用 TCP 端口**（127.0.0.1 也不行：本机所有用户都能连，等于把凭据使用权开放给同机他人），socket 应放在 `$XDG_RUNTIME_DIR` 这类 0700 属主目录内，worker 侧经 stdio 桥接；(2) 凭据走 `--config <0600 文件>` 或环境变量，**不要放进 argv**（`ps` 全机可见）；(3) `XDG_RUNTIME_DIR` 不存在（cron / 非 login session）时应显式失败而非回退 TCP。收益量级：N×745MB → 1×~834MB + N×~15MB 桥进程。本插件当前只提供 `<config-path>` 这个接入点，不代起共享 server。
 
 另：若 worker 确需 stdio MCP，配置里用**已安装二进制的绝对路径**而非 `npx -y <pkg>`——npx 会额外留两层常驻包装进程（~47 MB/worker）。
+
+## 跨 harness 交叉评审（cross-harness review）
+
+execute-task 的每个评审点（设计评审每一轮、每个实现 / SubTask 评审、汇总评审）除了派发本工程的 `review-agent` subAgent，还会**同时**为本机装着的**其它** agent 产品各起一个只读评审会话：主 agent 跑在 Claude Code 且装了 `codex`，就同时起 `codex exec` 评审；跑在 Codex 且装了 `claude`，就同时起 `claude -p` 评审。宿主自身的产品不会重复起（那就是 review-agent）。
+
+- **入口**：`scripts/cross-review.sh detect` 查看会选中哪些 harness；`scripts/cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <l>] [--cwd <dir>]` 并发跑所有选中的评审者，产出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，stdout 每个评审者一行 `status=ok|empty|failed|timeout`。提示词模板是 `skills/execute-task/templates/cross-review-prompt.md`（沿用 `subagents/review-agent.md` 的评审标准与 `templates/review-report.md` 的报告结构）。
+- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件 `## Cross-Harness Review`；两个评审者意见一致本身不算证据。评审点收敛条件是 review-agent `no-changes-needed` 且交叉评审的每条 finding 都有处置。
+- **可选、不阻塞**：没装其它 harness、被关闭、失败或超时，都只记录然后继续用 review-agent 单独评审。
+- **隔离**：Codex 用 `-s read-only`；Claude 用 `--permission-mode dontAsk` + 只读工具白名单（含只读 git）并禁用编辑工具；子会话清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，不关的话子会话的 hook 会冒充本任务的主 agent）；默认零 MCP（沿用 `orch-worker-mcp-args.sh` 的覆盖参数；万一 Codex 仍因这些覆盖加载配置失败，会退回继承一次，并在 `.meta` 记 `mcp=inherit-fallback`）。交叉评审者不注入变异、不复跑测试——那仍是 review-agent 的义务。
+
+| 环境变量 | 作用 |
+|---|---|
+| `ZYZ_CROSS_REVIEW` | `auto`（默认，所有已安装的非宿主 harness）/ `off` / 显式列表如 `codex` |
+| `ZYZ_CROSS_REVIEW_TIMEOUT` | 每个评审者的超时秒数，默认 2400 |
+| `ZYZ_CROSS_REVIEW_MCP` | 同 `ZYZ_WORKER_MCP` 的取值，默认 `none` |
+| `ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` | 追加给对应 CLI 的参数（如 `-m <model>`） |
+
+纯脚本单元测是 `bash scripts/test-cross-review.sh`（PATH 上放假的 `codex`/`claude`，不消耗配额）。
 
 ## Go 构建 I/O 优化注入（Go build I/O optimization）
 
@@ -189,7 +208,7 @@ ln -s /path/to/zyz-worker ~/plugins/zyz-worker
 
 Codex 没有 Claude Code 的 slash-command 机制，因此不要输入 `/execute-task`。批量调度时，`ZYZ_AGENT_RUNTIME=auto` 会在 Codex 会话中选择 `codex`；也可显式设置 `ZYZ_AGENT_RUNTIME=codex|claude`，或在任务 frontmatter 中设置 `agent-runtime`。worker 由统一 runtime adapter 生成启动/恢复命令：Codex 使用 `codex -C ...` / `codex resume ...`，Claude 使用 `claude --plugin-dir ...` / `claude --resume ...`。
 
-`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按官方 `PLUGIN_ROOT` → 编排注入的 `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` → legacy `CODEX_PLUGIN_ROOT` 解析已安装插件根目录；全部为空时成功 no-op，绝不回退到 worker cwd、源码目录或 marketplace 路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
+`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，并配一条重申其自身传输键的 `-c`（`.command=` / `.url=`），从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。只写 `enabled=false` 不够：由 Codex **插件**提供的 server（如内置 computer-use 插件的 `cua_repl`）在 config.toml 里没有对应表，单独的 `enabled=false` 会造出一个没有传输的条目，所有 codex 命令都会以 `invalid transport` 拒绝启动；传输类型无法渲染的 server 则让 spawn fail-closed。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按官方 `PLUGIN_ROOT` → 编排注入的 `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` → legacy `CODEX_PLUGIN_ROOT` 解析已安装插件根目录；全部为空时成功 no-op，绝不回退到 worker cwd、源码目录或 marketplace 路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
 
 ### Claude Code
 
@@ -329,6 +348,7 @@ subagents/
 │   ├── orch-cleanup-worker.sh
 │   ├── orch-merge.sh
 │   ├── orch-merge-and-cleanup.sh
+│   ├── cross-review.sh
 │   └── pack.sh
 ├── skills/
 │   ├── README.md
@@ -337,6 +357,7 @@ subagents/
 │   │   ├── prompts/
 │   │   │   └── main-agent.md
 │   │   └── templates/
+│   │       ├── cross-review-prompt.md
 │   │       ├── design-doc.md
 │   │       ├── final-report.md
 │   │       ├── review-report.md

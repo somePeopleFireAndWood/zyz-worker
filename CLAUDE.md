@@ -17,6 +17,7 @@ The workflow is defined by:
 - `skills/execute-task/SKILL.md`
 - `skills/execute-task/prompts/main-agent.md`
 - `skills/execute-task/templates/`
+- `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md` (cross-harness review: at every review point, alongside the `review-agent` subagent, a read-only review session runs in every OTHER installed agent harness — Codex when the host is Claude Code, Claude Code when the host is Codex; its findings are advisory and each is independently verified before acceptance and may be rejected with a recorded reason — see `skills/execute-task/SKILL.md` `## Cross-Harness Review`)
 - `hooks/hooks.json` + `hooks/scripts/` and `monitors/` (the watchdog enforcement layer: automatic per-tool-call heartbeats, status-freshness reminders, subagent exit gate, background dead-role watchdog, main-agent stop gate — see `skills/execute-task/SKILL.md` `## Watchdog Enforcement` and `hooks/README.md`)
 
 The main agent arms the watchdog by writing the `.zyz-worker/current-task` pointer at task start; `[zyz-worker watchdog]` notifications and injected context are actionable instructions (re-dispatch the named role or flush the status file immediately), not noise.

@@ -40,6 +40,7 @@
 - Coverage — Risk-Specific: (one line per dimension the design `## Risks` calls out | n/a)
 - Aggregate Verdict:
 - Per-SubTask Verdicts:
+- Cross-Harness Review: (harnesses that reviewed, or `none: <reason>`; accepted / rejected finding counts per review point, with where each accepted one landed)
 
 ## Optional Capabilities Used
 

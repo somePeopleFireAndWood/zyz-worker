@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Fixed: Codex workers could not start when a Codex plugin provides an MCP
+  server.** With the default `ZYZ_WORKER_MCP=none`,
+  `scripts/orch-worker-mcp-args.sh` emitted a lone
+  `-c mcp_servers.<name>.enabled=false` per enabled server. For a server that
+  comes from a Codex plugin rather than `config.toml` (e.g. `cua_repl` from the
+  bundled computer-use plugin) that override materializes a transport-less
+  entry, and every codex command — the interactive worker included — refused to
+  start (`Error loading config.toml: invalid transport`). Each disable override
+  is now paired with the server's own transport key (`.command=` for stdio,
+  `.url=` for streamable_http), values TOML-encoded and shell-quoted; a config
+  entry takes precedence over the plugin's, so the server is disabled, and a
+  server `config.toml` already defines keeps its args/env. A server whose
+  transport cannot be rendered fails the spawn closed. The two duplicated
+  renderers in the helper are now one. Verified against codex-cli 0.151.0;
+  `scripts/test-codex-adaptation.sh` covers the rendering and, when codex is
+  installed, checks that real codex loads the overrides with every server
+  disabled.
+
+- **Cross-harness review: every review point also runs a reviewer from another
+  agent product.** Alongside the `review-agent` subagent, each design-review
+  iteration, implementation / SubTask review, and aggregate review launches a
+  read-only review session in every OTHER agent harness installed on the
+  machine — `codex exec` when the main agent runs in Claude Code, `claude -p`
+  when it runs in Codex (the host is never re-launched). New
+  `scripts/cross-review.sh` (`detect` / `run`) renders
+  `skills/execute-task/templates/cross-review-prompt.md` + a main-agent brief,
+  runs the reviewers concurrently, and captures each report under
+  `<task-dir>/reviews/cross/`. Sessions are read-only (Codex `-s read-only`;
+  Claude `--permission-mode dontAsk` with a read-only tool allowlist), run with
+  every `ZYZ_*` variable scrubbed and `ZYZ_HOOKS_DISABLE=1` so the plugin's own
+  hooks never treat the reviewer as this task's agent, and default to zero MCP
+  servers (a Codex config-load failure caused by the overrides retries once
+  inheriting). The posture is unchanged: cross-harness
+  findings are advisory, each is independently verified by the usual
+  adjudicator before acceptance and may be rejected with a recorded reason
+  (status file `## Cross-Harness Review`); a review point converges when
+  `review-agent` reports `no-changes-needed` AND every cross-harness finding has
+  a disposition. Optional and never blocking: no other harness,
+  `ZYZ_CROSS_REVIEW=off`, a failure, or a timeout is recorded and the workflow
+  continues. Knobs: `ZYZ_CROSS_REVIEW`, `ZYZ_CROSS_REVIEW_TIMEOUT`,
+  `ZYZ_CROSS_REVIEW_MCP`, `ZYZ_CROSS_REVIEW_{CODEX,CLAUDE}_ARGS`. Tests:
+  `scripts/test-cross-review.sh`.
+
 ## [0.25.1] — 2026-09-28
 
 - **Fixed: hooks went silent once the agent `cd`-ed away from the project
