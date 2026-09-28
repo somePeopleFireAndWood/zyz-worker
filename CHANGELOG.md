@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] — 2026-09-28
+
 - **Fixed: hooks went silent once the agent `cd`-ed away from the project
   root, so the idle gate never held.** Every hook resolved the task pointer
   from the payload `cwd` only; Claude Code keeps the shell cwd across Bash
