@@ -478,6 +478,59 @@ has "$check" "agent-runtime=codex" "check reports Codex runtime"
 has "$(cat "$TMP/list/runtime/codex-task/dispatch.md")" "agent-session-id: codex-session-123" "generic Codex session field persisted"
 has "$(cat "$TMP/list/runtime/codex-task/dispatch.md")" "codex resume codex-session-123" "Codex recovery command rendered"
 
+# --- Codex MCP disable-all overrides (orch-worker-mcp-args.sh) --------------
+# A lone `-c mcp_servers.<name>.enabled=false` for a PLUGIN-provided server
+# (no config.toml table) makes every codex command fail with "invalid
+# transport"; the helper must re-assert each server's own transport key.
+MCP_HELPER="$ROOT/scripts/orch-worker-mcp-args.sh"
+mkdir -p "$TMP/mcpbin"
+cat > "$TMP/mcpbin/codex" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-} ${3:-}" = "mcp list --json" ] || exit 9
+cat "$FAKE_MCP_JSON"
+EOF
+chmod +x "$TMP/mcpbin/codex"
+cat > "$TMP/mcp-list.json" <<'EOF'
+[
+ {"name":"cfg_stdio","enabled":true,"transport":{"type":"stdio","command":"/opt/bin/srv","args":["x"]}},
+ {"name":"plugin-srv","enabled":true,"transport":{"type":"stdio","command":"/Applications/My App.app/node it's","args":[]}},
+ {"name":"remote","enabled":true,"transport":{"type":"streamable_http","url":"https://mcp.example.invalid/v1"}},
+ {"name":"off","enabled":false,"transport":{"type":"stdio","command":"/bin/off"}}
+]
+EOF
+mcp_out="$(FAKE_MCP_JSON="$TMP/mcp-list.json" PATH="$TMP/mcpbin:$PATH" ZYZ_WORKER_MCP=none bash "$MCP_HELPER" codex)"; mcp_rc=$?
+[ "$mcp_rc" -eq 0 ] && ok "MCP helper renders Codex overrides" || bad "MCP helper renders Codex overrides (rc=$mcp_rc)"
+eval "mcp_argv=($mcp_out)"
+mcp_joined="$(printf '%s\n' "${mcp_argv[@]}")"
+has "$mcp_joined" 'mcp_servers.cfg_stdio.enabled=false' "MCP helper disables config stdio server"
+has "$mcp_joined" 'mcp_servers.cfg_stdio.command="/opt/bin/srv"' "MCP helper re-asserts stdio command"
+has "$mcp_joined" 'mcp_servers.plugin-srv.command="/Applications/My App.app/node it'"'"'s"' "MCP helper shell-quotes spaces and single quotes"
+has "$mcp_joined" 'mcp_servers.remote.url="https://mcp.example.invalid/v1"' "MCP helper re-asserts streamable_http url"
+case "$mcp_joined" in *'mcp_servers.off.'*) bad "MCP helper leaves disabled server untouched" ;; *) ok "MCP helper leaves disabled server untouched" ;; esac
+[ "${#mcp_argv[@]}" -eq 12 ] && ok "MCP helper emits two -c pairs per enabled server" || bad "MCP helper argv count ${#mcp_argv[@]} != 12"
+printf '[{"name":"odd","enabled":true,"transport":{"type":"sse","url":"x"}}]\n' > "$TMP/mcp-bad.json"
+FAKE_MCP_JSON="$TMP/mcp-bad.json" PATH="$TMP/mcpbin:$PATH" ZYZ_WORKER_MCP=none bash "$MCP_HELPER" codex >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "MCP helper fails closed on unknown transport" || bad "MCP helper must fail closed on unknown transport"
+printf '[]\n' > "$TMP/mcp-empty.json"
+mcp_out="$(FAKE_MCP_JSON="$TMP/mcp-empty.json" PATH="$TMP/mcpbin:$PATH" ZYZ_WORKER_MCP=none bash "$MCP_HELPER" codex)"
+[ -z "$mcp_out" ] && ok "MCP helper prints nothing when no server is enabled" || bad "MCP helper output for no servers: $mcp_out"
+# Real codex (local config parse only, no model call): the rendered overrides
+# must load and leave every server disabled.
+if command -v codex >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    real_mcp="$(ZYZ_WORKER_MCP=none bash "$MCP_HELPER" codex 2>/dev/null)"
+    eval "real_argv=($real_mcp)"
+    real_list="$(cd "$TMP" && codex ${real_argv[@]+"${real_argv[@]}"} mcp list --json 2>&1)"
+    if printf '%s' "$real_list" | python3 -c 'import json,sys
+items=json.load(sys.stdin)
+raise SystemExit(0 if all(not x.get("enabled") for x in items) else 1)' 2>/dev/null; then
+        ok "real codex loads the overrides and every MCP server is disabled"
+    else
+        bad "real codex rejected the overrides or left a server enabled: $(printf '%s' "$real_list" | head -c 300)"
+    fi
+else
+    skip "real codex MCP override check" "codex or python3 not installed"
+fi
+
 python3 -m json.tool "$ROOT/hooks/hooks.json" >/dev/null 2>&1 && ok "hooks.json is valid JSON" || bad "hooks.json is valid JSON"
 hook_manifest="$(cat "$ROOT/hooks/hooks.json")"
 has "$hook_manifest" 'PLUGIN_ROOT' "hooks commands include canonical installed plugin root"

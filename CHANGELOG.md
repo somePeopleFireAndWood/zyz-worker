@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Fixed: Codex workers could not start when a Codex plugin provides an MCP
+  server.** With the default `ZYZ_WORKER_MCP=none`,
+  `scripts/orch-worker-mcp-args.sh` emitted a lone
+  `-c mcp_servers.<name>.enabled=false` per enabled server. For a server that
+  comes from a Codex plugin rather than `config.toml` (e.g. `cua_repl` from the
+  bundled computer-use plugin) that override materializes a transport-less
+  entry, and every codex command — the interactive worker included — refused to
+  start (`Error loading config.toml: invalid transport`). Each disable override
+  is now paired with the server's own transport key (`.command=` for stdio,
+  `.url=` for streamable_http), values TOML-encoded and shell-quoted; a config
+  entry takes precedence over the plugin's, so the server is disabled, and a
+  server `config.toml` already defines keeps its args/env. A server whose
+  transport cannot be rendered fails the spawn closed. The two duplicated
+  renderers in the helper are now one. Verified against codex-cli 0.151.0;
+  `scripts/test-codex-adaptation.sh` covers the rendering and, when codex is
+  installed, checks that real codex loads the overrides with every server
+  disabled.
+
 ## [0.25.1] — 2026-09-28
 
 - **Fixed: hooks went silent once the agent `cd`-ed away from the project

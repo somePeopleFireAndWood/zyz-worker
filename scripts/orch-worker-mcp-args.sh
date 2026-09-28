@@ -23,8 +23,10 @@
 #     $1 (optional)     claude | codex; auto-detected when omitted
 #     ZYZ_WORKER_MCP   MCP inheritance policy. One of:
 #       none (default)  -> Claude: `--strict-mcp-config`
-#                          Codex: one `-c mcp_servers.<name>.enabled=false`
-#                          override per currently-enabled server
+#                          Codex: per currently-enabled server,
+#                          `-c mcp_servers.<name>.enabled=false` plus the
+#                          server's own transport key re-asserted
+#                          (`.command=` for stdio, `.url=` for streamable_http)
 #                          (worker gets ZERO MCP servers; ~745 MB/worker saved
 #                          per stdio server the host has configured)
 #       inherit         -> print nothing
@@ -43,7 +45,8 @@
 #     never silently open to full inheritance.
 #
 #   Output (stdout): exactly one line (or empty for `inherit`).
-#   Exit codes: 0 always.
+#   Exit codes: 0 on success; 1 when the Codex disable-all overrides cannot
+#   be built (spawn / reuse then fail closed instead of launching).
 #
 set -euo pipefail
 
@@ -59,6 +62,69 @@ esac
 
 POLICY="${ZYZ_WORKER_MCP:-none}"
 
+# codex_disable_all — print `-c` overrides that disable every currently-enabled
+# Codex MCP server (one line; empty when none is enabled). Returns 1, with a
+# warning, when it cannot render a safe override for every server: callers
+# fail CLOSED rather than launch a worker that silently inherits MCP.
+#
+# `enabled=false` alone is NOT enough. `codex mcp list` also reports servers
+# that a Codex PLUGIN provides (e.g. `cua_repl` from the bundled computer-use
+# plugin), which have no `[mcp_servers.<name>]` table in config.toml. A lone
+# `-c mcp_servers.<name>.enabled=false` then materializes a config entry with
+# no transport, and every codex command — interactive worker included —
+# refuses to start ("Error loading config.toml: invalid transport"). Re-asserting
+# the server's own transport key makes the entry well-formed; a config entry
+# takes precedence over the plugin's, so the server ends up disabled. For a
+# server config.toml already defines, re-setting its own command/url is a no-op
+# (its args/env stay untouched). Verified against codex-cli 0.151.0.
+codex_disable_all() {
+    local mcp_json
+    mcp_json="$(codex mcp list --json 2>/dev/null)" || {
+        echo "warning: 'codex mcp list --json' failed; cannot build fail-closed MCP overrides" >&2
+        return 1
+    }
+    ZYZ_MCP_JSON="$mcp_json" python3 - <<'PY'
+import json, os, re, sys
+
+def fail(msg):
+    print(f"warning: {msg}; cannot build fail-closed MCP overrides", file=sys.stderr)
+    raise SystemExit(1)
+
+def shell_single_quote(text):
+    return "'" + text.replace("'", "'\\''") + "'"
+
+def toml_string(value):
+    # A JSON string literal is a valid TOML basic string (same escapes);
+    # ensure_ascii=False avoids \ud83d-style surrogate escapes TOML rejects.
+    return json.dumps(value, ensure_ascii=False)
+
+try:
+    items = json.loads(os.environ.get("ZYZ_MCP_JSON", "[]"))
+except Exception as exc:
+    fail(f"invalid Codex MCP JSON: {exc}")
+if not isinstance(items, list):
+    fail("Codex MCP JSON is not a list")
+args = []
+for item in items:
+    if not isinstance(item, dict) or not item.get("enabled"):
+        continue
+    name = item.get("name") or ""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        fail(f"unsupported Codex MCP server name {name!r}")
+    transport = item.get("transport") or {}
+    kind = transport.get("type")
+    if kind == "stdio" and isinstance(transport.get("command"), str) and transport["command"]:
+        key, value = "command", transport["command"]
+    elif kind == "streamable_http" and isinstance(transport.get("url"), str) and transport["url"]:
+        key, value = "url", transport["url"]
+    else:
+        fail(f"Codex MCP server {name!r} has unsupported transport {kind!r}")
+    args.append("-c " + shell_single_quote(f"mcp_servers.{name}.enabled=false"))
+    args.append("-c " + shell_single_quote(f"mcp_servers.{name}.{key}={toml_string(value)}"))
+print(" ".join(args))
+PY
+}
+
 case "$POLICY" in
     none)
         if [ "$RUNTIME" = "codex" ]; then
@@ -70,28 +136,7 @@ case "$POLICY" in
                 echo "warning: codex/python3 unavailable; cannot build fail-closed MCP overrides" >&2
                 exit 1
             fi
-            MCP_JSON="$(codex mcp list --json 2>/dev/null)" || {
-                echo "warning: 'codex mcp list --json' failed; cannot build fail-closed MCP overrides" >&2
-                exit 1
-            }
-            ZYZ_MCP_JSON="$MCP_JSON" python3 - <<'PY'
-import json, os, re, sys
-try:
-    items = json.loads(os.environ.get("ZYZ_MCP_JSON", "[]"))
-except Exception as exc:
-    print(f"warning: invalid Codex MCP JSON: {exc}", file=sys.stderr)
-    raise SystemExit(1)
-args = []
-for item in items:
-    if not item.get("enabled"):
-        continue
-    name = item.get("name") or ""
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        print(f"warning: unsupported Codex MCP server name {name!r}; cannot safely render override", file=sys.stderr)
-        raise SystemExit(1)
-    args.append(f"-c 'mcp_servers.{name}.enabled=false' ")
-print("".join(args).rstrip())
-PY
+            codex_disable_all || exit 1
         else
             printf -- '--strict-mcp-config\n'
         fi
@@ -105,20 +150,7 @@ esac
 if [ "$RUNTIME" = "codex" ]; then
     echo "warning: ZYZ_WORKER_MCP custom config paths are Claude-only; Codex is falling back to explicit disable-all MCP overrides" >&2
     POLICY=none
-    MCP_JSON="$(codex mcp list --json 2>/dev/null)" || exit 1
-    ZYZ_MCP_JSON="$MCP_JSON" python3 - <<'PY'
-import json, os, re, sys
-items = json.loads(os.environ.get("ZYZ_MCP_JSON", "[]"))
-args = []
-for item in items:
-    if not item.get("enabled"):
-        continue
-    name = item.get("name") or ""
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        raise SystemExit(1)
-    args.append(f"-c 'mcp_servers.{name}.enabled=false' ")
-print("".join(args).rstrip())
-PY
+    codex_disable_all
     exit $?
 fi
 

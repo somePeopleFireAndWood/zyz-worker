@@ -76,7 +76,7 @@ orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型
 
 | 值 | 效果 |
 |---|---|
-| `none`（**默认**） | Claude 加 `--strict-mcp-config`；Codex 对 `codex mcp list --json` 中每个已启用 server 生成 `-c mcp_servers.<name>.enabled=false`。worker **零 MCP**。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
+| `none`（**默认**） | Claude 加 `--strict-mcp-config`；Codex 对 `codex mcp list --json` 中每个已启用 server 生成 `-c mcp_servers.<name>.enabled=false`，并同时重申该 server 自己的传输键（stdio 为 `.command=`、streamable_http 为 `.url=`）。worker **零 MCP**。**行为变更**：≤0.15.0 的 worker 会全量继承；依赖 MCP 的既有任务需显式设 `inherit` |
 | `inherit` | 旧行为：不加任何 flag，worker 全量继承宿主全局 `mcpServers` |
 | `<config-path>` | Claude 用 `--strict-mcp-config --mcp-config '<path>'`。Codex 交互 CLI 暂无对等的单文件覆盖参数，因此 fail-closed 回 `none`并告警 |
 
@@ -189,7 +189,7 @@ ln -s /path/to/zyz-worker ~/plugins/zyz-worker
 
 Codex 没有 Claude Code 的 slash-command 机制，因此不要输入 `/execute-task`。批量调度时，`ZYZ_AGENT_RUNTIME=auto` 会在 Codex 会话中选择 `codex`；也可显式设置 `ZYZ_AGENT_RUNTIME=codex|claude`，或在任务 frontmatter 中设置 `agent-runtime`。worker 由统一 runtime adapter 生成启动/恢复命令：Codex 使用 `codex -C ...` / `codex resume ...`，Claude 使用 `claude --plugin-dir ...` / `claude --resume ...`。
 
-`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按官方 `PLUGIN_ROOT` → 编排注入的 `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` → legacy `CODEX_PLUGIN_ROOT` 解析已安装插件根目录；全部为空时成功 no-op，绝不回退到 worker cwd、源码目录或 marketplace 路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
+`ZYZ_WORKER_MCP=none` 会在派发时读取 `codex mcp list --json`，对每个已启用 server 快照生成 `-c 'mcp_servers.<name>.enabled=false'`，并配一条重申其自身传输键的 `-c`（`.command=` / `.url=`），从而在交互式 Codex 中 fail-closed 隔离 MCP（`--ignore-user-config` 仅属于 `codex exec`，不能用于 tmux 交互 worker）。只写 `enabled=false` 不够：由 Codex **插件**提供的 server（如内置 computer-use 插件的 `cua_repl`）在 config.toml 里没有对应表，单独的 `enabled=false` 会造出一个没有传输的条目，所有 codex 命令都会以 `invalid transport` 拒绝启动；传输类型无法渲染的 server 则让 spawn fail-closed。worker 初始 prompt 仍提供本插件 `skills/execute-task/SKILL.md` 的绝对路径作为回退。Codex session 从 `~/.codex/sessions/**/rollout-*.jsonl` 的 `session_meta` 记录绑定；hooks 按官方 `PLUGIN_ROOT` → 编排注入的 `ZYZ_PLUGIN_ROOT` → `CLAUDE_PLUGIN_ROOT` → legacy `CODEX_PLUGIN_ROOT` 解析已安装插件根目录；全部为空时成功 no-op，绝不回退到 worker cwd、源码目录或 marketplace 路径。当前 Codex 会跳过 async hook，因此心跳改为同步；`SessionStart` 只快速拉起记录到临时日志的诊断 scanner，不具有 Claude monitor stdout 唤醒会话的能力，会话内依靠同步 L0/L1/Stop hooks 与 file-state 保障。
 
 ### Claude Code
 
