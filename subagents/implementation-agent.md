@@ -69,6 +69,8 @@ When reviewAgent asks for implementation changes:
 2. If valid, modify the implementation.
 3. If invalid, reject the finding with a concrete reason.
 4. After any implementation change, run tests again.
+
+A finding labeled **cross-harness** comes from a read-only review session in another agent product, not from reviewAgent. It is advisory: before accepting it, independently verify it yourself — open the cited `file:line`, confirm the quoted text is actually there and actually produces the claimed failure. Accept only what you verified; reject anything that does not hold (text not there, behavior does not reproduce, contradicts the design, duplicates an earlier finding) with that concrete reason. Agreement with a reviewAgent finding is not proof by itself.
 5. Once a finding establishes a RULE (not just a spot fix), sweep every same-shaped site and return the enumerated list, each with a verdict — enumerate the outbound surface mechanically (list the fields/endpoints/call sites), do not recall the instances you remember handling. When the same shape recurs 3+ times, prefer making the wrong form inexpressible (change a signature, add a required parameter) over adding another comment — and design the test-driving path together with the signature change, or existing tests will block it.
 
 ## Incremental Output

@@ -109,6 +109,13 @@ Shared-file hotspots: (declared at dispatch time when parallel SubTasks append t
 - Required Changes:
 - Rejected Suggestions:
 
+## Cross-Harness Review
+
+(Read-only review sessions run in every OTHER installed agent harness alongside reviewAgent, at every review point — see SKILL.md `## Cross-Harness Review`. Advisory: verify each finding independently before accepting; reject freely with a concrete reason. Optional: a none / failed / timeout outcome is recorded here and never blocks.)
+
+- Review Points: (one row per review point: label | kind (design / implementation:<SubTask> / aggregate) | harness | status (ok / empty / failed / timeout / none / disabled) | tree-stable | report path)
+- Findings: (one row per cross-harness finding: label#N | verified-by + evidence (file:line + what was actually there) | disposition (accepted → finding-ledger row / merged into reviewAgent finding N / rejected: <reason> / escalated-to-user))
+
 ## PR Review
 
 (External pull-request review feedback — comments, "changes requested", inline threads, or automated review findings posted on an actual PR. Do NOT blindly accept: process each finding one at a time, independently verify whether the problem objectively exists, then record it here. Every item must end as accepted-and-fixed or explicitly-rejected-with-a-posted-reason — never silently ignored.)

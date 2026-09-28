@@ -79,6 +79,8 @@ When implementationAgent or reviewAgent asks for test changes:
 3. If invalid, reject the request with a concrete reason.
 4. Explain what implementationAgent should rerun after the test change.
 
+A finding labeled **cross-harness** comes from a read-only review session in another agent product, not from reviewAgent. It is advisory: before accepting it, independently verify it yourself — open the cited `file:line`, confirm the quoted text is actually there and the claimed test weakness is real. Accept only what you verified; reject anything that does not hold with that concrete reason. Agreement with a reviewAgent finding is not proof by itself.
+
 ## Output Format
 
 Return:

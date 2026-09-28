@@ -77,7 +77,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 ```text
 §1 启动    建任务目录 + status.md + 写 .zyz-worker/current-task 指针（给 watchdog 上膛）
    ↓
-§2 设计    与用户共同产出设计文档 → review-agent 自动循环评审直到无异议
+§2 设计    与用户共同产出设计文档 → review-agent（+ 其它 harness 的只读交叉评审）自动循环评审直到无异议
    ↓       ★ 唯一的人工闸门：必须等到用户明确批准才能进实现
 §3 实现    implementation-agent 与 test-agent **默认并行**（都从设计文档取活）
    ↓       → 跑测试 + 跑变异清单 → 失败**四步归因**（改动面因果 → 工具层 →
@@ -103,6 +103,8 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 **c) 增量输出 ≠ 缩减范围。** 允许把大产出拆成多条消息（提升 API 稳定性），但禁止在恢复卡死角色时压缩交付要求。「只给最严重 3 条」「一句话结论就行」这类措辞被明确列为禁止项——因为一个只报了 3 条问题的评审，看起来和干净的评审一模一样，剩下的问题会一路混进交付。这条由 L5 hook 在派发前机械拦截。
 
 **d) 外部 PR 评审要逐条独立验证。** 收到 PR 上的评审意见时不盲从：逐条独立核实问题是否客观存在，成立的修、不成立的在 PR 上回帖说明理由。每条必须落到「已修」或「已明确拒绝并回帖」，不允许「不回也不改」。
+
+**d2) 跨 harness 交叉评审：多一双眼睛，但依旧逐条独立核实、可拒绝。** 每个评审点（设计评审每一轮、每个实现评审、汇总评审）在派发 review-agent 的同一批次里，由 `scripts/cross-review.sh` 为本机装着的**其它** agent 产品各起一个只读评审会话（主控跑在 Claude Code 就起 `codex exec`，跑在 Codex 就起 `claude -p`；宿主自身永远不重复起——那就是 review-agent）。不同产品的盲区不同，这是它的价值；也正因为它来自外部，它的报告按 PR 评审同一口径处理：逐条、由该评审点本来的裁决者（设计期主控、实现期 implementation/test-agent）对照真实产物独立核实后才可接受，不成立的带具体理由拒绝，每条都要落到「接受进 finding ledger」或「拒绝 + 理由」；两个评审者意见一致本身不算证据。收敛条件：review-agent `no-changes-needed` **且** 本轮交叉评审每条 finding 都有处置——交叉评审自己的 verdict 既不单独卡住、也不单独关闭循环。它是可选且不阻塞的：没装其它 harness、`ZYZ_CROSS_REVIEW=off`、失败/超时都只记录后继续。会话隔离：只读沙箱/工具白名单、清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，否则子会话的 hook 会把自己当成本任务的主 agent 写心跳/状态）、默认零 MCP；不注入变异、不复跑测试（那仍是 review-agent 的义务）。
 
 **e) 版本控制自治且非阻塞。** 提交/推送自己做，不问用户；失败就记录进状态文件继续走，绝不阻塞。但 merge 到 base 永远需要用户显式指令，破坏性操作（force-push / reset --hard / 改历史）一律禁止。
 
@@ -262,7 +264,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 
 ## 七、测试策略
 
-七个可执行套件，全部是「跑完不早退」的风格，最后汇总通过数。前六个的默认模式是纯静态/单元或本地 smoke，不需要模型 API 配额，可随时全跑：
+八个可执行套件，全部是「跑完不早退」的风格，最后汇总通过数。除 `test-e2e-layered.sh` 外的默认模式是纯静态/单元或本地 smoke，不需要模型 API 配额，可随时全跑：
 
 | 套件 | 覆盖 |
 |---|---|
@@ -272,6 +274,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 | `test-release-0-5-0.sh` | 发布门禁：三份清单版本一致、打包产物内容、tag 内容 |
 | `test-clean-tmp-skill.sh` | clean-tmp skill 的静态与烟测、文档接线 |
 | `test-codex-adaptation.sh` | Codex manifest、runtime adapter 与 hook 根目录契约；默认本地验证不消耗配额，`--real` 会重装 candidate 并启动真实 Codex smoke（消耗配额） |
+| `test-cross-review.sh` | 跨 harness 交叉评审脚本：用 PATH 上的假 `codex`/`claude` 验证宿主识别与「只起其它 harness」、只读参数、`ZYZ_*` 清空与 hook 关闭、MCP 隔离及 Codex 插件型 server 的回退、报告捕获、状态分类（ok/empty/failed/timeout/none）、工作树指纹；不消耗配额 |
 | `test-e2e-layered.sh` | 真 claude 端到端验收（**消耗 API 配额**，需 tmux/git/claude 就位），验证 spawn → L2 起真 claude → 父 shell 不变量 → exactly-once 幂等 → dispatch-bound 绑定 |
 
 一个重要惯例：**文档串也被测试钉住**。SKILL.md 的分支名、README 的目录树条目、模板的枚举值都有 grep 断言——因为这套插件的「行为」很大一部分就写在提示词里，提示词漂移就是行为漂移。
@@ -287,6 +290,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## User Design Authority` 与 §3.0.0、`prompts/main-agent.md` 的同名节、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
 - **改设计文档 `## Quick Review`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`SKILL.md` 的 `## Quick Review` 定义（含「正文为准 + 冲突时从正文重新生成」三条）、§2 步骤 1/6/8、`prompts/main-agent.md` 的维护职责、review-agent 两份镜像的一致性核对、以及 T6 断言。注意：摘要腐烂的机制与正文相同——**用追加代替改写**（在一句已过时的话旁边补「(现在是 5 个模块)」），不是「存在第二份描述」本身。所以规则是「改动时重写受影响的整块，冲突时按正文重新生成」，而非「保持同步」。
 - **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## Design Document Edit Discipline` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
+- **改跨 harness 交叉评审**（§3.3 d2）：`scripts/cross-review.sh`、`skills/execute-task/templates/cross-review-prompt.md`、`SKILL.md` 的 `## Cross-Harness Review` 及 §2/§3.A/§3.B/§3.C/§4 的挂点、`prompts/main-agent.md` 的同名节与 Design/Implementation Workflow、implementation/test 两个角色提示词两份镜像的 cross-harness 段、`templates/task-status.md` 的 `## Cross-Harness Review` 记录位、`templates/final-report.md` 与 `templates/review-report.md` 的 Reviewer 字段、以及 `test-cross-review.sh`。新增一种 harness 时改脚本的 `KNOWN_HARNESSES`、`build_cmd` 与该 harness 的只读/隔离参数。
 - **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog Enforcement` 三处口径要一致。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。
 
