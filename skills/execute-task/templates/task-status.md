@@ -70,7 +70,7 @@ Per-SubTask scoreboard:
 - Coded: (true once implementation is complete)
 - Tested: (true once this SubTask's tests pass AND every mechanism claimed as covered has a recorded killed mutation — green alone is "ran", not "tested")
 - Mutations: (per manifest entry: mechanism → mutation → KILLED/SURVIVED; restore verified byte-identical)
-- Reviewed: (true once review-agent reports no changes for this SubTask; rejected findings allowed if reasons are recorded)
+- Reviewed: (true once this SubTask's review point has closed — reviewAgent reports zero blocking findings, every cross-harness finding has a disposition with none accepted as blocking, no user decision is pending — and every non-blocking finding is landed or recorded; rejected findings are allowed if their reasons are recorded)
 - Frozen At: (workspace-freeze timestamp + frozen file set, recorded before review was dispatched — makes `Reviewed: true` traceable to the exact tree it reviewed)
 - Committed: (commit sha for this SubTask's autonomous commit, or the failure reason if the commit/push failed — failure is non-blocking. For a multi-repo SubTask that touched more than one worktree, record one `<repo>:<sha>` per line, one line per repo committed. When parallel SubTasks shared assembly files and were committed as one compilable unit, record `shared:<sha> (STx+STy+…)`.)
 - SubTask Status File: (path if this SubTask keeps its own status file; optional)
@@ -115,6 +115,14 @@ Shared-file hotspots: (declared at dispatch time when parallel SubTasks append t
 
 - Review Points: (one row per review point: label | kind (design / implementation:<SubTask> / aggregate) | harness | status (ok / empty / failed / timeout / none / disabled) | tree-stable | report path)
 - Findings: (one row per cross-harness finding: label#N | verified-by + evidence (file:line + what was actually there) | disposition (accepted → finding-ledger row / merged into reviewAgent finding N / rejected: <reason> / escalated-to-user))
+
+## Review Convergence
+
+(Rounds per review point and the convergence checks — see SKILL.md `## Review Convergence`. A review point closes on a round in which reviewAgent reports zero blocking findings, no cross-harness finding is accepted as blocking or left undispositioned, and no user decision is pending. Non-blocking findings never hold it open.)
+
+- Review Points: (one row per review point: label | rounds so far | blocking count per round, e.g. `5→3→2` | recurring classes (class-level fix landed / registered as RR-n) | closed at round N)
+- Convergence Checks: (one row per check — at round 3 of a review point still holding blocking findings, and every third round after: review point | round | outcome (continue / class-level fix / re-sequence hardening / escalate) | evidence | when the user was told)
+- Residual-Risk Register: (path to `<task-dir>/residual-risks.md` and its entry count by tier, or `none`)
 
 ## PR Review
 
@@ -201,6 +209,7 @@ E. Scope and self-disclosure
 20. Every rule established this round swept across ALL same-shaped sites, with an enumerated per-site verdict list?
 21. Any comments claiming coverage or invariants updated to match what the code now does?
 22. The final report's `## Weakest Link` (in `final-report.md`) filled in?
+23. Every blocking finding moved into a hardening SubTask landed (ledger `landed` filled)? Every recurring class in `## Review Convergence` answered by a class-level fix or a single register entry? every residual-risk register entry has all fields; the final report's `## Known Risks` / `## Follow-Up` point at the register?
 
 ## Next Actions
 

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Review loops converge on what reaches the artifact (closes #22).** A loop
+  that closed only when the reviewer had nothing left to say kept going on
+  contrived constructions: each fix answered one, and the next round found the
+  next variant of the same class (a production redaction SubTask ran from
+  round 10 to 20). New `skills/execute-task/SKILL.md` `## Review Convergence`:
+  every finding at every review point, from every reviewer, is tiered
+  `blocking` / `non-blocking:normal` / `non-blocking:contrived`. Tiers are
+  judged against the design's new `## Scope Boundary` (declared inputs,
+  callers, threat model, out-of-scope constructions), not by how strange a
+  construction looks. The threat model and out-of-scope clauses are the user's
+  decisions, and any clause the user did not state goes into Quick Review's
+  attention list. An unstated boundary on security- or data-relevant code is a
+  user question. An unstated premise the design rests on never becomes
+  `contrived` just because today's callers satisfy it. For exported surfaces,
+  external consumers count as callers.
+  A review point closes on a round where reviewAgent's own report has zero
+  blocking findings (`Result: changes-requested` iff a blocking finding exists),
+  no cross-harness finding is accepted as blocking, and no user decision is
+  pending. Rejecting or downgrading a blocking finding does not close the point
+  by itself; the next round's reviewer confirms or re-raises it, so the
+  accept↔reject escalation stays live. At most one extra round per review point
+  may land normal fixes.
+  Contrived findings are never fixed inside the loop. They go, one entry per
+  class, to the new residual-risk register (`templates/residual-risks.md`:
+  origin, reproduction, impact, verified hardening plan, status). Later
+  reviewers receive the register, so registered items are not re-raised; a
+  variant reached by a producer the entry did not clear is a new finding. The
+  final report proposes the register as a hardening follow-up's input.
+  A second variant of an already-fixed class is marked `recurring` and needs
+  one class-level fix (or one register entry), not another point patch.
+  At round 3 of a review point still holding blockers, and every third round
+  after, the main agent runs a recorded convergence check and tells the user
+  the outcome: continue, class-level fix, re-sequence in-scope hardening into
+  its own later SubTask (with ledger rows for the findings it takes over), or
+  escalate scope questions.
+  Guard rails: tiers change dispositions, never what is reported; downgrading a
+  reviewer's `blocking` needs enumerated-caller evidence like a rejection; in
+  doubt it is `blocking`. Wired through the main-agent and the
+  review / implementation / test-agent prompts (both mirrors) and the
+  review-report, cross-review, task-status, final-report and design-doc
+  templates.
+- **L5 scope guard: vetoes are clause-local, and the lexicon covers the tier
+  vocabulary.** A negation used to veto the whole dispatch, so "Never skip
+  contrived findings. Report only the blocking findings." passed; the #20
+  non-blocking veto had the same gap. Vetoes are now judged per clause.
+  Backticked tier tokens are unwrapped before quote-stripping, so "report only
+  `blocking` findings" is caught. A negated report verb vetoes only when it
+  negates "only", so "do not report non-blocking findings" is a cap. New
+  contrived / 刁钻 / 边角 / 对抗 cap patterns, plus a CJK veto for 不要 / 不能 / 别
+  + 跳过 / 忽略. The T7 corpus grows to 44 capped and 47 legitimate dispatches.
+
 ## [0.26.0] — 2026-09-28
 
 - **Fixed: Codex workers could not start when a Codex plugin provides an MCP

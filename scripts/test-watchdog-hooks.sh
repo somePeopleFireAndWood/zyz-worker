@@ -533,6 +533,27 @@ don't be exhaustive
 挑最重要的几条
 关键的几条就行
 一句话结论也行
+Skip the contrived findings.
+ignore contrived ones, they are noise
+Do not report contrived findings.
+刁钻的情形不用报
+跳过边角情形
+Never skip contrived findings. Report only the blocking findings.
+Never skip non-blocking findings. Report only the blocking findings.
+Do not skip contrived ones; give me just the overall verdict.
+No need to report contrived findings.
+Leave contrived findings out of the report.
+Exclude contrived findings.
+Skip anything contrived.
+Don't bother with contrived ones.
+contrived findings can be left out.
+Only report non-contrived findings.
+不用报 contrived
+对抗性构造不用报
+Skip the `contrived` ones.
+Do not report `non-blocking:contrived` findings.
+Report only `blocking` findings.
+Do not report non-blocking findings.
 ZYZ_T7_CAPPED
     if [ "$blocked" -eq "$capped_total" ]; then
         pass "T7 all $capped_total scope-capping phrasings denied"
@@ -583,6 +604,21 @@ Document that "只要总结论" is rejected by the guard.
 Fix the pagination bug: the API should return no more than 3 items per page.
 The retry budget must cap it at 3 attempts.
 Update the docs: the CLI flag `--top 5 issues` is fine to keep.
+Tier every finding; contrived ones go to the residual-risk register, and every finding is still reported.
+Do not skip the contrived findings; report each with its reproduction.
+Never drop contrived ones — register them as one entry per class.
+Do not fix contrived findings in this loop; return them as register entries.
+Re-review ST2 at full scope; answer items already in the residual-risk register by entry id.
+刁钻类不在本轮修，记入遗留风险清单，但每条仍要报告。
+Don't report contrived variants separately; report each class as one finding with the variants enumerated.
+Do not report contrived items already in the residual-risk register again; answer them by entry id.
+Never list contrived variants one by one — one finding per class.
+Do not mention contrived cases that RR-2 already covers; cite RR-2.
+不要跳过边角情形，每条都要报。
+刁钻情形也不能忽略，照报。
+不要忽略边角值。
+Tier every finding `blocking`, `non-blocking:normal`, or `non-blocking:contrived`; report them all.
+Do not report only blocking findings.
 ZYZ_T7_LEGIT
     if [ "$allowed" -eq "$legit_total" ]; then
         pass "T7 all $legit_total legitimate dispatches allowed (no false positives)"
@@ -971,6 +1007,103 @@ if grep -qE '\(high\.severity\|high\.priority\|blocker\|blocking\|critical\|p0\|
 else
     fail "T6 L5 cap lexicon covers blocking/non-blocking vocabulary (#20)"
 fi
+# ---- Issue #22: review loops close on what reaches the artifact. Findings are
+# ---- tiered against the design's declared domain; contrived ones go to the
+# ---- residual-risk register instead of reopening the loop.
+#
+# Assertion shape notes. Each rule is pinned on the surface that EXECUTES it
+# (review-agent for tiering, the workflow steps for closure), not only in the
+# SKILL.md section that explains it: a rule stated in SKILL.md and inverted in
+# the reviewer prompt would otherwise stay green. Headings are anchored
+# (main-agent.md and SKILL.md cross-reference `## Review Convergence` in
+# backticks). Negative greps keep the old closure wording from coming back at
+# any workflow step.
+t22_has() { # <file> <fixed-string> <label>
+    if grep -qF -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (#22)"; else fail "T6 $1 $3 (#22)" "missing: $2"; fi
+}
+for f in skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md; do
+    if grep -qE '^## Review Convergence$' "$f" 2>/dev/null; then
+        pass "T6 $f has the review-convergence section heading (#22)"
+    else
+        fail "T6 $f has the review-convergence section heading (#22)"
+    fi
+    # The pre-#22 closure forms: "until reviewAgent says no changes are needed"
+    # and "closes when reviewAgent reports `no-changes-needed`" read as "until
+    # the reviewer has nothing left to say" — the loop the issue reported.
+    if grep -qiE 'until (the )?(review-agent|reviewagent) (reports|says) no changes|closes when (the )?(review-agent|reviewagent) (reports|says) `no-changes-needed`' "$f" 2>/dev/null; then
+        fail "T6 $f carries no pre-#22 closure wording (#22)" "$(grep -niE 'until (the )?(review-agent|reviewagent) (reports|says) no changes|closes when (the )?(review-agent|reviewagent) (reports|says) `no-changes-needed`' "$f" | head -3)"
+    else
+        pass "T6 $f carries no pre-#22 closure wording (#22)"
+    fi
+done
+S=skills/execute-task/SKILL.md
+t22_has "$S" "reviewAgent's own report for the round is \`no-changes-needed\`" "closes on reviewAgent's own zero-blocking report"
+t22_has "$S" "Rejecting or downgrading a blocking reviewAgent finding never closes the point by itself" "keeps the reviewer re-check of rejections/downgrades"
+t22_has "$S" "No finding marked \`requires-user-decision\` is still waiting for the user's answer" "holds the point open on a pending user decision"
+t22_has "$S" "In doubt between \`blocking\` and \`contrived\`, it is \`blocking\`" "defaults doubt to blocking"
+t22_has "$S" "A tier changes the disposition, never the report" "keeps reporting full"
+t22_has "$S" "downgrading a finding the reviewer called \`blocking\` needs that evidence written into the disposition" "demands evidence for a downgrade"
+t22_has "$S" "AND no current caller reaches it" "makes contrived a conjunction"
+t22_has "$S" "\`non-blocking:contrived\` — never fixed inside this review loop" "never lands contrived findings in the loop"
+t22_has "$S" "ONE further round per review point" "bounds the normal-fix round per review point"
+t22_has "$S" "finishes its third round still holding blocking findings" "triggers the convergence check at round 3"
+t22_has "$S" "only when every producer of the variant falls inside the call sites the entry already cleared" "re-checks reachability per variant"
+t22_has "$S" "The threat model and every out-of-scope clause are the user's decisions" "reserves the scope boundary to the user"
+t22_has "$S" "it never becomes \`contrived\` just because today's callers happen to satisfy it" "keeps unstated premises a user question"
+t22_has "$S" "does not narrow the goal" "states contrived deferral is not goal narrowing"
+t22_has "$S" "Leaving an in-domain requirement unmet does narrow it" "keeps in-domain deferral as goal narrowing"
+t22_has "$S" "every blocking finding moved into a hardening SubTask is landed" "verifies moved findings at delivery"
+t22_has skills/execute-task/prompts/main-agent.md "**Tiers never narrow a dispatch.**" "keeps tiers from narrowing a dispatch"
+t22_has skills/execute-task/prompts/main-agent.md "Rejecting or downgrading a blocking reviewAgent finding does not close the point on its own" "keeps the reviewer re-check"
+for f in subagents/review-agent.md agents/review-agent.md; do
+    if grep -qE '^## Finding Tiers$' "$f" 2>/dev/null; then pass "T6 $f has the finding-tiers heading (#22)"; else fail "T6 $f has the finding-tiers heading (#22)"; fi
+    t22_has "$f" "\`Result\` is \`changes-requested\` exactly when you report at least one \`blocking\` finding; non-blocking findings alone give \`no-changes-needed\`" "ties Result to blocking findings both ways"
+    t22_has "$f" "In doubt between \`blocking\` and \`contrived\`, report \`blocking\`" "defaults doubt to blocking"
+    t22_has "$f" "If you can do neither, it is \`blocking\`" "does not default an untraced producer to contrived"
+    t22_has "$f" "Tiers change where a finding goes, never whether you report it" "tiers without narrowing the report"
+    t22_has "$f" "report it as \`blocking\` + \`requires-user-decision\`" "keeps unresolved scope questions blocking"
+    t22_has "$f" "recurring: <class>" "marks recurring classes"
+done
+t22_has subagents/implementation-agent.md "\`non-blocking:contrived\` — do not fix it in this loop" "leaves contrived findings to the register"
+t22_has agents/implementation-agent.md "\`non-blocking:contrived\` — do not fix it in this loop" "leaves contrived findings to the register"
+t22_has subagents/test-agent.md "do not change tests for it in this loop" "leaves contrived findings to the register"
+t22_has agents/test-agent.md "do not change tests for it in this loop" "leaves contrived findings to the register"
+rr_tmpl=skills/execute-task/templates/residual-risks.md
+for field in Origin Tier Reproduction Impact 'Hardening Plan' Status; do
+    if grep -q "^- $field:" "$rr_tmpl" 2>/dev/null; then
+        pass "T6 residual-risks template carries the $field field (#22)"
+    else
+        fail "T6 residual-risks template carries the $field field (#22)"
+    fi
+done
+# The Scope Boundary heading must sit OUTSIDE every HTML comment, or a filled
+# document drops it together with the scaffolding.
+if python3 - <<'PYEOF'
+import re, sys
+t = open('skills/execute-task/templates/design-doc.md').read()
+stripped = re.sub(r'<!--.*?-->', '', t, flags=re.S)
+sys.exit(0 if re.search(r'^## Scope Boundary$', stripped, flags=re.M) else 1)
+PYEOF
+then
+    pass "T6 design-doc template has a kept Scope Boundary section (#22)"
+else
+    fail "T6 design-doc template has a kept Scope Boundary section (#22)"
+fi
+t22_has skills/execute-task/templates/design-doc.md "The threat model and every out-of-scope clause are the USER's decisions" "reserves the scope boundary to the user"
+if grep -qE '^## Review Convergence$' skills/execute-task/templates/task-status.md 2>/dev/null; then
+    pass "T6 task-status template has the review-convergence section (#22)"
+else
+    fail "T6 task-status template has the review-convergence section (#22)"
+fi
+t22_has skills/execute-task/templates/task-status.md "Convergence Checks" "records convergence checks"
+t22_has skills/execute-task/templates/final-report.md "residual-risk register" "reports the residual-risk register"
+t22_has skills/execute-task/templates/review-report.md "\`changes-requested\` exactly when at least one finding below is \`blocking\`" "ties Status to blocking findings"
+t22_has skills/execute-task/templates/cross-review-prompt.md "its tier per the standard's \`## Finding Tiers\`" "asks the cross-harness reviewer for a tier per finding"
+# L5: the contrived cap lines exist as PATTERNS (not just a comment mentioning
+# the word), and vetoes are judged per clause — a negation in one sentence must
+# not license a cap in another (T7 holds the behavioral corpus).
+t22_has hooks/scripts/lib.sh "(skip|drop|omit|ignore|leave out|exclude) (the |any )?(non.blocking:)?contrived( (issue|finding|one|item|case)s?)?" "has the contrived skip-cap pattern"
+t22_has hooks/scripts/lib.sh 'zyz_scope_negated "$clause" && continue' "judges vetoes per clause"
 for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json; do
     if grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE" "$m" 2>/dev/null; then
         pass "T6 $m at $EXPECTED_VERSION"

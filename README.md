@@ -90,8 +90,9 @@ orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型
 execute-task 的每个评审点（设计评审每一轮、每个实现 / SubTask 评审、汇总评审）除了派发本工程的 `review-agent` subAgent，还会**同时**为本机装着的**其它** agent 产品各起一个只读评审会话：主 agent 跑在 Claude Code 且装了 `codex`，就同时起 `codex exec` 评审；跑在 Codex 且装了 `claude`，就同时起 `claude -p` 评审。宿主自身的产品不会重复起（那就是 review-agent）。
 
 - **入口**：`scripts/cross-review.sh detect` 查看会选中哪些 harness；`scripts/cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <l>] [--cwd <dir>]` 并发跑所有选中的评审者，产出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，stdout 每个评审者一行 `status=ok|empty|failed|timeout`。提示词模板是 `skills/execute-task/templates/cross-review-prompt.md`（沿用 `subagents/review-agent.md` 的评审标准与 `templates/review-report.md` 的报告结构）。
-- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件 `## Cross-Harness Review`；两个评审者意见一致本身不算证据。评审点收敛条件是 review-agent `no-changes-needed` 且交叉评审的每条 finding 都有处置。
+- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件 `## Cross-Harness Review`；两个评审者意见一致本身不算证据。评审点收敛条件见 `## Review Convergence`：review-agent 本轮零 blocking，交叉评审的每条 finding 都有处置且没有被接受为 blocking，也没有待用户决定的问题。
 - **可选、不阻塞**：没装其它 harness、被关闭、失败或超时，都只记录然后继续用 review-agent 单独评审。
+- **评审收口（review convergence）**：每条 finding 分 `blocking` / `non-blocking:normal` / `non-blocking:contrived` 三级，以设计文档 `## Scope Boundary` 声明的输入域与威胁模型为判据；评审点在 review-agent 本轮零 blocking（被拒或降级的 blocking 要由下一轮评审确认）、交叉评审无被接受的 blocking、无待用户决定项时收口，contrived 按类记入 `<task-dir>/residual-risks.md` 留给后续补强任务，同类第二个变体要求类级修复，第 3 轮起每 3 轮做一次收敛检查并告知用户。详见 `skills/execute-task/SKILL.md` `## Review Convergence`。
 - **隔离**：Codex 用 `-s read-only`；Claude 用 `--permission-mode dontAsk` + 只读工具白名单（含只读 git）并禁用编辑工具；子会话清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，不关的话子会话的 hook 会冒充本任务的主 agent）；默认零 MCP（沿用 `orch-worker-mcp-args.sh` 的覆盖参数；万一 Codex 仍因这些覆盖加载配置失败，会退回继承一次，并在 `.meta` 记 `mcp=inherit-fallback`）。交叉评审者不注入变异、不复跑测试——那仍是 review-agent 的义务。
 
 | 环境变量 | 作用 |

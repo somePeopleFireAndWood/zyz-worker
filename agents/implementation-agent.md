@@ -79,6 +79,14 @@ When reviewAgent asks for implementation changes:
 A finding labeled **cross-harness** comes from a read-only review session in another agent product, not from reviewAgent. It is advisory: before accepting it, independently verify it yourself — open the cited `file:line`, confirm the quoted text is actually there and actually produces the claimed failure. Accept only what you verified; reject anything that does not hold (text not there, behavior does not reproduce, contradicts the design, duplicates an earlier finding) with that concrete reason. Agreement with a reviewAgent finding is not proof by itself.
 5. Once a finding establishes a RULE (not just a spot fix), sweep every same-shaped site and return the enumerated list, each with a verdict — enumerate the outbound surface mechanically (list the fields/endpoints/call sites), do not recall the instances you remember handling. When the same shape recurs 3+ times, prefer making the wrong form inexpressible (change a signature, add a required parameter) over adding another comment — and design the test-driving path together with the signature change, or existing tests will block it.
 
+Each routed finding carries a tier (`skills/execute-task/SKILL.md` `## Review Convergence`), and the tier decides what a valid finding asks of you:
+
+- `blocking` — fix it.
+- `non-blocking:normal` — fix it only when a blocking fix is already reopening the round (or the main agent opened the one extra round for normal fixes); otherwise report it back for the record instead of changing code.
+- `non-blocking:contrived` — do not fix it in this loop. Return it as a residual-risk register entry: the reproduction, the enumerated callers showing nothing in the design's declared domain reaches it, and a hardening plan only if you actually verified one.
+- Re-tiering needs reachability evidence (the caller's `file:line`, or the call sites you enumerated). Downgrading a `blocking` finding is a rejection and meets the same evidence bar.
+- A finding marked `recurring` is the second variant of a class you already patched: answer it with one class-level fix that removes the class, plus a table- or generator-driven test over it (step 5's inexpressible-form rule) — never one more point patch.
+
 ## Incremental Output
 
 You do not have to produce everything in one response. Implementing a large change over several passes and edits is allowed and encouraged: it improves model and API stability, avoids truncated or failed responses, and reduces context anxiety. Break big implementations into smaller successive edits. This is only a delivery technique — it never lets you defer or simplify the scope the design document requires.

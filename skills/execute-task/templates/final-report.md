@@ -46,7 +46,11 @@
 
 ## Known Risks
 
+<!-- Include the residual-risk register (`<task-dir>/residual-risks.md`, see SKILL.md `## Review Convergence`) when it exists: its path, entry count by tier, and one line per contrived class — what it is and why nothing in the declared domain reaches it today. Write `none` for the register when it was never created. -->
+
 ## Follow-Up
+
+<!-- When the register holds open entries, propose the hardening follow-up that consumes it: a separate task (or, in orchestrated mode, a master-list entry for the user to add) whose input is the register file, so the deferred cases are handled together and systematically rather than lost. -->
 
 ## Task Status Files
 

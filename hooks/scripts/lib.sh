@@ -488,7 +488,11 @@ zyz_scope_negated() {
     # non-blocking ones" family added with the #20 non-blocking vocabulary:
     # the anti-cap instruction ("do not report only blocking findings",
     # "never skip the non-blocking ones") must keep its veto.
-    printf '%s' "$p" | grep -qE "((do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t|never)[^.;]{0,40}(report|give|return|send|list|skip|drop|omit|ignore|leave out)[^.;]{0,30}(blocking|non.blocking)" && return 0
+    # A negated REPORT verb is only a veto when it negates "only" ("do not
+    # report only blocking findings"); "do not report non-blocking:contrived
+    # findings" IS a cap (#22). Negated skip-family verbs veto for every tier.
+    printf '%s' "$p" | grep -qE "((do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t|never)[^.;]{0,40}(report|give|return|send|list) ([a-z]+ )?only [^.;]{0,20}(blocking|non.blocking)" && return 0
+    printf '%s' "$p" | grep -qE "((do|does|did|is|are|was|were|must|should|can|will) ?n.?o?t|never)[^.;]{0,40}(skip|drop|omit|ignore|leave out)[^.;]{0,30}(blocking|non.blocking|contrived)" && return 0
     printf '%s' "$p" | grep -qE "(more than|beyond) (just|only) (the )?(verdict|conclusion|summary)" && return 0
     printf '%s' "$p" | grep -qE "(不是|不只是|不能只|别只|不要只|不止)(要|给|报|写|看)?" && return 0
     # Careful: bare 不行 also appears in the DEGRADATION idiom "实在不行就先
@@ -496,6 +500,8 @@ zyz_scope_negated() {
     # negation to attach to the truncation itself.
     printf '%s' "$p" | grep -qE "(总?结论|摘要|概要|几条|最严重)[^。；]{0,8}(不够|不足|不行|不可以|不允许)" && return 0
     printf '%s' "$p" | grep -qE "(不可以|不允许|禁止|不得)[^。；]{0,8}(只|仅|省略|忽略|截断|降级)" && return 0
+    # "不要跳过边角情形" / "刁钻情形也不能忽略" negate the skip verb itself (#22).
+    printf '%s' "$p" | grep -qE "(不要|不能|别|不得|不可|不准)[^。；，,]{0,4}(跳过|忽略|略过|不报)" && return 0
     return 1
 }
 
@@ -508,6 +514,29 @@ zyz_scope_strip_quotes() {
     printf '%s' "${1:-}" \
         | sed -E -e 's/"[^"]*"/ /g' -e 's/`[^`]*`/ /g' \
                  -e "s/(^|[[:space:]([{:,])'[^']*'/\1 /g" 2>/dev/null
+}
+
+zyz_scope_unwrap_tiers() {
+    # $1 = clause text. The #22 prompts spell finding tiers in backticks
+    # (`blocking`, `non-blocking:contrived`), and quote-stripping would blank
+    # exactly the noun a cap like "report only `blocking` findings" turns on.
+    # Unwrap bare tier tokens first so the cap patterns still see them.
+    printf '%s' "${1:-}" \
+        | sed -E 's/`((non.)?blocking(:normal|:contrived)?|contrived)`/\1/g' 2>/dev/null
+}
+
+zyz_scope_clauses() {
+    # $1 = flattened prompt text. One clause per line, split at sentence or
+    # clause punctuation followed by a space (so "e.g." inside a word, "v1.2"
+    # and "high.severity" stay whole) and at CJK terminators. Vetoes are then
+    # judged per clause: a negation in one sentence must not license a cap in
+    # another ("never skip contrived findings. report only the blocking ones").
+    printf '%s\n' "${1:-}" | awk '{
+        gsub(/[.;!?]+ /, "\n")
+        sub(/[.;!?]+ *$/, "")
+        gsub(/。|；|！|？/, "\n")
+        print
+    }' 2>/dev/null
 }
 
 zyz_scope_utf8_locale() {
@@ -531,7 +560,7 @@ zyz_scope_cap_hit() {
     # $1 = dispatch prompt text. Prints the first scope-capping phrase found
     # (so the deny reason can quote it), or nothing. Input is lowercased, so
     # English patterns need no case folding; the CJK ones are unaffected.
-    local p pat m scope_locale
+    local p pat m scope_locale clause c pats
     scope_locale="$(zyz_scope_utf8_locale 2>/dev/null || true)"
     if [ -n "$scope_locale" ]; then
         local LC_ALL="$scope_locale"
@@ -539,24 +568,39 @@ zyz_scope_cap_hit() {
     fi
     p="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' 2>/dev/null | tr '\n' ' ' 2>/dev/null)"
     [ -n "$p" ] || return 0
-    # A prompt that explicitly forbids truncation is never a cap. Negation is
-    # checked on the FULL text (before quote-stripping) so a quoted negation
-    # keeps its veto.
-    zyz_scope_negated "$p" && return 0
-    # Caps are matched against the quote-stripped copy. Known tradeoff: a prompt
-    # that is ENTIRELY a quoted cap now passes — acceptable, since a dispatch
+    pats="$(zyz_scope_cap_patterns)"
+    # Judged clause by clause (#22). A clause that explicitly forbids
+    # truncation is never a cap; negation is checked on the clause BEFORE
+    # quote-stripping so a quoted negation keeps its veto — but it vetoes only
+    # its own clause, never a cap stated in a different sentence of the prompt.
+    # Caps are matched against the quote-stripped clause. Known tradeoff: a
+    # prompt that is ENTIRELY a quoted cap passes — acceptable, since a dispatch
     # whose whole body is one quoted string is not a plausible instruction,
     # whereas writing docs/tests about this guard is routine here.
-    p="$(zyz_scope_strip_quotes "$p")"
-    [ -n "$p" ] || return 0
-    while IFS= read -r pat; do
-        [ -n "$pat" ] || continue
-        m="$(printf '%s' "$p" | grep -oE "$pat" 2>/dev/null | head -n1)"
-        if [ -n "$m" ]; then
-            printf '%s' "$m"
-            return 0
-        fi
-    done <<'ZYZ_CAP_PATTERNS'
+    while IFS= read -r clause; do
+        [ -n "$clause" ] || continue
+        zyz_scope_negated "$clause" && continue
+        c="$(zyz_scope_strip_quotes "$(zyz_scope_unwrap_tiers "$clause")")"
+        [ -n "$c" ] || continue
+        while IFS= read -r pat; do
+            [ -n "$pat" ] || continue
+            m="$(printf '%s' "$c" | grep -oE "$pat" 2>/dev/null | head -n1)"
+            if [ -n "$m" ]; then
+                printf '%s' "$m"
+                return 0
+            fi
+        done <<ZYZ_CAP_PATTERN_LIST
+$pats
+ZYZ_CAP_PATTERN_LIST
+    done <<ZYZ_CAP_CLAUSES
+$(zyz_scope_clauses "$p")
+ZYZ_CAP_CLAUSES
+    return 0
+}
+
+zyz_scope_cap_patterns() {
+    # One ERE per line, matched against a lowercased, quote-stripped clause.
+    cat <<'ZYZ_CAP_PATTERNS'
 (only|just) (the )?(top|most severe|worst) [a-z0-9]+ ?(findings|issues|problems)
 (top|most severe|worst) [0-9]+ ?(findings|issues|problems) ?(is|are|would be)? ?(enough|fine|ok|okay|sufficient)
 (limit(ed)?|cap(ped)?|restrict(ed)?|hold|keep|stop) (it |yourself |them |the (report|review|findings|list) )?(to|at|after) (just |only )?[0-9]+ ?(findings|issues|problems)
@@ -573,9 +617,23 @@ a (short |brief |quick )?(summary|verdict|conclusion) (is|will be|would be) (eno
 (focus |look )?only on (blockers|blocking|criticals?|the (worst|top|main|key|important))
 (report|give|return|send|list) (me )?only (the )?(blocking|blocker|critical|high.severity|high.priority|p[01])[a-z]*( (issue|finding|one|item)s?)?
 (skip|drop|omit|ignore|leave out) (the )?non.blocking( (issue|finding|one|item)s?)?
+(skip|drop|omit|ignore|leave out|exclude) (the |any )?(non.blocking:)?contrived( (issue|finding|one|item|case)s?)?
+(skip|drop|omit|ignore|exclude) (anything|everything|whatever is) contrived
+(do ?n.?t|never) (report|list|mention) (the |any )?(non.blocking:)?contrived( (issue|finding|one|item|case)s?)? *$
+(do ?n.?t|never) (report|list|mention) (the |any )?non.blocking(:normal|:contrived)?( (issue|finding|one|item|case)s?)? *$
+(no need to|need not|needn.?t) (report|list|mention|include) (the |any )?(non.blocking:)?contrived
+do ?n.?t bother (with|reporting|listing) (the |any )?(non.blocking:)?contrived
+leave (the |any )?(non.blocking:)?contrived[a-z ]{0,20} out
+(non.blocking:)?contrived( (issue|finding|one|item|case)s?)? (can|may|should) be (left out|skipped|dropped|omitted|ignored)
+(non.blocking:)?contrived( (issue|finding|one|item|case)s?)? (are|is) (not needed|unnecessary|not required) *$
+(report|list) only (the )?non.contrived|only (report|list) (the )?non.contrived
 (只要|只需|只给|仅给|仅需|只报|只写|只列|只看)[^。；,，]{0,12}(总?结论|结果|摘要|概要|几条|几个|几项|重点|关键|最严重|最重要)
 (只报|只写|只列|只看|只处理|仅报|仅看)[^。；,，]{0,6}阻塞
 (跳过|忽略|不用管|不必管|略过)[^。；,，]{0,6}非阻塞
+(跳过|忽略|不用管|不必管|略过|不用报|不必报|不报)[^。；,，]{0,6}(刁钻|边角)
+(刁钻|边角)[^。；,，]{0,6}(不用报|不必报|不报|不用管|不必管|跳过|忽略|略过)
+(跳过|忽略|略过|不用报|不必报|无需报|不报)[^。；,，]{0,6}(contrived|对抗)
+(contrived|对抗)[^。；,，]{0,8}(不用|不必|无需)(报|列|管)
 (重点|关键|主要|重要)(问题|的?几条|的?几个)?(就行|即可|就好|足矣|即够)
 (挑|选|列|给)[^。；,，]{0,4}(最|前)?(重要|严重|关键)的?(几|[0-9一二三四五六七八九十]+)(条|个|项)
 最严重(的)?[0-9一二三四五六七八九十]+ ?(条|个|项)
@@ -584,7 +642,6 @@ a (short |brief |quick )?(summary|verdict|conclusion) (is|will be|would be) (eno
 (实在不行|不行的话|至少|最少)[^。；,，]{0,10}(一句话|总?结论)
 (降级|放宽|放低)[^。；,，]{0,8}(要求|标准|目标)
 ZYZ_CAP_PATTERNS
-    return 0
 }
 
 zyz_scope_continuation() {

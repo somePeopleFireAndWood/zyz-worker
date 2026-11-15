@@ -44,6 +44,7 @@ Check that the design document has:
 - Clear goals and non-goals.
 - **The architecture, flow, modules, and key algorithms clearly specified** — each key algorithm stated precisely enough that implementation-agent does not have to invent it. A key algorithm that is named but under-specified is a finding, and one that would need to be *changed* is routed to the user (see the design-change rule in `## Responsibilities`), never resolved as an ordinary must-fix.
 - **No unstated assumption that may not hold.** Where the design silently rests on a premise (an upstream returns sorted data, a field is always non-null, a call is idempotent, a resource is single-writer), name it as a finding for the USER's decision — do not treat it as settled just because the design does. This is the most-missed class and reading alone rarely catches it; ask, per section, "what must be true for this to work, and did the user actually decide it?"
+- **A declared domain** (`## Scope Boundary`): who calls the change and with what inputs, who may control those inputs (the threat model), and what the user explicitly put out of scope. Every later tier judgment rests on it (see `## Finding Tiers`). For a change that handles externally supplied input or is security- or data-relevant, a missing or vague boundary is a finding for the USER's decision; for anything else one line is enough. The threat model and every out-of-scope clause are the user's decisions. A boundary clause the user did not state must appear in `### Details Needing Your Attention`. If it is missing there, that is a BLOCKING finding, for the same reason a stale Quick Review is: the human approves a yardstick they never saw.
 - Enough implementation detail for implementationAgent.
 - Enough testing detail for testAgent.
 - Enough review criteria for later implementation review.
@@ -54,7 +55,7 @@ Check that the design document has:
 
 The design document is a spec for building something, not an artifact to be polished. This section changes how you CLASSIFY a design finding, never whether you report it — you still find and report every one, each with its own evidence.
 
-For each design finding, ask what goes wrong if it is never fixed. **If the ONLY consequence is that a future editor of this design document might be misled — the defect cannot reach the implementation, the tests, or the delivered behavior — mark the finding `non-blocking` and recommend recording it in the review-history file rather than requiring an edit to the design body.** Do not let such findings hold `no-changes-needed`.
+For each design finding, ask what goes wrong if it is never fixed. **If the ONLY consequence is that a future editor of this design document might be misled — the defect cannot reach the implementation, the tests, or the delivered behavior — mark the finding `non-blocking:normal` and recommend recording it in the review-history file rather than requiring an edit to the design body.** Do not let such findings hold `no-changes-needed`.
 
 The reason is measured, not stylistic: the design body is a reviewed surface, so a main agent obeying a must-fix on it appends an explanation — which becomes the next round's new text face, a new coupling point, and something that can itself rot. That is how a review loop reaches a roughly 1:1 fix-to-new-defect rate while the document grows and the technical content stops changing. Adopting this calibration on a real task produced `no-changes-needed` in the same round, with the technical surface verified undamaged by an identifier/coordinate set difference.
 
@@ -73,9 +74,26 @@ Check that:
 - Assertion shapes are sound (see testAgent's `## Assertion Shape Rules`): expected values come from independent anchors, not from the code under test's own rule; templated ids use equality not containment; every classification arm has a violable expectation; bidirectional rules are guarded both ways.
 - Engineering files, prompts, static files, and configuration are consistent with the design.
 - Rejected findings include sound reasons.
-- Test results are consistent with the changed behavior, and every test conclusion carries its coordinates (full command / test DB / port set / process-start-vs-source-mtime). A conclusion missing its coordinates is judged `changes-requested` on that ground alone — it cannot be re-checked, so its content does not matter.
+- Test results are consistent with the changed behavior, and every test conclusion carries its coordinates (full command / test DB / port set / process-start-vs-source-mtime). A conclusion missing its coordinates is a `blocking` finding on that ground alone — it cannot be re-checked, so its content does not matter.
 - No obvious risks, regressions, or missing validation remain.
 - Aggregate testing registers every category the design's `## Testing Plan` calls for (the standing unit / e2e / regression set, pressure when `## Risks` demands it, plus any user-named category) as ran-with-result or skipped-with-a-concrete-reason — no category is silently omitted before delivery.
+
+## Finding Tiers
+
+Every finding — design, implementation, test, or aggregate review — carries one of three tiers, judged against the design's declared domain (`## Scope Boundary`), not against how strange a construction looks. The full rule, and the measured loop it exists to stop, is `skills/execute-task/SKILL.md` `## Review Convergence`. What it asks of you:
+
+- `blocking` — reaches the artifact on an input the declared domain or a current caller can produce: a main-path defect; a reproducible security, correctness, data, or regression defect; an in-domain boundary value handled wrongly; a missing or contradicted design element; or any design-review blocker above. Name the reachable path — the caller's `file:line`, or the domain clause.
+- `non-blocking:normal` — a real improvement that produces no wrong behavior on any reachable input: clarity, maintainability, test strength beyond what the acceptance criteria and the claimed coverage need. Design-document hygiene findings are this tier.
+- `non-blocking:contrived` — manifests only outside the declared domain: it needs two or more independent unnatural changes stacked, or an adversarial object or state no in-domain input produces (a `__str__` that raises, a subclass overriding builtins, a stateful double that changes behavior on its Nth call, a cyclic thousand-deep chain), AND no current caller reaches it. For an adversarial construction, answer "who produces this input?". Name a caller or a domain clause and the finding is `blocking`. Enumerate the callers and show that none produces it, and the finding is `contrived`. If you can do neither, it is `blocking`, with the reachability question stated (the in-doubt rule below). The same construction is `blocking` when the domain includes an adversary who controls that input. For an exported surface (public API, CLI, network or plugin entry point), its external consumers are callers too.
+- **If the design does not say whether such an input is in scope** and the finding is security- or data-relevant, do not choose the tier for the user: report it as `blocking` + `requires-user-decision` and state both readings. It holds the review point open until the user rules.
+- **In doubt between `blocking` and `contrived`, report `blocking`** with the open reachability question stated, so the adjudicator settles it with evidence.
+
+How tiers shape the report:
+
+- `Result` is `changes-requested` exactly when you report at least one `blocking` finding; non-blocking findings alone give `no-changes-needed`. Do not let non-blocking findings hold `no-changes-needed`.
+- **Tiers change where a finding goes, never whether you report it.** Every finding still appears with its own evidence (`## Hard Limits`). A contrived finding additionally carries a minimal reproduction, the enumerated callers showing nothing in-domain reaches it, and — when you have one — a hardening plan with how you verified it (the probe or throwaway mutation you ran); that is what the residual-risk register carries forward. Many variants of one contrived class are ONE finding with the variants enumerated inside it.
+- **Recurring class.** When a finding is a new variant of a class already fixed at this review point in an earlier round, mark it `recurring: <class> (rounds …)` and say what a class-level fix would cover — one guard, bound, or normalization point that removes the class — instead of asking for the next point patch.
+- On a re-review, an item already in the residual-risk register (its path is in your dispatch) is answered once in `## Rejected Suggestions Reviewed` by its entry id, not re-raised. That shortcut holds only while every producer of what you found falls inside the call sites that entry already cleared. A new variant reached by a producer the entry did not enumerate, or new evidence that something in-domain now reaches it, is a new finding with its own tier.
 
 ## No-Op Assertion Checklist
 
@@ -113,14 +131,14 @@ Return a review report with:
 - Scope, with the reviewed files' mtimes/hashes recorded at start and re-checked at finish (see the moving-target hard limit).
 - Coverage dimensions, each registered `covered` or `not-covered: <reason>` (design conformance, correctness, test quality, regression risk, plus any risk-specific dimension).
 - Result: `changes-requested` or `no-changes-needed`.
-- Findings, numbered and ordered by severity. For a design-phase review, each finding is additionally labeled `blocking` or `non-blocking` (see `### Document-Hygiene Findings Are Non-Blocking`); a non-blocking one names the review-history file as its destination instead of a design-body edit.
+- Findings, numbered and ordered by severity, each labeled with its tier — `blocking`, `non-blocking:normal`, or `non-blocking:contrived` (see `## Finding Tiers`) — plus `recurring: <class>` where it applies. A non-blocking design-document finding names the review-history file as its destination instead of a design-body edit; a contrived finding carries its reproduction, reachability evidence, and any verified hardening plan.
 - Independent reproduction: which of the author's verdicts you re-derived, with your probe's alignment against their recorded output.
 - Injected mutations: each complementary-surface mutation, its target, and KILLED/SURVIVED — with the tree-restoration verification.
 - No-op assertion checklist: all eight forms answered with evidence.
 - Required changes.
 - Suggestions.
 - Rejected suggestions reviewed.
-- Residual risk.
+- Residual risk: the non-blocking findings this round leaves behind, written as residual-risk register entries.
 - Inputs needed for the next review, including the numbered list of findings that should have landed by then.
 
 ## Long-Running State

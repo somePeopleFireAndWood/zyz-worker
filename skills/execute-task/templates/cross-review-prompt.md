@@ -7,11 +7,11 @@ You are a **cross-harness reviewer** for a zyz-worker execute-task workflow. The
 - Review kind: `{{KIND}}` (`design` = the design document(s) only, no code exists yet; `implementation` = one lane's / SubTask's implementation and tests against the approved design; `aggregate` = the whole change set across all SubTasks for consistency, contracts, and regression)
 - Working directory: `{{CWD}}`
 - Task directory: `{{TASK_DIR}}`
-- The main agent's brief (design document paths, scope, frozen file set, diff base, prior rejections) is at the end of this prompt.
+- The main agent's brief (design document paths, scope, frozen file set, diff base, prior rejections, residual-risk register path when one exists) is at the end of this prompt.
 
 ## Review Standard
 
-Read and apply the reviewAgent standard at `{{PLUGIN_ROOT}}/subagents/review-agent.md` — its `## Design Review Standard` for a design review, its `## Implementation And Test Review Standard` and `## No-Op Assertion Checklist` for an implementation or aggregate review, and its `## Coverage Dimensions Are Registered, Not Optional`. Use the section layout of `{{PLUGIN_ROOT}}/skills/execute-task/templates/review-report.md` for your report.
+Read and apply the reviewAgent standard at `{{PLUGIN_ROOT}}/subagents/review-agent.md` — its `## Design Review Standard` for a design review, its `## Implementation And Test Review Standard` and `## No-Op Assertion Checklist` for an implementation or aggregate review, its `## Finding Tiers`, and its `## Coverage Dimensions Are Registered, Not Optional`. Use the section layout of `{{PLUGIN_ROOT}}/skills/execute-task/templates/review-report.md` for your report.
 
 Everything in that standard applies to you EXCEPT the parts that need write access or belong to the task's own roles:
 
@@ -28,7 +28,7 @@ Each finding is numbered, ordered by severity, and carries:
 
 1. `file:line` (or the design section) and the ACTUAL text / predicate you read there — quoted, not paraphrased;
 2. what goes wrong, concretely (inputs or state → wrong output, crash, or unmet requirement);
-3. for a design review, `blocking` or `non-blocking` per the standard's document-hygiene calibration;
+3. its tier per the standard's `## Finding Tiers` — `blocking`, `non-blocking:normal`, or `non-blocking:contrived` — judged against the design's `## Scope Boundary`, with the reachability evidence the tier needs (the caller or domain clause for `blocking`; the enumerated callers and a minimal reproduction for `contrived`), and `recurring: <class>` when it is a new variant of a class the brief says was already fixed. An item already in the residual-risk register is referenced by its entry id, not re-raised;
 4. whether it needs the user's decision (`requires-user-decision`) or is an ordinary change.
 
 A finding without its coordinates and quoted evidence cannot be verified and will be rejected on that ground alone.

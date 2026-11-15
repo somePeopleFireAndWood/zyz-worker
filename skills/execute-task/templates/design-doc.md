@@ -36,6 +36,10 @@
 
 ## Non-Goals
 
+## Scope Boundary
+
+<!-- The declared domain reviewers classify findings against (SKILL.md `## Review Convergence`): who calls this change and with what inputs; who may control those inputs (the threat model — e.g. "inputs are the program's own exceptions, never attacker-supplied objects"); and any constructions the user explicitly puts out of scope (known boundaries, handled later or never). A finding reachable inside this domain is blocking however exotic; one outside it is recorded as residual risk instead of chased round after round. One line is enough for a change with no externally supplied input; state it in full when the change handles external input or is security- or data-relevant. The threat model and every out-of-scope clause are the USER's decisions. Any clause the user did not state is listed in `### Details Needing Your Attention` as an assumption made without a user decision. For an exported surface (public API, CLI, network or plugin entry point), external consumers are callers, and the documented contract is the domain. -->
+
 ## User Requirements
 
 ## Current State

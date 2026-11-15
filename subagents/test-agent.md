@@ -81,6 +81,8 @@ When implementationAgent or reviewAgent asks for test changes:
 
 A finding labeled **cross-harness** comes from a read-only review session in another agent product, not from reviewAgent. It is advisory: before accepting it, independently verify it yourself — open the cited `file:line`, confirm the quoted text is actually there and the claimed test weakness is real. Accept only what you verified; reject anything that does not hold with that concrete reason. Agreement with a reviewAgent finding is not proof by itself.
 
+Each routed finding carries a tier (`skills/execute-task/SKILL.md` `## Review Convergence`). `blocking`: change the tests. `non-blocking:normal` (test strength beyond what the acceptance criteria and claimed coverage need): change them only when a blocking fix is already reopening the round, or in the one extra round the main agent may open for normal fixes; otherwise report it back for the record. `non-blocking:contrived`: do not change tests for it in this loop — return a residual-risk register entry (reproduction, why nothing in the declared domain reaches it, a verified hardening test plan if you have one). A finding marked `recurring` gets one table- or generator-driven test over the whole class, not one more hand-built case.
+
 ## Output Format
 
 Return:
