@@ -1,76 +1,87 @@
-# zyz-worker Claude Code Instructions
+# zyz-worker Claude Code 说明
 
-This repository provides an agent plugin scaffold for Codex and Claude Code.
+本仓库为 Codex 和 Claude Code 提供一个 agent 插件框架。
 
-## Execute Task Workflow
+## Execute Task 工作流
 
-When the user asks to run the execute-task workflow, use the project slash command:
+当用户要求运行 execute-task 工作流时，使用项目斜杠命令：
 
 ```text
 /execute-task <task description>
 ```
 
-`/code-development` is kept as an alias for the same workflow.
+`/code-development` 作为同一工作流的别名保留。
 
-The workflow is defined by:
+该工作流由以下文件定义：
 
 - `skills/execute-task/SKILL.md`
 - `skills/execute-task/prompts/main-agent.md`
 - `skills/execute-task/templates/`
-- `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md` (cross-harness review: at every review point, alongside the `review-agent` subagent, a read-only review session runs in every OTHER installed agent harness — Codex when the host is Claude Code, Claude Code when the host is Codex; its findings are advisory and each is independently verified before acceptance and may be rejected with a recorded reason — see `skills/execute-task/SKILL.md` `## Cross-Harness Review`)
-- `hooks/hooks.json` + `hooks/scripts/` and `monitors/` (the watchdog enforcement layer: automatic per-tool-call heartbeats, status-freshness reminders, subagent exit gate, background dead-role watchdog, main-agent stop gate — see `skills/execute-task/SKILL.md` `## Watchdog Enforcement` and `hooks/README.md`)
+- `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md`（跨 harness 交叉评审：在每个评审点，除了 `review-agent` subagent 之外，还会在本机装着的每一个**其它** agent harness 里各起一个只读评审会话——宿主是 Claude Code 时起 Codex，宿主是 Codex 时起 Claude Code；它的发现只作参考，每一条都要先经过独立核实才能接受，也可以附上记录在案的理由予以拒绝——见 `skills/execute-task/SKILL.md` `## 跨 harness 交叉评审`）
+- `hooks/hooks.json` + `hooks/scripts/` 与 `monitors/`（watchdog 强制层：每次工具调用自动写心跳、状态新鲜度提醒、subagent 退出门、后台死亡角色 watchdog、主 agent 停止门——见 `skills/execute-task/SKILL.md` `## Watchdog 强制层` 与 `hooks/README.md`）
 
-The main agent arms the watchdog by writing the `.zyz-worker/current-task` pointer at task start; `[zyz-worker watchdog]` notifications and injected context are actionable instructions (re-dispatch the named role or flush the status file immediately), not noise.
+主 agent 在任务开始时写入 `.zyz-worker/current-task` 指针，从而启用 watchdog；`[zyz-worker watchdog]` 通知和注入的上下文都是需要立即执行的指令（重新派发被点名的角色，或马上刷新状态文件），不是噪音。
 
-The current conversation agent is the main agent. It remains user-facing and coordinates the workflow.
+当前对话 agent 就是主 agent。它保持面向用户，并负责协调整个工作流。
 
-Project-level Claude Code subagents are available in `agents/` (also reachable as `.claude/agents/` via symlink):
+项目级 Claude Code subagent 位于 `agents/`（也可通过符号链接 `.claude/agents/` 访问）：
 
 - `implementation-agent`
 - `test-agent`
 - `review-agent`
 
-These subagents mirror the shared prompt definitions in `subagents/`.
+这些 subagent 是 `subagents/` 中共享提示词定义的镜像。
 
-Do not treat `skills/execute-task/prompts/main-agent.md` as a Claude Code subagent. It is the controller prompt for the current user-facing conversation agent.
+不要把 `skills/execute-task/prompts/main-agent.md` 当作 Claude Code subagent。它是当前面向用户的对话 agent 的控制器提示词。
 
-## Orchestration Scheduling Task Workflow
+## 编排调度任务工作流
 
-When the user wants to drive a master list of development tasks — analyze dependencies, dispatch parallel `execute-task` workers into isolated tmux sessions and git worktrees (one worktree per repo a task touches), aggregate state, and gate merges on user approval — use the project slash command:
+当用户想推进一份开发任务主清单时——分析依赖、把并行的 `execute-task` worker 派发到隔离的 tmux 会话和 git worktree（任务涉及的每个仓库各一个 worktree）、汇总状态、并把合并卡在用户审批上——使用项目斜杠命令：
 
 ```text
 /orchestrate-tasks <list-dir>
 ```
 
-`<list-dir>` defaults to `.zyz-worker/orchestration/<list-name>/`. Each task in the master list is a Markdown file under `<list-dir>/tasks/<task-id>.md`.
+`<list-dir>` 默认为 `.zyz-worker/orchestration/<list-name>/`。主清单中的每个任务都是 `<list-dir>/tasks/<task-id>.md` 下的一个 Markdown 文件。
 
-The workflow is defined by:
+该工作流由以下文件定义：
 
 - `skills/orchestration-scheduling-task/SKILL.md`
 - `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - `skills/orchestration-scheduling-task/templates/`
-- `scripts/orch-*.sh` (bash helpers: scan, spawn, reuse, build-env, worker-mcp-args, check, heartbeat-daemon, cleanup, merge, merge-and-cleanup; `orch-merge.sh` merges + pushes on the `merge` token without touching `state` or the worktree, while `orch-merge-and-cleanup.sh` is the legacy atomic merge+complete+cleanup path; `orch-reuse-worker.sh` associates a completed task's tmux session and worktree set (all repos) to a new `reuse-from` task instead of building a fresh container; `orch-build-env.sh` prints the Go build I/O optimization snippet — `GOTMPDIR` tmpfs + `GOFLAGS=-p` — that spawn and worktree-scope reuse inject into each worker pane, tunable via `ZYZ_GO_BUILD_OPT` / `ZYZ_GO_BUILD_P` / `ZYZ_GO_TMPFS_DIR`; `orch-worker-mcp-args.sh` prints the MCP-isolation CLI args snapshotted into each worker's `dispatch.md` `worker-mcp-args:` — default `ZYZ_WORKER_MCP=none` gives workers `--strict-mcp-config` (zero MCP servers, since stdio MCP servers spawn per claude process and each would otherwise re-pay the host's full MCP memory baseline), `inherit` restores full inheritance, `<config-path>` scopes workers to exactly that JSON's servers)
+- `scripts/orch-*.sh`（bash 辅助脚本：scan、spawn、reuse、build-env、worker-mcp-args、check、heartbeat-daemon、cleanup、merge、merge-and-cleanup）。其中：
+  - `orch-merge.sh` 在收到 `merge` 令牌时只做合并 + 推送，不动 `state` 也不动 worktree；`orch-merge-and-cleanup.sh` 是旧的原子化「合并 + 完成 + 清理」路径。
+  - `orch-reuse-worker.sh` 把一个已完成任务的 tmux 会话和 worktree 集合（所有仓库）关联给一个新的 `reuse-from` 任务，而不是新建容器。
+  - `orch-build-env.sh` 输出 Go 构建 I/O 优化片段——`GOTMPDIR` tmpfs + `GOFLAGS=-p`——spawn 和 worktree 粒度的复用会把它注入到每个 worker pane，可通过 `ZYZ_GO_BUILD_OPT` / `ZYZ_GO_BUILD_P` / `ZYZ_GO_TMPFS_DIR` 调整。
+  - `orch-worker-mcp-args.sh` 输出 MCP 隔离 CLI 参数，快照进每个 worker 的 `dispatch.md` `worker-mcp-args:`。默认 `ZYZ_WORKER_MCP=none` 给 worker 加 `--strict-mcp-config`（零 MCP server，因为 stdio MCP server 是每个 claude 进程各起一份，否则每个 worker 都要重新付一遍宿主的完整 MCP 内存基线）；`inherit` 恢复全量继承；`<config-path>` 把 worker 限定为恰好该 JSON 中的 server。
 
-Relationship to `/execute-task`: the orchestrator does NOT execute tasks itself. It schedules and dispatches. Each task runs in its own tmux session, in its own git worktree(s) (one per repo it touches), as a separate `claude` process invoking `/execute-task` — i.e. `each worker = 1 tmux session + n git worktrees (one per repo; n=1 for single-repo tasks) + 1 full claude process`. The orchestrator and each worker communicate exclusively through files in `<list-dir>` (master entries, `worker-status.md`, `heartbeat`, `question.md`/`answer.md`); nothing crosses agent boundaries in memory.
+与 `/execute-task` 的关系：编排器自己**不**执行任务。它只负责调度和派发。每个任务在自己的 tmux 会话、自己的 git worktree（任务涉及的每个仓库各一个）里，作为一个调用 `/execute-task` 的独立 `claude` 进程运行——即 `each worker = 1 tmux session + n git worktrees (one per repo; n=1 for single-repo tasks) + 1 full claude process`。编排器与每个 worker 之间只通过 `<list-dir>` 中的文件通信（主条目、`worker-status.md`、`heartbeat`、`question.md`/`answer.md`）；没有任何东西在内存中跨越 agent 边界。
 
-The current conversation agent is the orchestrator (main agent). It remains user-facing and runs the orchestration loop. The same project-level subagents (`implementation-agent`, `test-agent`, `review-agent`) are reused by each dispatched worker through `/execute-task`; the orchestrator itself does not need a dedicated subagent.
+当前对话 agent 就是编排器（主 agent）。它保持面向用户，并运行编排循环。每个被派发的 worker 通过 `/execute-task` 复用同一组项目级 subagent（`implementation-agent`、`test-agent`、`review-agent`）；编排器本身不需要专属的 subagent。
 
-A bare `/orchestrate-tasks <list-dir>` auto-polls by default: each tick self-schedules the next via in-session `ScheduleWakeup`, picking a `delaySeconds` from the orchestrator's 7-branch cadence policy. The reschedule prompt for the bare (auto-timer) mode is the bare `/orchestrate-tasks <list-dir>` string. Wrapping with `/loop` is an optional explicit alternative; in Loop mode the orchestrator reschedules with the `/loop /orchestrate-tasks <list-dir>` string instead. Set `ZYZ_ORCH_ONCE=1` to run a single tick and return without self-scheduling (it forces single-shot even under `/loop`):
+直接执行 `/orchestrate-tasks <list-dir>` 默认会自动轮询：每个 tick 都通过会话内的 `ScheduleWakeup` 自行安排下一次，`delaySeconds` 按编排器的 7 分支节奏策略选取。直接执行（自动定时）模式下的重新调度提示词就是这条 `/orchestrate-tasks <list-dir>` 本身。也可以用 `/loop` 包装，作为显式的替代方式；在循环模式下，编排器改用 `/loop /orchestrate-tasks <list-dir>` 这个字符串重新调度。设置 `ZYZ_ORCH_ONCE=1` 则只跑一个 tick 就返回、不再自行调度（即使在 `/loop` 下也强制单次）：
 
 ```text
 /orchestrate-tasks <list-dir>
 /loop /orchestrate-tasks <list-dir>
 ```
 
-Key boundaries:
+关键边界：
 
-- The master list directory `<list-dir>` is the single source of truth. Every orchestrator decision must be derivable from disk content — never from conversation context.
-- **The orchestrator can be started from `~/` or any directory (anywhere on disk), including any non-git cwd; 任意目录均可。** The orchestrator does NOT assume its cwd is inside any task's source repo. Each task's git operations are scoped to its own master-entry `source-repo:` field.
-- **Each task's master entry MUST contain a `source-repo:` frontmatter field**, holding an absolute path or a `~/`-prefixed path to the project git work tree. The spawn helper validates `source-repo:` and exits 5 with a precise diagnostic if it is missing, non-absolute, non-existent, or not a git work tree. A single master list can therefore dispatch workers across multiple repos (multi-project orchestration). Soft warning: do not point `source-repo:` at the zyz-worker plugin repo itself unless you intend to dispatch a worker inside the plugin source.
-- **A single task may span multiple repos (default behavior).** When a task touches several repos, it declares the extra ones with numbered keys `source-repo-2:`, `source-repo-3:`, … (numbering starts at 2 and must be contiguous; the unnumbered `source-repo:` is the primary repo whose worktree is the pane cwd). The default is one tmux session + one `claude` managing one worktree per repo (each with its own branch, commits, and push) — tasks are NOT split per repo unless the user explicitly asks. `branch-N:` / `base-N:` / `worktree-N:` may override per repo; when omitted they inherit (branch/base from the primary's resolved value, worktree from the sibling-directory layout under a shared parent, directory name = repo name). Worktree paths must not contain `:` (the `ZYZ_WORKTREES` separator). A single-`source-repo:` entry is fully backward compatible. Merge and cleanup act per repo (repo set read from the task's `dispatch.md`); merge is non-atomic, fails fast, and re-runs idempotently. Isolation boundary: workers never touch each other's worktrees (spawn enforces pairwise-disjoint worktree paths); within a worker, full write access to all its own worktrees.
-- Only one orchestrator at a time per `<list-dir>` (enforced via `flock` on `<list-dir>/.orchestrator.lock`).
-- **Before editing a master entry in an external editor, the user MUST `Ctrl-C` the orchestrator so the flock releases.** The orchestrator's `tmpfile + rename` writes can race with an editor save otherwise. Restart the orchestrator after the edit is saved.
-- Merge, state change, and worktree cleanup require an explicit user token in `## Pending Merge Approval` on the master entry; the orchestrator never initiates one autonomously. Tokens: `confirmed` (relay to the worker, which writes `phase=done`; the orchestrator mirrors that into `state: completed` and never writes `completed` directly), `merge` / `merge: <base>` → `scripts/orch-merge.sh` (merge + push only), legacy `approved` → `scripts/orch-merge-and-cleanup.sh` (atomic merge + completed + cleanup; for a multi-repo task it acts per repo over the worktree set and writes `state: completed` only after all repos merge), `cleanup-approved` (worktree cleanup), `rejected: <reason>`. Stale-worker cleanup additionally requires `cleanup-approved` in `## Notes`.
-- The orchestrator never proxies user↔worker Q&A. The user either attaches to the worker's tmux pane (synchronous) or edits `<list-dir>/runtime/<task-id>/answer.md` (asynchronous).
+- 主清单目录 `<list-dir>` 是唯一事实来源。编排器的每一个决定都必须能从磁盘内容推导出来——绝不能来自对话上下文。
+- **编排器可以从 `~/` 或任意目录（磁盘上任何位置）启动，包括任何非 git 的 cwd。** 编排器不假设自己的 cwd 位于任何任务的源仓库内。每个任务的 git 操作都限定在它自己主条目的 `source-repo:` 字段所指的仓库。
+- **每个任务的主条目都必须包含 `source-repo:` frontmatter 字段**，值为项目 git 工作树的绝对路径或 `~/` 开头的路径。spawn 辅助脚本会校验 `source-repo:`：缺失、非绝对路径、不存在或不是 git 工作树时，以 exit 5 退出并给出精确诊断。因此一份主清单可以跨多个仓库派发 worker（多项目编排）。软警示：不要把 `source-repo:` 指向 zyz-worker 插件仓库自身，除非你本意就是在插件源码里派发一个 worker。
+- **单个任务可以跨多个仓库（默认行为）。** 一个任务涉及多个仓库时，用编号键 `source-repo-2:`、`source-repo-3:`… 声明额外的仓库（编号从 2 开始且必须连续；不带编号的 `source-repo:` 是主仓库，它的 worktree 就是 pane 的 cwd）。默认是一个 tmux 会话 + 一个 `claude` 管理每个仓库各一个 worktree（各自有分支、提交和推送）——除非用户明确要求，否则**不**按仓库拆分任务。`branch-N:` / `base-N:` / `worktree-N:` 可逐仓库覆盖；省略时按继承规则取值（branch/base 继承主仓库的解析值，worktree 采用共享父目录下的兄弟目录布局，目录名 = 仓库名）。worktree 路径不得包含 `:`（`ZYZ_WORKTREES` 的分隔符）。只写单个 `source-repo:` 的条目完全向后兼容。合并和清理按仓库逐个进行（仓库集合读自任务的 `dispatch.md`）；合并不是原子的、失败即停、重跑幂等。隔离边界：worker 之间绝不触碰彼此的 worktree（spawn 强制 worktree 路径两两不相交）；在 worker 内部，它对自己名下的所有 worktree 有完整写权限。
+- 每个 `<list-dir>` 同一时间只能有一个编排器（通过对 `<list-dir>/.orchestrator.lock` 加 `flock` 强制）。
+- **在外部编辑器里编辑主条目之前，用户必须先 `Ctrl-C` 停掉编排器，让 flock 释放。** 否则编排器的 `tmpfile + rename` 写入可能和编辑器的保存竞争。编辑保存后再重新启动编排器。
+- 合并、状态变更和 worktree 清理都需要用户在主条目的 `## Pending Merge Approval` 中写入明确的令牌；编排器绝不会自主发起。令牌：
+  - `confirmed`：转发给 worker，由 worker 写入 `phase=done`；编排器把它镜像为 `state: completed`，绝不直接写 `completed`。
+  - `merge` / `merge: <base>`：调用 `scripts/orch-merge.sh`（只做合并 + 推送）。
+  - 旧的 `approved`：调用 `scripts/orch-merge-and-cleanup.sh`（原子化的「合并 + 完成 + 清理」；多仓库任务会对 worktree 集合逐仓库执行，并且只在所有仓库都合并后才写 `state: completed`）。
+  - `cleanup-approved`：清理 worktree。
+  - `rejected: <reason>`：拒绝。
 
-Do not treat `skills/orchestration-scheduling-task/prompts/main-agent.md` as a Claude Code subagent. Like the execute-task controller prompt, it is the controller prompt for the current user-facing conversation agent.
+  清理过期 worker 还额外需要在 `## Notes` 中写 `cleanup-approved`。
+- 编排器绝不代理用户与 worker 之间的问答。用户要么直接 attach 到 worker 的 tmux pane（同步方式），要么编辑 `<list-dir>/runtime/<task-id>/answer.md`（异步方式）。
+
+不要把 `skills/orchestration-scheduling-task/prompts/main-agent.md` 当作 Claude Code subagent。和 execute-task 的控制器提示词一样，它是当前面向用户的对话 agent 的控制器提示词。

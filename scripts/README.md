@@ -1,12 +1,12 @@
-# Scripts
+# 脚本
 
-Repository-local automation belongs here.
+仓库本地的自动化脚本放在这里。
 
-Good candidates include:
+合适的候选包括：
 
-- plugin validation
-- documentation checks
-- packaging
-- smoke tests
+- 插件校验
+- 文档检查
+- 打包
+- 冒烟测试
 
-Scripts should be repeatable and safe to run from the repository root.
+脚本应当可重复执行，并能在仓库根目录下安全运行。

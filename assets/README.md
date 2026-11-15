@@ -1,7 +1,7 @@
-# Assets
+# 资产
 
-Static plugin assets belong here.
+插件的静态资产放在这里。
 
-Examples include icons, screenshots, sample images, and brand resources.
+例如图标、截图、示例图片和品牌资源。
 
-Avoid committing large generated assets unless the plugin needs them at runtime or for documentation.
+除非插件在运行时或文档中确实需要，否则不要提交体积大的生成类资产。

@@ -1,76 +1,75 @@
-<!-- SCAFFOLDING — DELETE THIS COMMENT once read; it is not part of the spec.
-     This document records only the FINAL design. Fix a wrong statement by
-     editing or deleting it, never by appending an annotation beside it; add a
-     missing spec freely. Review history lives in the sibling
-     `<this-doc-basename>.review-history.md`, never here.
-     See SKILL.md `## Design Document Edit Discipline`. -->
+<!-- 脚手架说明——读完即删除本注释；它不属于规格的一部分。
+     本文档只记录**最终**设计。修正一处错误的表述，就编辑或删除它，绝不
+     在它旁边追加注释；缺失的规格可以随时补上。评审历史放在同目录的
+     `<this-doc-basename>.review-history.md` 中，绝不放在这里。
+     见 SKILL.md `## 设计文档编辑纪律`。 -->
 
-# <Task Name> Design
+# <任务名称> 设计
 
-> **The user is the designer of this document; the agent only organizes it.**
-> Everything below records the design the USER described — the agent's job was to
-> structure it and fill in executable detail, never to introduce a module, flow,
-> interface, data structure, key algorithm, or architectural choice the user did not choose.
-> Implement this document exactly: nothing dropped, nothing contradicted. Any
-> role that believes something here must change says so and waits for the user's
-> agreement — no role changes the design on its own initiative, in any phase.
-> See SKILL.md `## User Design Authority`.
+> **用户是本文档的设计者；agent 只负责整理。**
+> 下面的一切记录的都是**用户**描述的设计——agent 的工作是把它
+> 组织成结构、补上可执行的细节，绝不引入用户没有选择的模块、流程、
+> 接口、数据结构、关键算法或架构选择。
+> 严格按本文档实现：一样不丢，一处不违背。任何角色
+> 如果认为这里有东西必须改，就说出来并等待用户
+> 同意——在任何阶段，都没有角色可以自作主张修改设计。
+> 见 SKILL.md `## 用户设计主导权`。
 
-## Quick Review
+## 快速审阅
 
-<!-- FOR THE USER: read this section alone and you should be able to judge whether the overall direction is right, without reading the rest. Keep it SHORT — it is a map, not a second copy of the design. Update it by REWRITING what changed, never by appending a note beside a sentence that is now wrong — that is what turns a summary into a log. The sections below are authoritative: if this summary and the body ever disagree, the body wins — the summary is the defect, and it is fixed by RE-DERIVING the affected part from the body as it now stands, not by patching the one wrong sentence and not by editing the body to match. -->
+<!-- 写给用户：只读这一节，就应当能判断整体方向对不对，不必读其余部分。保持简短——它是一张地图，不是设计的第二份拷贝。更新它的方式是**重写**变化了的部分，绝不在一句已经不对的话旁边追加备注——那正是把摘要变成流水账的做法。下面的各节才是权威：如果本摘要与正文出现分歧，以正文为准——有缺陷的是摘要，修复方式是根据正文当前的样子**重新推导**受影响的部分，而不是只修补那一句错话，也不是改正文去迁就摘要。 -->
 
-### Design Summary
+### 设计摘要
 
-<!-- The whole design in a page or less: which modules/components exist and what each is responsible for, how the work is divided between them, the key algorithms, and the main flow end to end (a numbered flow or a small diagram is fine). Name things as the body names them — same module and interface names, so the user can navigate from here. -->
+<!-- 用一页或更短的篇幅写完整个设计：有哪些模块 / 组件、各自负责什么、工作在它们之间如何划分、关键算法，以及端到端的主流程（编号流程或一张小图都可以）。命名与正文保持一致——相同的模块名和接口名，好让用户能从这里定位到正文。 -->
 
-### Details Needing Your Attention
+### 需要你关注的细节
 
-<!-- Implementation details the user specifically should look at before approving, one per line, each saying WHY it needs attention (an irreversible or hard-to-change decision; a trade-off with a real alternative; a performance/security/data-shape consequence; a place where the design deviates from local convention; an assumption made in the absence of a user decision). May be EMPTY when there is genuinely nothing of the kind — write "none" rather than manufacturing entries. Do NOT use this as a second home for open questions (`## Open Questions`) or for review history. -->
+<!-- 用户在批准前尤其应该看的实现细节，每行一条，每条说明为什么需要关注（不可逆或难以更改的决定；有真实替代方案的权衡；性能 / 安全 / 数据形态上的后果；设计偏离了本地惯例的地方；在没有用户决策的情况下做出的假设）。确实没有这类内容时可以为空——写 "none"，不要硬凑条目。不要把这里当作待解问题（`## 待解问题`）或评审历史的第二个存放处。 -->
 
-## Background
+## 背景
 
-## Goals
+## 目标
 
-<!-- The user's full, final target. The task must end fully meeting it — no narrowing, deferring, or placeholders at the overall-task level. -->
+<!-- 用户完整的最终目标。任务结束时必须完全达成它——在整体任务层面，不得收窄、推迟，也不得用占位代替。 -->
 
-## Non-Goals
+## 非目标
 
-## Scope Boundary
+## 范围边界
 
-<!-- The declared domain reviewers classify findings against (SKILL.md `## Review Convergence`): who calls this change and with what inputs; who may control those inputs (the threat model — e.g. "inputs are the program's own exceptions, never attacker-supplied objects"); and any constructions the user explicitly puts out of scope (known boundaries, handled later or never). A finding reachable inside this domain is blocking however exotic; one outside it is recorded as residual risk instead of chased round after round. One line is enough for a change with no externally supplied input; state it in full when the change handles external input or is security- or data-relevant. The threat model and every out-of-scope clause are the USER's decisions. Any clause the user did not state is listed in `### Details Needing Your Attention` as an assumption made without a user decision. For an exported surface (public API, CLI, network or plugin entry point), external consumers are callers, and the documented contract is the domain. -->
+<!-- 评审者据以给发现分类的声明域（SKILL.md `## 评审收口`）：谁调用这次变更、传入什么输入；谁可能控制这些输入（即威胁模型——例如"输入是程序自身的异常，绝不是攻击者提供的对象"）；以及用户明确划出范围之外的构造（已知边界，以后处理或永不处理）。在这个域内可达的发现，无论多冷门都是 blocking；在域外的发现则记为遗留风险，而不是一轮又一轮地追下去。对于没有外部输入的变更，一行就够；当变更处理外部输入，或与安全、数据相关时，要完整写明。威胁模型和每一条范围外条款都是**用户**的决定。用户没有亲口说明的任何条款，都要作为"在没有用户决策的情况下做出的假设"列入 `### 需要你关注的细节`。对于对外暴露的接口面（公共 API、CLI、网络或插件入口），外部使用方就是调用方，文档化的契约就是声明域。 -->
 
-## User Requirements
+## 用户需求
 
-## Current State
+## 现状
 
-## Proposed Design
+## 方案设计
 
-## Implementation Plan
+## 实施计划
 
-## Important Details
+## 重要细节
 
-## Files To Change
+## 改动文件
 
-## Testing Plan
+## 测试计划
 
-<!-- MANDATORY — this is a HARD requirement, not a suggestion. Practice has shown tasks delivered with NO e2e test at all, which badly hurts delivery quality; that must not recur.
+<!-- **必填**——这是一项硬性要求，不是建议。实践中出现过完全**没有** e2e 测试就交付的任务，严重损害了交付质量；这种情况绝不能再发生。
 
-     This design MUST plan ALL THREE of the following layers, each with CONCRETE, scenario-specific test cases and flows designed for THIS task (not a generic checklist — enumerate the actual cases, inputs, and end-to-end paths this task needs):
-       - Unit tests — the smallest-unit correctness cases (normal + boundary + error paths).
-       - Regression tests — protect existing behavior the change touches or could disturb.
-       - End-to-end (e2e) tests — exercise the full real path a user/caller actually takes, across real boundaries; NEVER skip this because "unit tests cover it" — the two layers have opposite structural limits and are not substitutes.
-     Omitting any of these three requires an EXPLICIT, written reason here (and the user's agreement) — silence is not a valid skip.
+     本设计**必须**规划下面**全部三个**层次，每一层都要有为**本任务**设计的、具体的、针对场景的测试用例和流程（不是通用清单——要列举本任务实际需要的用例、输入和端到端路径）：
+       - 单元测试——最小单元的正确性用例（正常 + 边界 + 错误路径）。
+       - 回归测试——保护本次变更触及或可能扰动的既有行为。
+       - 端到端（e2e）测试——走一遍用户 / 调用方实际会走的完整真实路径，跨越真实的边界；**绝不**因为"单元测试已经覆盖了"就跳过它——这两层的结构性局限恰好相反，不能互相替代。
+     省略这三层中的任何一层，都必须在这里写明**明确的**书面理由（并取得用户同意）——不写不算有效的跳过。
 
-     Pressure / stress tests — DECIDE from the requirement scenario whether they are needed (high throughput, concurrency, large data volume, latency/capacity SLOs, or a `## Risks` entry calling out performance/capacity). If needed, plan them here with concrete load/targets; if not, state briefly why they are not needed for this scenario.
+     压力 / 负载测试——根据需求场景**判断**是否需要（高吞吐、并发、大数据量、延迟 / 容量 SLO，或 `## 风险` 中有条目点出了性能 / 容量问题）。如果需要，在这里规划好具体的负载 / 指标；如果不需要，简要说明为什么在这个场景下不需要。
 
-     The categories named here are AUTHORITATIVE for the delivery gate: the status file's `## Final Aggregate Testing` registers exactly these, one line each. unit/e2e/regression/pressure are the standing floor, not a ceiling — a further category named here (frontend tests, per-SDK e2e, …) gets its own registration line and is never absorbed into another slot.
-     For a fix / repair / backfill / migration or other data-mutating script, specify how it is validated on fabricated representative data BEFORE it touches real data: what to fabricate (normal + boundary + error), how the repaired result is verified, and idempotency / rollback. -->
+     这里列出的类别对交付闸门具有**权威性**：状态文件的 `## 最终汇总测试` 恰好登记这些类别，每个一行。unit/e2e/regression/pressure 是常设的下限，不是上限——这里额外点名的类别（前端测试、按 SDK 划分的 e2e……）各自单独占一行登记，绝不并入其他栏位。
+     对于修复 / 修补 / 回填 / 迁移脚本或其他会改动数据的脚本，要写明它在触碰真实数据**之前**，如何在伪造的代表性数据上验证：伪造什么（正常 + 边界 + 错误）、如何验证修复后的结果，以及幂等性 / 回滚。 -->
 
-## Acceptance Criteria
+## 验收标准
 
-## Risks
+## 风险
 
-## Open Questions
+## 待解问题
 
-## User Decisions
+## 用户决策

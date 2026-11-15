@@ -1,14 +1,14 @@
-# Residual Risks
+# 遗留风险
 
-<!-- Behavior-level residuals this task's review loops left behind — see SKILL.md `## Review Convergence`. One entry per `non-blocking:contrived` CLASS (not per variant), and one per behavior- or test-level `non-blocking:normal` finding that did not land. Findings about the design DOCUMENT go to its review-history file, not here.
+<!-- 本任务各评审循环遗留下来的行为层面遗留项，见 SKILL.md `## 评审收口`。每个 `non-blocking:contrived` **类**（而不是每个变体）记一条；每个未落地的、行为层面或测试层面的 `non-blocking:normal` 发现也各记一条。关于设计**文档**本身的发现记入它的评审历史文件，不记在这里。
 
-     This file is the input of any later hardening task. Write each entry so that task can act on it without re-deriving it; an entry missing a field is an open item at delivery. Later reviewers get this file's path and answer a registered item by its id instead of re-raising it. That holds only while every producer of what they found falls inside the call sites the entry's `Impact` already cleared. A variant with a new producer, or new evidence that something in the declared domain reaches it, is a new finding with its own tier. -->
+     本文件是后续任何加固任务的输入。每条记录都要写到让那个任务无需重新推导就能直接动手；缺字段的记录在交付时算作未结项。后续评审者会拿到本文件的路径，对已登记的项按其 id 回应，而不是重新提出。但这一点只在一个前提下成立：他们发现的问题，其每个产生方都落在该条记录 `Impact` 已排查过的调用点之内。出现新产生方的变体，或有新证据表明声明域内有东西能触达它，就是一个新发现，需要单独定级。 -->
 
-## RR-1: <class, one line>
+## RR-1: <类别，一行>
 
-- Origin: <review point label> #<finding number> (<reviewAgent | cross-harness:<harness> | role>)
+- Origin: <评审点标签> #<发现编号>（<reviewAgent | cross-harness:<harness> | 角色>）
 - Tier: <non-blocking:contrived | non-blocking:normal>
-- Reproduction: <the minimal concrete construction — code, input, or state — that triggers it; for a class, every variant seen>
-- Impact: <why nothing in the declared domain reaches it today — the enumerated call sites (file:line) — and what change would make it reachable>
-- Hardening Plan: <what, where, and how it was verified (probe / throwaway mutation / test), or `none proposed`>
-- Status: <open | folded into <follow-up task> | fixed in <commit>>
+- Reproduction: <触发它的最小具体构造——代码、输入或状态；如果是一个类，列出见到的每个变体>
+- Impact: <为什么今天声明域内没有任何东西能触达它——列举的调用点（file:line）——以及什么样的改动会让它变得可触达>
+- Hardening Plan: <改什么、改在哪、如何验证过（探针 / 一次性变异 / 测试），或 `none proposed`>
+- Status: <open | folded into <后续任务> | fixed in <commit>>

@@ -1,71 +1,39 @@
-# Wake-up channel: why sentinel + Monitor, not SendMessage
+# 唤醒渠道：为什么用哨兵 + Monitor，而不是 SendMessage
 
-The single most important — and most counter-intuitive — lesson of this pattern
-is **how you wake a session whose ScheduleWakeup chain has broken**. Get this
-wrong and the whole "self-healing" claim is hollow.
+这套模式中最重要、也最反直觉的一条经验，是**如何唤醒一个 ScheduleWakeup 链已经断开的 session**。这一点做错了，整个"自愈"的说法就是空的。
 
-## The failure state: a "slept" session
+## 失败状态：一个"睡着"的 session
 
-Define **slept** = the session's process is alive, but the model is not being
-invoked. This is exactly what a broken `ScheduleWakeup` chain produces: nothing is
-scheduled to re-enter the model, so the session just sits there. It is not dead
-(the process still exists), but it is not doing anything and will not on its own.
+定义**睡着** = session 的进程还活着，但模型没有被调用。断开的 `ScheduleWakeup` 链产生的正是这种状态：没有任何东西被安排去重新进入模型，session 就这么干等着。它没有死（进程仍然存在），但它什么也没在做，也不会自己动起来。
 
-Waking a slept session requires **three conditions at once**:
+唤醒一个睡着的 session 需要**三个条件同时满足**：
 
-1. a **push-style** event source (something external causes a turn),
-2. the event can **create a turn** (not merely queue data), and
-3. the **process is not dead** (if it is, no in-session mechanism can help — only
-   headless `claude -p`).
+1. 一个 **push 式**的事件源（由外部因素引发一个 turn），
+2. 该事件能**产生一个 turn**（而不只是把数据排进队列），以及
+3. **进程没有死**（如果死了，任何 session 内的机制都无能为力——只有 headless 的 `claude -p` 能用）。
 
-## Why cross-session `SendMessage` does NOT work
+## 为什么跨 session 的 `SendMessage` **不**管用
 
-`SendMessage` is **pull-style**. It drops a message into the receiver's inbox,
-which is drained on the receiver's **next tool round**. A slept session produces
-**no more tool rounds**, so the message is never drained — it piles up forever.
+`SendMessage` 是 **pull 式**的。它把消息投进接收方的收件箱，要等接收方的**下一个工具轮次**才会被取走。睡着的 session **不再产生工具轮次**，所以消息永远不会被取走——只会无限堆积。
 
-> Field data: the watchdog sent **9** wake-up messages to the main session over a
-> broken-chain incident. The main session activated **zero** times. Every message
-> was still sitting unread.
+> 实测数据：在一次断链事故中，watchdog 向主 session 发出了 **9** 条唤醒消息。主 session 被激活了 **0** 次。所有消息都还原封不动地躺在那里，没被读过。
 
-So `SendMessage` satisfies neither (1) nor (2) for a slept target. It is fine for
-coordinating *live* agents; it is useless as a resurrection channel.
+所以对于一个睡着的目标，`SendMessage` 既不满足 (1)，也不满足 (2)。用它协调*活着的* agent 没问题；把它当作复活渠道则毫无用处。
 
-## Why sentinel file + persistent Monitor DOES work
+## 为什么哨兵文件 + 常驻 Monitor **管用**
 
-A Monitor started with `persistent: true` watches something (here, a file) and
-**each line it prints to stdout becomes a `<task-notification>`** delivered to the
-session — which **creates a turn**. That is push-style (condition 1) and
-turn-creating (condition 2). As long as the process is alive (condition 3), the
-session wakes.
+以 `persistent: true` 启动的 Monitor 会监视某样东西（这里是一个文件），并且**它打印到 stdout 的每一行都会成为一条 `<task-notification>`**，投递给 session——这会**产生一个 turn**。这就是 push 式（条件 1）且能产生 turn（条件 2）。只要进程活着（条件 3），session 就会被唤醒。
 
-> Field data: this succeeded repeatedly, including once when the main session had
-> **no `ScheduleWakeup` pending at all** — a genuinely slept state — and it was
-> still woken on time by a sentinel write.
+> 实测数据：多次成功，其中一次主 session **根本没有挂起任何 `ScheduleWakeup`**——真正睡着的状态——仍然被一次哨兵写入准时唤醒。
 
-The watchdog therefore **writes the sentinel unconditionally** — it does not try to
-detect whether the session is alive first (an early version keyed off the unstable
-`cwd` field of `claude agents --json` and misjudged). A live session responds to
-the sentinel; a dead one is covered by the headless fallback after the grace
-period. No liveness pre-check.
+因此 watchdog **无条件写入哨兵**——它不会先去检测 session 是否存活（早期版本依据 `claude agents --json` 中不稳定的 `cwd` 字段做判断，结果误判了）。活的 session 会响应哨兵；死的 session 在宽限期后由 headless 兜底覆盖。不做存活预检。
 
-## The Monitor is the weak point
+## Monitor 是薄弱点
 
-A Monitor can be killed by a session restart, `/clear`, context compaction, or
-harness reclaim, and it **does not self-heal**. If it dies, the sentinel channel
-goes silent: the watchdog writes the file, but nobody reads it, and the file just
-accumulates until headless eventually fires.
+Monitor 可能被 session 重启、`/clear`、上下文压缩或 harness 回收杀掉，而且它**不会自愈**。它一死，哨兵渠道就会沉默：watchdog 照写文件，却没人读，文件只会一直留在那里，直到 headless 最终触发。
 
-Mitigation, baked into the loop turn logic: **on every wake-up, self-check the
-Monitor is still alive and re-arm it immediately if not.** Keep headless as the
-last-resort backstop for the window where the Monitor was dead.
+缓解措施已写进 loop 每个 turn 的逻辑：**每次唤醒时，自检 Monitor 是否还活着，不在了就立即重新启用**。headless 保留为最后的兜底，覆盖 Monitor 死掉的那段时间窗口。
 
-## Honest boundary
+## 如实说明的边界
 
-"Self-healing" covers **broken-chain / slept sessions** — process alive, model
-idle. It does **not** cover a **process death** (`kill -9`, OOM, terminal closed,
-SSH/network dropped): no in-session event source exists to wake a process that is
-gone. For that case the headless `claude -p` fallback protects **business
-continuity** (the day's task still runs) but does **not** restore the resident
-loop — that takes one manual re-launch of the skill (or `--resume`). Say this
-plainly to the user; do not imply the loop resurrects itself after a hard kill.
+"自愈"覆盖的是**断链 / 睡着的 session**——进程活着，模型空闲。它**不**覆盖**进程死亡**（`kill -9`、OOM、终端被关闭、SSH/网络断开）：对一个已经不存在的进程，没有任何 session 内的事件源可以唤醒它。这种情况下，headless 的 `claude -p` 兜底保护的是**业务连续性**（当天的任务照样会跑），但**不会**恢复常驻 loop——那需要手动重新启动一次本 skill（或 `--resume`）。要把这一点明白地告诉用户；不要暗示 loop 在被强制杀掉后会自己复活。

@@ -1,7 +1,7 @@
 {
   "name": "zyz-worker",
-  "version": "0.26.0+codex.20260928120015",
-  "description": "Design-first code development workflow for Codex and Claude Code with orchestrated implementation, testing, and review workers.",
+  "version": "0.27.0+codex.20261115232826",
+  "description": "面向 Codex 与 Claude Code 的设计先行代码开发工作流，由编排的实现、测试与评审 worker 协作完成。",
   "author": {
     "name": "yu",
     "url": "https://github.com/somePeopleFireAndWood"
@@ -18,8 +18,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "zyz-worker",
-    "shortDescription": "Developer workflow helpers for agent CLIs.",
-    "longDescription": "zyz-worker is an early plugin scaffold intended to help agent CLI users develop, program, and work more effectively.",
+    "shortDescription": "面向 agent CLI 的开发工作流助手。",
+    "longDescription": "zyz-worker 是一个早期插件框架，帮助 agent CLI 用户更高效地开发、编程与工作。",
     "developerName": "yu",
     "category": "Productivity",
     "capabilities": [
@@ -30,9 +30,9 @@
     "privacyPolicyURL": "https://github.com/somePeopleFireAndWood/zyz-worker",
     "termsOfServiceURL": "https://github.com/somePeopleFireAndWood/zyz-worker",
     "defaultPrompt": [
-      "Help me plan the next development task.",
-      "Review this repo and suggest a focused workflow.",
-      "Turn this goal into concrete implementation steps."
+      "帮我规划下一个开发任务。",
+      "审阅这个仓库，并建议一个聚焦的工作流。",
+      "把这个目标拆成具体的实现步骤。"
     ],
     "brandColor": "#2563EB"
   }

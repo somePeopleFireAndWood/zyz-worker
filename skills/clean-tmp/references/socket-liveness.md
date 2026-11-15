@@ -36,7 +36,7 @@ fi
 - **ESRCH**（no such process）→ 进程**确实没了** → 该 socket 才获得 STALE（僵尸）候选资格。
 - **EPERM**（operation not permitted）→ 进程**还活着**，只是属于别的 uid、当前用户无权向它发信号 → 一律算 **ALIVE，保留**。
 
-把「`kill -0` 非零退出」一律当作 gone 是经典错误：它会把他人的活进程误判为 STALE，进而删掉活 socket、切断活链路。
+把「`kill -0` 非零退出」一律当作进程已退出是经典错误：它会把他人的活进程误判为 STALE，进而删掉活 socket、切断活链路。
 
 ## 安全规则汇总
 

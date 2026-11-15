@@ -79,5 +79,5 @@ mkdir -p "$root/runtime" 2>/dev/null
 printf '%s\t%s\t%s\n' "$(zyz_iso)" "$target" "$hit" \
     >> "$root/runtime/scope-guard.log" 2>/dev/null
 
-zyz_emit_deny "PreToolUse" "[zyz-worker watchdog] This dispatch caps what ${target} must deliver (matched: \"${hit}\"). Reducing a role's total deliverable to get a result out of it is not allowed — a review that reports only its worst few findings passes every downstream gate while the rest ride into delivery. What IS allowed: reduce PER-ROUND output volume, not total scope. Re-dispatch at the SAME full scope and ask for it in labeled steps, one message per step (for a review, split along the coverage dimensions: design conformance, correctness, test quality, regression risk), and drive it with follow-ups. Only genuinely stage a first installment when you actually intend to collect the remainder in the following messages — a token phrase added to pass this check, with no real follow-through, is the same defect this guard exists to stop."
+zyz_emit_deny "PreToolUse" "[zyz-worker watchdog] 这次派发限缩了 ${target} 必须交付的内容（匹配到：\"${hit}\"）。不允许为了从某个角色那里拿到结果而缩减它的总交付——一份只报告最严重几条发现的评审能通过下游每一道闸门，其余问题则会一路带进交付。允许的是：缩减每一轮的输出量，而不是总范围。请以同样完整的范围重新派发，要求它分成带标签的步骤、每条消息一步来交付（对评审而言，按覆盖维度拆分：设计符合度、正确性、测试质量、回归风险），并用后续消息推动它做完。只有当你确实打算在接下来的消息里收齐剩余部分时，才把这次真正安排为第一批交付——为了通过这项检查而加上一句敷衍的话、却没有真正跟进，正是本守卫要阻止的同一种缺陷。"
 exit 0

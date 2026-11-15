@@ -1,68 +1,66 @@
-# Async Question / Answer Templates
+# 异步问答模板
 
-The worker and the user exchange asynchronous questions through two files in
-`<list-dir>/runtime/<task-id>/`:
+worker 与用户通过 `<list-dir>/runtime/<task-id>/` 下的两个文件
+交换异步问答：
 
-- `question.md` — written by the worker, read by the user
-- `answer.md` — written by the user, read by the worker; after consumption the
-  worker renames it to `answer.md.consumed.<question-id>` for audit.
+- `question.md` —— 由 worker 写入，由用户读取
+- `answer.md` —— 由用户写入，由 worker 读取；消费之后，
+  worker 会把它重命名为 `answer.md.consumed.<question-id>` 以便审计。
 
-The orchestrator does not write either file. Its only role is to surface
-"task X is waiting on the user" in the per-tick conversation summary and in
-`<list-dir>/SUMMARY.md`.
+编排器不写这两个文件中的任何一个。它唯一的职责，是在每个 tick 的对话摘要和
+`<list-dir>/SUMMARY.md` 中呈现"任务 X 正在等待用户"。
 
-This document is two templates in one. Copy whichever applies.
+本文档是合二为一的两份模板。按适用情况复制其中一份。
 
 ---
 
-## `question.md` template (writer: worker)
+## `question.md` 模板（写入方：worker）
 
 ```markdown
 ---
 task-id: <task-id>
-question-id: 1                    # monotonically increasing; first question is 1
+question-id: 1                    # 单调递增；第一个问题为 1
 asked-at: <iso>
 ---
 
 ## Question
 
-<!-- Free-text question. State exactly what the worker needs to proceed. -->
+<!-- 自由文本的问题。准确说明 worker 需要什么才能继续推进。 -->
 
 ## Options
 
 <!--
-  Optional. If the question admits a small structured set of choices, list
-  them here as a bulleted list, one option per line. Omit this section when
-  the question is open-ended.
+  可选。如果问题只有一小组结构化的选项，在这里用项目符号列表
+  列出，每行一个选项。问题是开放式的时候，省略本节。
 -->
 ```
 
-Before writing `question.md`, the worker flushes `worker-status.md` with
-`wait-state: waiting-user`, a non-empty `waiting-reason`, and an
-`expected-resume-by` timestamp. The orchestrator then knows this task is
-paused on the user and applies the `waiting-user` heartbeat threshold
-(default 900 seconds).
+在写 `question.md` 之前，worker 先刷写 `worker-status.md`，其中包含
+`wait-state: waiting-user`、非空的 `waiting-reason`，以及一个
+`expected-resume-by` 时间戳。这样编排器就知道该任务
+正在等待用户，并采用 `waiting-user` 的心跳阈值
+（默认 900 秒）。
 
 ---
 
-## `answer.md` template (writer: user)
+## `answer.md` 模板（写入方：用户）
 
 ```markdown
 ---
 task-id: <task-id>
-question-id: 1                    # must match the question-id the worker asked
+question-id: 1                    # 必须与 worker 所提问题的 question-id 一致
 answered-at: <iso>
 ---
 
 ## Answer
 
-<!-- Free-text answer. -->
+<!-- 自由文本的回答。 -->
 ```
 
-When the worker detects `answer.md`:
+worker 检测到 `answer.md` 时：
 
-1. Read it.
-2. Update `worker-status.md` with `wait-state: none` and an empty
-   `waiting-reason` / `expected-resume-by`.
-3. Rename `answer.md` to `answer.md.consumed.<question-id>` so it is not
-   re-consumed by mistake and so the audit trail survives cleanup.
+1. 读取它。
+2. 更新 `worker-status.md`：`wait-state: none`，并清空
+   `waiting-reason` / `expected-resume-by`。
+3. 把 `answer.md` 重命名为 `answer.md.consumed.<question-id>`，这样它不会被
+   误重复消费，审计记录也能在清理后保留下来。

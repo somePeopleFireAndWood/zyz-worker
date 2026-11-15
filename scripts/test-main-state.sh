@@ -530,12 +530,12 @@ else
     # No stale roles on macOS (observer inert) -> only the status-stale clause
     # could fire; the valid Waiting On must suppress it -> no block.
     out8="$(printf '{"cwd":"%s","stop_hook_active":false,"background_tasks":[]}' "$SB/r8" | ZYZ_STOP_STATUS_STALE_SEC=1 bash hooks/scripts/stop-gate-main.sh 2>/dev/null)"
-    if ! printf '%s' "$out8" | grep -qi 'status file'; then pass "8 valid Waiting On suppresses status-stale (no main-state)"; else fail "8 Waiting On suppresses status-stale" "$out8"; fi
+    if ! printf '%s' "$out8" | grep -q '分钟没有更新'; then pass "8 valid Waiting On suppresses status-stale (no main-state)"; else fail "8 Waiting On suppresses status-stale" "$out8"; fi
     # Positive control: remove the Waiting On line -> status-stale REAPPEARS
     printf '# Status\n- Current Phase: implementation\n' > "$R8/status.md"
     touch -t 202001010000 "$R8/status.md" 2>/dev/null || true
     out8b="$(printf '{"cwd":"%s","stop_hook_active":false,"background_tasks":[]}' "$SB/r8" | ZYZ_STOP_STATUS_STALE_SEC=1 bash hooks/scripts/stop-gate-main.sh 2>/dev/null)"
-    if printf '%s' "$out8b" | grep -qi 'status file'; then pass "8 control: no Waiting On -> status-stale reappears"; else fail "8 control status-stale reappears" "gate may be vacuous: $out8b"; fi
+    if printf '%s' "$out8b" | grep -q '分钟没有更新'; then pass "8 control: no Waiting On -> status-stale reappears"; else fail "8 control status-stale reappears" "gate may be vacuous: $out8b"; fi
 fi
 
 # ===========================================================================

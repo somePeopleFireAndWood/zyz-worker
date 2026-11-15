@@ -1,57 +1,57 @@
-# Final Report
+# 最终报告
 
-## Completed
+## 已完成
 
-## Not Completed
+## 未完成
 
-## Assumptions
+## 假设
 
-## Key Decisions
+## 关键决策
 
-## Changes
+## 变更
 
-<!-- Multi-repo tasks: split this section by repo — one subsection per repo listing repo / branch / commits / push result. Single-repo tasks: a flat list is fine. -->
+<!-- 多仓库任务：本节按仓库拆分——每个仓库一个小节，列出仓库 / 分支 / 提交 / 推送结果。单仓库任务：一个平铺列表即可。 -->
 
-## Tests
+## 测试结果
 
-<!-- Enumerate every aggregate category actually executed; each ran-with-result or skipped-with-reason (matches status ## Final Aggregate Testing). The category list derives from the design ## Testing Plan — add lines for user-named categories; the four below are standing examples, not a closed enumeration. Each `ran:` line carries mutation evidence: a coverage claim without a killed mutation is "ran", not "tested". -->
+<!-- 列出实际执行过的每一个汇总类别；每项要么是已运行并附结果，要么是已跳过并附理由（与状态文件 ## 最终汇总测试 一致）。类别清单来自设计的 ## 测试计划——为用户点名的类别添加行；下面四项是常设示例，不是封闭的枚举。每条 `ran:` 行都要带变异证据：没有被杀死的变异作支撑的覆盖声明只算"跑过"，不算"测过"。 -->
 
-- Unit: (ran: <result> | skipped: <reason>) — Mutation evidence: (killed/survived tally | none: <reason>) — Coverage ceiling: (what this layer structurally cannot reach)
-- E2E: (ran: <result> | skipped: <reason>) — Mutation evidence: (…) — Coverage ceiling: (…)
-- Regression: (ran: <result> | skipped: <reason>) — Mutation evidence: (…) — Coverage ceiling: (…)
-- Pressure: (ran: <result> | skipped: <reason> | n/a) — Mutation evidence: (…) — Coverage ceiling: (…)
-- <design-Testing-Plan category>: (one line per additional category the design names, same three fields)
+- 单元测试: (ran: <result> | skipped: <reason>) — 变异证据: (killed/survived 计数 | none: <reason>) — 覆盖上限: （这一层在结构上无法触达的内容）
+- E2E: (ran: <result> | skipped: <reason>) — 变异证据: (…) — 覆盖上限: (…)
+- 回归测试: (ran: <result> | skipped: <reason>) — 变异证据: (…) — 覆盖上限: (…)
+- 压力测试: (ran: <result> | skipped: <reason> | n/a) — 变异证据: (…) — 覆盖上限: (…)
+- <设计测试计划中的类别>: （设计点名的每个额外类别各一行，字段同上三项）
 
-<!-- Coverage ceiling is required per category because same-shaped layers are not substitutes: frontend unit tests cannot reach real backend contracts and browser e2e cannot enumerate precision/boundary cases, so "we ran e2e" never discharges what the unit layer owed. Without the ceiling written down, a reader treats any one green category as covering the others. -->
+<!-- 每个类别都必须写覆盖上限，因为形态相同的测试层不能互相替代：前端单元测试触达不了真实的后端契约，浏览器 e2e 也穷举不了精度 / 边界用例，所以"我们跑过 e2e"永远抵消不了单元层欠下的东西。不把上限写下来，读者就会把任何一个变绿的类别当成覆盖了其他类别。 -->
 
 
-## Weakest Link
+## 最薄弱环节
 
-<!-- Required. Where is a no-op assertion most likely hiding in this delivery: why that spot is suspected, what currently guards it, whether a more direct observation point exists. If something sits at the observation-granularity ceiling, say why — otherwise the next reader assumes laziness rather than limits. The author knows the argument's thinnest point better than any reviewer; leaving this section empty withholds that information, and a role that reports its own tooling failures RAISES the credibility of its other conclusions. -->
+<!-- 必填。这次交付中最可能藏着空转断言的地方在哪里：为什么怀疑那里、目前靠什么守着它、是否存在更直接的观察点。如果某处已经顶到了观察粒度的上限，说明原因——否则下一个读者会以为是偷懒，而不是受限。作者比任何评审者都更清楚论证最薄的一环在哪里；把本节留空就是隐瞒这一信息，而一个主动报告自己工具故障的角色，反而**提高**了它其他结论的可信度。 -->
 
-## Review Result
+## 评审结果
 
-<!-- Register every aggregate-review coverage dimension, covered or not-covered-with-reason (matches status ## Final Aggregate Review). When SubTasks were used, record the aggregate verdict separately from the per-SubTask verdicts. -->
+<!-- 登记每一个汇总评审覆盖维度，covered，或 not-covered 并附理由（与状态文件 ## 最终汇总评审 一致）。使用了 SubTask 时，把汇总结论与各 SubTask 的结论分开记录。 -->
 
-- Coverage — Design Conformance: (covered | not-covered: <reason>)
-- Coverage — Correctness: (covered | not-covered: <reason>)
-- Coverage — Test Quality: (covered | not-covered: <reason>)
-- Coverage — Regression Risk: (covered | not-covered: <reason>)
-- Coverage — Risk-Specific: (one line per dimension the design `## Risks` calls out | n/a)
-- Aggregate Verdict:
-- Per-SubTask Verdicts:
-- Cross-Harness Review: (harnesses that reviewed, or `none: <reason>`; accepted / rejected finding counts per review point, with where each accepted one landed)
+- 覆盖 — 设计一致性: (covered | not-covered: <reason>)
+- 覆盖 — 正确性: (covered | not-covered: <reason>)
+- 覆盖 — 测试质量: (covered | not-covered: <reason>)
+- 覆盖 — 回归风险: (covered | not-covered: <reason>)
+- 覆盖 — 风险专项: （设计 `## 风险` 点名的每个维度各一行 | n/a）
+- 汇总结论:
+- 各 SubTask 结论:
+- 跨 harness 交叉评审: （参与评审的 harness，或 `none: <reason>`；每个评审点接受 / 拒绝的发现数量，以及每个被接受的发现落在了哪里）
 
-## Optional Capabilities Used
+## 使用的可选能力
 
-## Known Risks
+## 已知风险
 
-<!-- Include the residual-risk register (`<task-dir>/residual-risks.md`, see SKILL.md `## Review Convergence`) when it exists: its path, entry count by tier, and one line per contrived class — what it is and why nothing in the declared domain reaches it today. Write `none` for the register when it was never created. -->
+<!-- 遗留风险清单（`<task-dir>/residual-risks.md`，见 SKILL.md `## 评审收口`）存在时要写进来：它的路径、按级别统计的条目数，以及每个 contrived 类一行——它是什么，以及为什么今天声明域内没有任何东西能触达它。如果从未创建过该清单，就为清单写 `none`。 -->
 
-## Follow-Up
+## 后续工作
 
-<!-- When the register holds open entries, propose the hardening follow-up that consumes it: a separate task (or, in orchestrated mode, a master-list entry for the user to add) whose input is the register file, so the deferred cases are handled together and systematically rather than lost. -->
+<!-- 当清单中还有未结条目时，提出消化它的加固后续工作：一个单独的任务（在编排模式下，则是一条供用户添加的主清单条目），以该清单文件为输入，好让被推迟的用例集中、系统地处理，而不是丢失。 -->
 
-## Task Status Files
+## 任务状态文件
 
-- Keep or delete:
+- 保留或删除:

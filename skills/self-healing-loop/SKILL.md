@@ -1,210 +1,130 @@
 ---
 name: self-healing-loop
-description: Use when the user wants a long-running, on-schedule agent that runs tasks at fixed times inside a Claude Code session AND heals itself when the wake-up chain breaks — a session `/loop` (ScheduleWakeup self-timer) hardened by a cron watchdog that writes a sentinel file a persistent Monitor turns into a fresh turn, with a headless `claude -p` fallback. Installs the watchdog script + crontab line, arms the sentinel Monitor, and starts the loop in ONE turn; also uninstalls cleanly. Triggers like "定时 agent"、"每天定点跑"、"长期定时任务"、"scheduled agent"、"self-healing loop"、"断链自愈"、"唤醒沉睡 session"、"cron watchdog"、"哨兵唤醒"、"loop 断了自己回来".
+description: 当用户需要一个长期运行、按计划定时执行的 agent 时使用——它在 Claude Code session 内按固定时间运行任务，并且能在唤醒链断开时自我修复。具体做法是用 cron watchdog 加固 session 内的 `/loop`（ScheduleWakeup 自定时）；watchdog 写入哨兵文件，由常驻 Monitor 把它转化为一个新的 turn，并以 headless `claude -p` 作为兜底。在同一个 turn 内安装 watchdog 脚本与 crontab 行、启用哨兵 Monitor 并启动 loop；也支持干净卸载。触发词如 "定时 agent"、"每天定点跑"、"长期定时任务"、"scheduled agent"、"self-healing loop"、"断链自愈"、"唤醒沉睡 session"、"cron watchdog"、"哨兵唤醒"、"loop 断了自己回来".
 ---
 
-# Self-Healing Scheduled Loop
+# 自愈式定时 Loop
 
-## What this is
+## 这是什么
 
-A reliable pattern for a **long-running, on-schedule agent** that lives inside a
-Claude Code session. A bare session `/loop` (self-scheduled via `ScheduleWakeup`)
-has one repeated failure mode: **one network blip or LLM API interruption fails
-the current turn, the ScheduleWakeup chain snaps, and the session silently
-"sleeps" — scheduled work never fires again and it does not recover on its own.**
-(Field data from a real personal scheduled agent: 4 missed runs in ~a week from
-broken/jumped wake-up chains.)
+这是一套可靠的模式，用于在 Claude Code session 内运行一个**长期运行、按计划定时执行的 agent**。一个裸的 session `/loop`（通过 `ScheduleWakeup` 自行定时）有一个反复出现的失败模式：**一次网络抖动或 LLM API 中断就会让当前 turn 失败，ScheduleWakeup 链随之断开，session 悄无声息地"睡着"——定时工作再也不会触发，也不会自行恢复。**（来自一个真实个人定时 agent 的实测数据：约一周内因唤醒链断开/跳跃漏跑了 4 次。）
 
-This skill installs a **two-layer "loop + watchdog"** architecture that closes
-that gap:
+本 skill 安装一套**两层"loop + watchdog"架构**来补上这个缺口：
 
-- **loop (the living half)** — runs in the **main session**, self-timed with
-  `ScheduleWakeup`. Each wake-up reads a shared state file, decides whether a task
-  is "due", executes the due task (the part that needs LLM judgement), then renews
-  the timer.
-- **watchdog (the dead half)** — a `crontab` shell script running every 20 minutes.
-  It reads the **same** state file to decide whether today's due tasks have run.
-  On a miss it **first writes a sentinel file to wake the main session so it
-  back-fills the task itself** (keeping full context); only if the grace period
-  passes with no completion does it fall back to a headless `claude -p` run.
+- **loop（活的一半）**——运行在**主 session** 中，用 `ScheduleWakeup` 自行定时。每次唤醒时读取一个共享状态文件，判断是否有任务"到点"，执行到点的任务（需要 LLM 判断的部分），然后续上定时器。
+- **watchdog（死的一半）**——一个每 20 分钟运行一次的 `crontab` shell 脚本。它读取**同一个**状态文件，判断今天到点的任务是否已经跑过。发现漏跑时，它**先写入一个哨兵文件来唤醒主 session，让主 session 自己补跑该任务**（保留完整上下文）；只有在宽限期过去仍未完成时，才回退到 headless 的 `claude -p` 运行。
 
-Division of labour: **deterministic scheduling/criteria live in the script;
-work that needs judgement stays in the session.**
+分工原则：**确定性的调度/判据放在脚本里；需要判断力的工作留在 session 里。**
 
-## The one-line entry
+## 一行入口
 
-The user runs this skill in the **main session** they want the loop to live in:
+用户在希望 loop 常驻的那个**主 session** 中运行本 skill：
 
 ```
 /zyz-worker:self-healing-loop <task description, including "what to do at which time each day">
 ```
 
-In a single turn the skill does three things:
+本 skill 在一个 turn 内完成三件事：
 
-1. **Install the watchdog** — copy `templates/watchdog.sh` into the project's
-   `scripts/` (or another user-chosen dir), fill in the parameters (task
-   definitions / miss-criteria / back-fill prompts / notify channel / sentinel &
-   lock paths), `chmod +x`, and add one `*/20 * * * *` line to `crontab`.
-2. **Arm the persistent sentinel Monitor** — in the current session start a
-   `persistent: true` Monitor that polls the sentinel file; when it appears, emit
-   one line (which becomes a `<task-notification>` = one new turn) and delete the
-   file.
-3. **Start the loop** — attach the first `ScheduleWakeup`, entering the self-timed
-   loop.
+1. **安装 watchdog**——把 `templates/watchdog.sh` 复制到项目的 `scripts/`（或用户选定的其他目录），填入参数（任务定义 / 漏跑判据 / 补跑 prompt / 通知渠道 / 哨兵与锁路径），`chmod +x`，并向 `crontab` 添加一行 `*/20 * * * *`。
+2. **启用常驻哨兵 Monitor**——在当前 session 中启动一个 `persistent: true` 的 Monitor 轮询哨兵文件；文件一出现，就输出一行（它会成为一条 `<task-notification>` = 一个新的 turn）并删除该文件。
+3. **启动 loop**——挂上第一个 `ScheduleWakeup`，进入自定时循环。
 
-After that the user does nothing; a broken chain is healed by the watchdog.
+此后用户无需任何操作；断链由 watchdog 修复。
 
-### Why the entry MUST be a skill (not a subagent, not a plain CLI)
+### 为什么入口**必须**是 skill（不是 subagent，也不是普通 CLI）
 
-| form | usable? | why |
+| 形式 | 可用？ | 原因 |
 |---|---|---|
-| **Skill / slash command** | ✅ recommended | the only entry that can *both* write the script *and*, in the current session, arm the Monitor + start the loop |
-| subagent type | ❌ | a subagent is a short-lived child process — it cannot hold a persistent Monitor; the loop must live in the main-loop session that `ScheduleWakeup` can re-wake |
-| plain CLI script | ⚠️ | covers only the watchdog half; loses "let the agent parameterize the prompt / start the loop in-session" |
+| **Skill / slash command** | ✅ 推荐 | 唯一一种*既能*写入脚本、*又能*在当前 session 中启用 Monitor 并启动 loop 的入口 |
+| subagent 类型 | ❌ | subagent 是短命的子进程——它无法持有常驻 Monitor；loop 必须活在 `ScheduleWakeup` 能重新唤醒的主循环 session 里 |
+| 普通 CLI 脚本 | ⚠️ | 只覆盖 watchdog 那一半；失去了"让 agent 参数化 prompt / 在 session 内启动 loop"的能力 |
 
-## Trigger semantics (the part most easily misread — read it carefully)
+## 触发语义（最容易误读的部分——请仔细阅读）
 
-| stage | who triggers | needs a human? |
+| 阶段 | 由谁触发 | 需要人工吗？ |
 |---|---|---|
-| **First install** | user runs the skill once | ✅ one manual action, always |
-| **Daily on-time execution** | the loop's own `ScheduleWakeup` | ❌ none |
-| **Recover from a broken/slept chain** | watchdog (cron) writes sentinel → persistent Monitor makes a turn | ❌ none |
-| **After the main-session process is killed** | watchdog headless `claude -p` back-fills today's task once | ❌ business not missed; but the resident loop is **not** auto-restored — restoring it needs a human to run the skill again (or `--resume`) |
+| **首次安装** | 用户运行一次本 skill | ✅ 一次手动操作，必不可少 |
+| **每日按时执行** | loop 自己的 `ScheduleWakeup` | ❌ 不需要 |
+| **从断链/睡着的链中恢复** | watchdog（cron）写入哨兵 → 常驻 Monitor 产生一个 turn | ❌ 不需要 |
+| **主 session 进程被杀之后** | watchdog 用 headless `claude -p` 补跑一次今天的任务 | ❌ 业务不会漏；但常驻 loop **不会**自动恢复——恢复它需要人再运行一次本 skill（或 `--resume`） |
 
-**Key points:**
+**要点：**
 
-- If the user never runs the skill, no loop or cron line ever appears on its own.
-  **Nothing auto-triggers, and that is by design** — cron is a system-level side
-  effect, a loop burns tokens continuously, and only the user can supply the task
-  definition; none of that should switch on silently.
-- **"self-healing" means: it covers "session chain broke and slept", NOT "the
-  process was killed outright."** The latter is covered for *business continuity*
-  by the headless fallback, but restoring the resident loop still takes one manual
-  re-launch. This boundary is stated honestly here and in every generated artifact
-  — do not let a user believe the loop resurrects itself after a `kill -9`.
+- 用户如果从不运行本 skill，loop 和 cron 行都不会自己冒出来。**没有任何东西会自动触发，这是有意设计的**——cron 是系统级副作用，loop 会持续消耗 token，而任务定义只有用户能提供；这些都不应该悄悄开启。
+- **"自愈"的含义是：它覆盖"session 断链睡着"，而并不覆盖"进程被直接杀掉"**。后者由 headless 兜底在*业务连续性*层面覆盖，但恢复常驻 loop 仍需手动重新启动一次。这条边界在这里以及每个生成的产物中都如实写明——不要让用户以为 loop 在 `kill -9` 之后会自己复活。
 
-## Hard-won design lessons (bake these into every install)
+## 用教训换来的设计经验（每次安装都要落实）
 
-### 1. Wake-up channel: pull vs push — this decides success or failure
+### 1. 唤醒渠道：pull 还是 push——这决定成败
 
-- ❌ **Cross-session `SendMessage` cannot wake a slept session.** It is a *pull*:
-  it only drops into an inbox drained on the receiver's *next tool round*; a
-  chain-broken session produces no more tool rounds → messages pile up forever.
-  (Field data: the watchdog sent **9** wake messages; the main session activated
-  **zero** times.)
-- ✅ **A sentinel file + a persistent Monitor on the main-session side can wake
-  it.** Monitor events are *push*: a file appearing directly creates a turn.
-  (Field data: succeeded repeatedly, including once when the main session had **no
-  ScheduleWakeup pending at all** — a truly slept state — and was still woken on
-  time.)
+- ❌ **跨 session 的 `SendMessage` 无法唤醒睡着的 session**。它是 *pull* 式的：消息只是投进收件箱，要等接收方*下一个工具轮次*才会被取走；断链的 session 不再产生工具轮次 → 消息永远堆积。（实测数据：watchdog 发出了 **9** 条唤醒消息；主 session 被激活 **0** 次。）
+- ✅ **哨兵文件 + 主 session 侧的常驻 Monitor 可以唤醒它**。Monitor 事件是 *push* 式的：文件一出现就直接产生一个 turn。（实测数据：多次成功，其中一次主 session **根本没有挂起任何 ScheduleWakeup**——真正睡着的状态——也被准时唤醒。）
 
-> "Slept" = process alive but the model is not being invoked. Waking it needs
-> three conditions at once: **a push-style event source + the event can create a
-> turn + the process is not dead.** If the process is dead, only headless works.
+> "睡着" = 进程活着，但模型没有被调用。要唤醒它需要三个条件同时满足：**push 式事件源 + 该事件能产生 turn + 进程没死**。进程如果死了，只有 headless 能用。
 
-See `references/wakeup-channel.md` for the full analysis.
+完整分析见 `references/wakeup-channel.md`。
 
-### 2. The Monitor's lifecycle is this mechanism's weak point — handle it actively
+### 2. Monitor 的生命周期是这套机制的薄弱点——要主动处理
 
-A Monitor can be killed (session restart / `/clear` / context compaction / harness
-reclaim) and **does not self-heal**. Once it dies the sentinel channel is dead
-(the watchdog writes the file but nobody reads it). So: **on every loop wake-up,
-self-check whether the Monitor is still alive and immediately re-arm it if not**;
-keep headless as the ultimate fallback.
+Monitor 可能被杀掉（session 重启 / `/clear` / 上下文压缩 / harness 回收），而且**不会自愈**。它一死，哨兵渠道就断了（watchdog 照写文件，但没人读）。因此：**每次 loop 唤醒时，都自检 Monitor 是否还活着，不在了就立即重新启用**；headless 保留为最终兜底。
 
-### 3. Do not judge session liveness from unstable fields
+### 3. 不要依据不稳定的字段判断 session 是否存活
 
-An early version used the `cwd` field of `claude agents --json` to decide whether
-the main session was alive before waking it — that field is unstable and caused
-misjudgements. Final rule: **write the sentinel unconditionally** (a live session
-responds; a dead one is covered by headless after the grace period). No liveness
-pre-check.
+早期版本在唤醒前用 `claude agents --json` 的 `cwd` 字段判断主 session 是否存活——这个字段不稳定，导致了误判。最终规则：**无条件写入哨兵**（活的 session 会响应；死的 session 在宽限期后由 headless 兜底）。不做存活预检。
 
-### 4. Idempotency + mutual exclusion
+### 4. 幂等 + 互斥
 
-- **Idempotent:** the watchdog's "already ran" criterion is "does this task's row
-  in the state file contain today's date"; the back-fill writes that row, so
-  repeats are naturally prevented.
-- **Mutex:** an `mkdir` lock with a stale-lock timeout auto-clean prevents cron
-  cycles from re-entering.
+- **幂等**：watchdog 的"已经跑过"判据是"状态文件中该任务那一行是否包含今天的日期"；补跑会写这一行，因此天然防止重复。
+- **互斥**：用带过期锁超时自动清理的 `mkdir` 锁，防止 cron 周期重入。
 
-## Files this skill installs
+## 本 skill 安装的文件
 
-| file | role | source template |
+| 文件 | 作用 | 来源模板 |
 |---|---|---|
-| `<REPO>/scripts/<name>-watchdog.sh` | cron every-20-min watchdog | `templates/watchdog.sh` |
-| `<REPO>/data/loop_state.md` | the single source of truth shared by loop + watchdog | `templates/loop_state.md` |
-| a `crontab` line `*/20 * * * * …` | schedules the watchdog | (added by the skill) |
-| (in-session) persistent Monitor | sentinel → turn | `templates/monitor-sentinel.sh` |
-| `<REPO>/scripts/<name>-uninstall.sh` | clean removal | `templates/uninstall.sh` |
+| `<REPO>/scripts/<name>-watchdog.sh` | cron 每 20 分钟一次的 watchdog | `templates/watchdog.sh` |
+| `<REPO>/data/loop_state.md` | loop 与 watchdog 共享的唯一事实来源 | `templates/loop_state.md` |
+| 一行 `crontab` `*/20 * * * * …` | 调度 watchdog | （由本 skill 添加） |
+| （session 内）常驻 Monitor | 哨兵 → turn | `templates/monitor-sentinel.sh` |
+| `<REPO>/scripts/<name>-uninstall.sh` | 干净卸载 | `templates/uninstall.sh` |
 
-Conventions used across the templates:
+各模板通用的约定：
 
-- `<REPO>` project root; `<STATE>` = `<REPO>/data/loop_state.md`
-- `<SIGNAL>` = `/tmp/<name>-wake-signal` (sentinel file)
+- `<REPO>` 项目根目录；`<STATE>` = `<REPO>/data/loop_state.md`
+- `<SIGNAL>` = `/tmp/<name>-wake-signal`（哨兵文件）
 - `<LOCK>` = `/tmp/<name>-watchdog.lock`
-- `<NOTIFY>` notify channel — **default to reusing the plugin's existing IM layer**
-  (`command` in `~/.zyz-worker/notify.json`, see `docs/notify.md`) so the user
-  configures notifications once; otherwise a user-supplied shell command.
-- tasks are named `T1`, `T2`, … for any "due-at-a-time" task (daily, trading-day,
-  weekday-only, …).
+- `<NOTIFY>` 通知渠道——**默认复用插件已有的 IM 层**（`~/.zyz-worker/notify.json` 中的 `command`，见 `docs/notify.md`），这样用户只需配置一次通知；否则使用用户提供的 shell 命令。
+- 任何"到某个时间点执行"的任务（每天、交易日、仅工作日……）都命名为 `T1`、`T2`、……
 
-## Install procedure (what the skill does in-turn)
+## 安装步骤（本 skill 在 turn 内完成的工作）
 
-1. **Parse the task description** the user passed as `$ARGUMENTS` into one or more
-   tasks, each with: an id (`T1`…), a due time (and day filter, e.g. weekdays /
-   trading days), the work to do, a back-fill prompt (for headless), and where to
-   notify. If any of these is ambiguous, ask the user before touching `crontab`.
-2. **Pick a `<name>`** (kebab-case, derived from the task) and resolve `<REPO>`,
-   `<STATE>`, `<SIGNAL>`, `<LOCK>` paths. Confirm `<REPO>/scripts/` and
-   `<REPO>/data/` exist (create if needed).
-3. **Render `templates/watchdog.sh`** with the parameters, write it to
-   `<REPO>/scripts/<name>-watchdog.sh`, `chmod +x`.
-4. **Render `templates/loop_state.md`** to `<STATE>` if it does not already exist.
-5. **Render `templates/uninstall.sh`** to `<REPO>/scripts/<name>-uninstall.sh`,
-   `chmod +x`.
-6. **Add the crontab line** — read the current crontab, append (idempotently — do
-   not duplicate an existing identical line)
-   `*/20 * * * * <REPO>/scripts/<name>-watchdog.sh` with a `# zyz-worker
-   self-healing-loop:<name>` tag comment so uninstall can find it, and install it.
-   **This is a system-level change — show the exact line and get explicit user
-   confirmation before writing crontab.**
-7. **Arm the persistent Monitor** using `templates/monitor-sentinel.sh` (Monitor
-   with `persistent: true`).
-8. **Attach the first `ScheduleWakeup`** and report to the user: the installed
-   paths, the crontab line, the trigger-semantics table, and the self-healing
-   boundary.
+1. **解析用户以 `$ARGUMENTS` 传入的任务描述**，拆成一个或多个任务，每个任务包含：id（`T1`…）、到点时间（以及日期过滤，例如工作日 / 交易日）、要做的工作、补跑 prompt（供 headless 使用）以及通知目标。其中任何一项含糊，都要在动 `crontab` 之前先问用户。
+2. **选定 `<name>`**（kebab-case，由任务推导），并解析 `<REPO>`、`<STATE>`、`<SIGNAL>`、`<LOCK>` 路径。确认 `<REPO>/scripts/` 与 `<REPO>/data/` 存在（必要时创建）。
+3. **用参数渲染 `templates/watchdog.sh`**，写入 `<REPO>/scripts/<name>-watchdog.sh`，`chmod +x`。
+4. **`<STATE>` 尚不存在时，把 `templates/loop_state.md` 渲染到 `<STATE>`**。
+5. **把 `templates/uninstall.sh` 渲染到 `<REPO>/scripts/<name>-uninstall.sh`**，`chmod +x`。
+6. **添加 crontab 行**——读取当前 crontab，（幂等地——不要重复添加已存在的相同行）追加 `*/20 * * * * <REPO>/scripts/<name>-watchdog.sh`，并带上 `# zyz-worker self-healing-loop:<name>` 标签注释以便卸载时找到它，然后安装。**这是系统级改动——写入 crontab 之前，先展示确切的那一行，并取得用户的明确确认。**
+7. **用 `templates/monitor-sentinel.sh` 启用常驻 Monitor**（Monitor 带 `persistent: true`）。
+8. **挂上第一个 `ScheduleWakeup`**，并向用户报告：已安装的路径、crontab 行、触发语义表，以及自愈的边界。
 
-## Loop turn logic (each ScheduleWakeup / each WATCHDOG-WAKE)
+## Loop 每个 turn 的逻辑（每次 ScheduleWakeup / 每次 WATCHDOG-WAKE）
 
 ```
-1. Read <STATE>, get current time, decide per task whether it is due today and not yet run.
-2. If due: execute the task (the LLM-judgement part) → notify → write <STATE>
-   (insert today's record for that task row, so the watchdog is idempotent).
-3. Self-check the persistent Monitor is still alive; if not, immediately re-arm it
-   (otherwise the sentinel channel is dead).
-4. Attach the next ScheduleWakeup: a short delay to land precisely just before the
-   next task time; a long heartbeat when idle to save tokens.
+1. 读取 <STATE>，获取当前时间，逐个任务判断它今天是否已到点且尚未运行。
+2. 若已到点：执行该任务（需要 LLM 判断的部分）→ 通知 → 写入 <STATE>
+   （在该任务那一行插入今天的记录，使 watchdog 保持幂等）。
+3. 自检常驻 Monitor 是否还活着；不在了就立即重新启用
+   （否则哨兵渠道就断了）。
+4. 挂上下一个 ScheduleWakeup：临近下一个任务时间时用短延迟，以便准确落在它之前；
+   空闲时用长心跳以节省 token。
 ```
 
-Pick `delaySeconds` the same way the ScheduleWakeup tool guidance says: stay under
-270s only when actively converging on the next task time; otherwise use a long
-(1200s+) idle heartbeat so you are not burning cache every few minutes.
+选择 `delaySeconds` 的方式与 ScheduleWakeup 工具指引一致：只有在正向下一个任务时间点逼近时才保持在 270s 以内；否则使用较长（1200s 以上）的空闲心跳，免得每隔几分钟就白白耗掉缓存。
 
-## Uninstall
+## 卸载
 
-`<REPO>/scripts/<name>-uninstall.sh` removes the tagged crontab line, deletes the
-sentinel/lock, and prints a reminder that the user must also stop the in-session
-loop + Monitor (Ctrl-C the loop, or `/tasks` to stop the Monitor) since those live
-in a session this script cannot reach. The skill may also be invoked with
-`uninstall <name>` to do this from the session (it can stop the Monitor and the
-loop directly, then run the script for the crontab/file cleanup).
+`<REPO>/scripts/<name>-uninstall.sh` 会删除带标签的 crontab 行、删除哨兵文件/锁，并打印提醒：用户还必须停掉 session 内的 loop + Monitor（Ctrl-C 停掉 loop，或用 `/tasks` 停掉 Monitor），因为它们活在本脚本无法触及的 session 里。也可以用 `uninstall <name>` 调用本 skill，在 session 内完成卸载（它能直接停掉 Monitor 和 loop，然后运行该脚本完成 crontab/文件清理）。
 
-## Long-Running State
+## 长期运行状态
 
-The loop's durable state is `<STATE>` (`<REPO>/data/loop_state.md`) — the single
-source of truth shared with the watchdog. In-context memory does not survive a
-chain break or process death, so every task execution MUST be written through to
-`<STATE>` as part of the same turn; a task the loop "did" but did not record will
-be re-run by the watchdog (correct, if wasteful) or, worse, read as done when it
-was not. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
+loop 的持久状态是 `<STATE>`（`<REPO>/data/loop_state.md`）——与 watchdog 共享的唯一事实来源。上下文中的记忆在断链或进程死亡后不会保留，因此每次任务执行都**必须**在同一个 turn 内写入 `<STATE>`；loop "做了"却没记录的任务会被 watchdog 重跑（结果正确，只是浪费），更糟的情况是没做却被读成已完成。参见 [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md)。

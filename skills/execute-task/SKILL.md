@@ -1,465 +1,465 @@
 ---
 name: execute-task
-description: Use when the user wants help executing a single confirmed development task with a design-first workflow, a user-facing main agent, prompt-only subagents, task status tracking, implementation, tests, review, and final delivery.
+description: 当用户希望协助执行一个已确认的单个开发任务时使用：设计先行的工作流，由面向用户的主 agent 协调、仅靠提示词驱动的 subagent 分工，配合任务状态跟踪、实现、测试、评审和最终交付。
 ---
 
-# Execute Task
+# 执行任务
 
-Use this skill to help a user execute a single confirmed code development task — design through delivery. This is zyz-worker's "execute one task" skill; higher-level multi-task orchestration belongs to the `orchestration-scheduling-task` skill in this same plugin and is out of scope here. The workflow is design-first, user-led during design, and coordinated by the current conversation agent using a main-agent prompt plus prompt-only subagent roles.
+本 skill 帮助用户执行一个已确认的单个代码开发任务，覆盖从设计到交付的全过程。它是 zyz-worker 的"执行单个任务"skill；更上层的多任务编排属于同一插件中的 `orchestration-scheduling-task` skill，不在本 skill 范围内。本工作流设计先行，设计阶段由用户主导，由当前对话 agent 借助一份主 agent 提示词和若干仅靠提示词定义的 subagent 角色来协调。
 
-This skill does not require hooks, scripts, MCP servers, background services, or a real subagent runtime. The main-agent prompt applies to the current user-facing conversation agent. If the current agent environment can launch subagents, use the prompts in `../../subagents/` for implementationAgent, testAgent, and reviewAgent. If it cannot, use those files as role instructions and preserve the same responsibility boundaries in the conversation. When the plugin's watchdog hooks and monitor are available they mechanically harden this workflow (see `## Watchdog Enforcement`), but their absence never blocks it.
+本 skill 不依赖 hooks、脚本、MCP 服务器、后台服务，也不依赖真正的 subagent 运行时。主 agent 提示词作用于当前面向用户的对话 agent。如果当前 agent 环境能启动 subagent，就用 `../../subagents/` 下的提示词来启动 implementationAgent、testAgent 和 reviewAgent；如果不能，就把这些文件当作角色说明，并在对话中维持同样的职责边界。插件的 watchdog hooks 和 monitor 可用时，会从机制上加固本工作流（见 `## Watchdog 强制层`），但它们缺席也绝不会阻断工作流。
 
-## Main Agent Loading
+## 主 agent 加载
 
-When this skill is used, the current user-facing conversation agent is the main agent.
+使用本 skill 时，当前面向用户的对话 agent 就是主 agent。
 
-First load and follow the full main-agent controller prompt from:
+首先加载并遵循完整的主 agent 控制提示词：
 
 ```text
 prompts/main-agent.md
 ```
 
-That file is not a subagent. It defines how the current conversation agent coordinates the workflow and talks with the user.
+该文件不是 subagent。它规定当前对话 agent 如何协调工作流、如何与用户交流。
 
-If the full prompt cannot be loaded, continue with these built-in main-agent rules:
+如果无法加载完整提示词，就按以下内置的主 agent 规则继续：
 
-- Stay user-facing and coordinate the task through design, implementation, testing, review, and delivery.
-- Lead a user-driven design process and maintain a Markdown design document.
-- Maintain a task status file throughout the workflow.
-- Dispatch or simulate implementationAgent, testAgent, and reviewAgent with the design document path and current status summary.
-- Monitor role progress and restart or re-issue role prompts when a role is stuck, interrupted, or silent for too long.
-- Use currently installed skills, plugins, or tools when they improve design documents, status files, or final reports, but never require missing optional capabilities.
-- Do not write implementation code.
-- Do not modify implementation code.
-- Do not write or modify test code.
-- Do not run tests.
-- Do not perform review yourself.
-- If role boundaries cannot be enforced technically, enforce them procedurally and clearly label role handoffs.
+- 始终面向用户，协调任务走完设计、实现、测试、评审和交付。
+- 主持由用户驱动的设计过程，并维护一份 Markdown 设计文档。
+- 在整个工作流中维护任务状态文件。
+- 派发（或模拟）implementationAgent、testAgent 和 reviewAgent，并提供设计文档路径和当前状态摘要。
+- 监控各角色进度；某个角色卡住、中断或长时间无响应时，重启它或重新下发角色提示词。
+- 当前已安装的 skill、插件或工具能提升设计文档、状态文件或最终报告的质量时就用上，但绝不把缺失的可选能力当作必需。
+- 不写实现代码。
+- 不改实现代码。
+- 不写也不改测试代码。
+- 不运行测试。
+- 不亲自做评审。
+- 如果角色边界无法从技术上强制，就从流程上强制，并明确标注角色交接。
 
-## Prompt Files
+## 提示词文件
 
-Load these files only when their role is needed:
+只在需要某个角色时才加载对应文件：
 
-- Main agent controller prompt: `prompts/main-agent.md` (load first when the skill starts)
-- implementationAgent: `../../subagents/implementation-agent.md`
-- testAgent: `../../subagents/test-agent.md`
-- reviewAgent: `../../subagents/review-agent.md`
+- 主 agent 控制提示词：`prompts/main-agent.md`（skill 启动时最先加载）
+- implementationAgent：`../../subagents/implementation-agent.md`
+- testAgent：`../../subagents/test-agent.md`
+- reviewAgent：`../../subagents/review-agent.md`
 
-Use these templates when creating task artifacts:
+创建任务产物时使用以下模板：
 
-- Design document: `templates/design-doc.md`
-- Task status: `templates/task-status.md`
-- Final report: `templates/final-report.md`
-- Review report: `templates/review-report.md`
-- Residual-risk register: `templates/residual-risks.md` (created on its first entry — see `## Review Convergence`)
-- Cross-harness review prompt: `templates/cross-review-prompt.md` (rendered by `../../scripts/cross-review.sh`, never sent by hand — see `## Cross-Harness Review`)
+- 设计文档：`templates/design-doc.md`
+- 任务状态：`templates/task-status.md`
+- 最终报告：`templates/final-report.md`
+- 评审报告：`templates/review-report.md`
+- 遗留风险清单：`templates/residual-risks.md`（在写入第一条时创建——见 `## 评审收口`）
+- 跨 harness 评审提示词：`templates/cross-review-prompt.md`（由 `../../scripts/cross-review.sh` 渲染，绝不手工发送——见 `## 跨 harness 交叉评审`）
 
-## Core Rules
+## 核心规则
 
-- The user leads design. The agent helps clarify, structure, document, and execute. It does not originate the design (see User Design Authority).
-- **The user's design is authoritative in BOTH phases, and every change to it needs the user's prior agreement** (see User Design Authority). This outranks the "do not ask the user by default" posture below.
-- The user's stated requirements are always the final, complete target. The overall task must end fully meeting that target, however large, heavy, or broad it is.
-- Every code task starts with a Markdown design document, regardless of task size.
-- The design document is not required to be a single file. For complex tasks, split it into multiple focused documents by domain, module, layer, or step so each document stays internally focused and loads cleanly into the model's context. Simple tasks may keep a single document.
-- When the design is split, record every document path in the status file `## Metadata > Design Document` (one per line) and add a top-level index document that lists and links the parts, so downstream roles can discover the full set.
-- The design document is the source of truth for implementation, testing, and review.
-- Review history lives OUTSIDE the design document, in a standalone review-history file per design document (see Review History Files). The design document itself carries no `## Review History` section: it stays the clean final-state spec, and downstream roles read only the final state.
-- A task's design document records ONLY the final design. A finding that corrects existing text is repaired by editing or deleting that text — never by appending an explanatory annotation beside it; a finding that names something missing is fixed by adding the missing spec (see Design Document Edit Discipline).
-- The design document must be clear enough that implementationAgent, testAgent, and reviewAgent can proceed without asking the user again unless there is a blocking issue. This "proceed without asking" license applies only AFTER the human approval at §2 step 8 has actually been given (or a recorded explicit prior skip instruction) — never on the user's silence at the gate.
-- Maintain a task status file for the full workflow: design, implementation, testing, review, and delivery.
-- There must always be exactly one overall task status file that records overall state and progress. Each SubTask may optionally keep its own SubTask-status file recording that SubTask's implementation, test, review, and auto-fix progress, but the single overall status file is mandatory.
-- Status and progress must be persisted to the status files. Do not report progress only in the conversation. Whenever a SubTask completes (or any phase changes), write the update into the overall task status file and the relevant SubTask-status file (if one exists) before moving on.
-- Use existing installed skills, plugins, or tools when they improve document or code quality, but never require the user to install missing optional capabilities.
-- Prefer continuing through non-blocking ambiguity with documented assumptions. Stop and ask the user only when continuing would risk data loss, irreversible changes, or a serious mismatch with the design. In addition, the design→implementation approval gate (§2 step 8) is an unconditional stop-and-wait regardless of reversibility — see the Automatic Execution Policy; documenting an assumption never satisfies it.
-- The design document and the final report default to the same language as the user in this conversation. Other artifacts (task status, review reports, prompt files) stay in their current language.
-- Long-running tasks must persist progress, decisions, blockers, and the next step into the task status file; the conversation context is for execution only. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
+- 设计由用户主导。agent 帮助澄清、梳理结构、成文和执行，但不自己发起设计（见"用户设计主导权"）。
+- **用户的设计在两个阶段都具有权威性，对它的每一处改动都必须事先征得用户同意**（见"用户设计主导权"）。这一条优先于下文"默认不询问用户"的姿态。
+- 用户陈述的需求始终是最终的、完整的目标。整个任务结束时必须完全满足这个目标，无论它多大、多重、多宽。
+- 每个代码任务都从一份 Markdown 设计文档开始，无论任务大小。
+- 设计文档不必是单个文件。复杂任务应按领域、模块、层次或步骤拆成多份聚焦的文档，让每份文档内部聚焦，并能干净地装入模型上下文。简单任务可以只用一份文档。
+- 设计拆分时，把每份文档的路径都记入状态文件的 `## 元数据 > 设计文档`（每行一个），并新增一份顶层索引文档列出并链接各部分，便于下游角色找到完整集合。
+- 设计文档是实现、测试和评审的唯一依据。
+- 评审历史放在设计文档**之外**，每份设计文档对应一份独立的评审历史文件（见"评审历史文件"）。设计文档本身不含 `## 评审历史` 小节：它保持为干净的最终态规格，下游角色只读最终态。
+- 任务的设计文档**只**记录最终设计。纠正已有文字的发现，要通过修改或删除那段文字来修复——绝不在旁边追加解释性批注；指出缺失内容的发现，要通过补上缺失的规格来修复（见"设计文档编辑纪律"）。
+- 设计文档必须足够清晰，使 implementationAgent、testAgent 和 reviewAgent 在没有阻断问题时无需再问用户就能推进。这种"无需询问即可推进"的许可，只有在 §2 第 8 步的人工批准确实已经给出（或存在已记录的事先明确的跳过指令）**之后**才生效——绝不能因为用户在闸门处沉默就生效。
+- 为整个工作流维护任务状态文件：设计、实现、测试、评审和交付。
+- 始终必须有且只有一个总任务状态文件，记录整体状态和进度。每个 SubTask 可以另外维护自己的 SubTask 状态文件，记录该 SubTask 的实现、测试、评审和自动修复进度，但唯一的总状态文件是必需的。
+- 状态和进度必须持久化到状态文件中，不能只在对话里汇报进度。每当一个 SubTask 完成（或任何阶段发生变化），都要先把更新写入总任务状态文件和相关的 SubTask 状态文件（如有），再继续往下走。
+- 已安装的 skill、插件或工具能提升文档或代码质量时就用上，但绝不要求用户安装缺失的可选能力。
+- 遇到不阻断的歧义时，优先记录假设并继续。只有在继续下去可能导致数据丢失、不可逆变更或与设计严重不符时，才停下来问用户。此外，设计→实现审批闸门（§2 第 8 步）无论是否可逆，都是无条件的停下等待——见"自动执行策略"；记录一条假设绝不能满足这道闸门。
+- 设计文档和最终报告默认使用用户在本次对话中所用的语言。其他产物（任务状态、评审报告、提示词文件）保持其现有语言。
+- 长时间运行的任务必须把进度、决策、阻塞项和下一步持久化到任务状态文件中；对话上下文只用于执行。见 [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md)。
 
-## Review History Files
+## 评审历史文件
 
-Review history — rejected findings with reasons, design-document findings reviewAgent labeled `non-blocking:normal`, review-loop iterations, and "discovered during implementation" entries — is recorded in a standalone file (or a group of files, one per design document), NOT inside the design document:
+评审历史——带理由的被拒绝发现、reviewAgent 标为 `non-blocking:normal` 的设计文档发现、评审循环的各轮迭代，以及「实现中发现」条目——记录在一份独立文件（或一组文件，每份设计文档一份）中，**不**写进设计文档：
 
-- For each design document `<dir>/<basename>.md`, its review history lives in the sibling file `<dir>/<basename>.review-history.md`. Create it lazily on the first entry; a design document with no review events has no review-history file.
-- When the design is split into multiple documents, each part gets its own review-history file under the same naming rule. An entry that spans parts goes into the index document's review-history file.
-- Review-history files matter ONLY to the design phase's review loop and the human approval step. They are noise for the implementation phase: when dispatching implementation-agent, test-agent, or an implementation-phase review, send the final-state design document(s) only — never include review-history files, and do not instruct those roles to read them.
-- Do NOT list review-history files in the status file `## Metadata > Design Document` (that list defines what downstream roles load). The status file's own `## Design Review > Rejected Suggestions` record is unchanged and stays where it is.
-- Review-history files record findings about the design DOCUMENT. Behavior-level residuals that a review loop leaves behind — contrived findings, unlanded non-blocking findings about code or tests — go to the task's residual-risk register instead (see `## Review Convergence`).
+- 对每份设计文档 `<dir>/<basename>.md`，其评审历史放在同级文件 `<dir>/<basename>.review-history.md` 中。在写入第一条时才惰性创建；没有任何评审事件的设计文档就没有评审历史文件。
+- 设计拆成多份文档时，每一部分按同样的命名规则各有自己的评审历史文件。跨越多个部分的条目写入索引文档的评审历史文件。
+- 评审历史文件**只**对设计阶段的评审循环和人工批准环节有意义。对实现阶段而言它们是噪音：派发 implementation-agent、test-agent 或实现阶段评审时，只发送最终态设计文档——绝不附带评审历史文件，也不要让这些角色去读它们。
+- **不要**把评审历史文件列入状态文件的 `## 元数据 > 设计文档`（该列表决定下游角色加载什么）。状态文件自身的 `## 设计评审 > 被拒绝的建议` 记录保持不变，位置也不变。
+- 评审历史文件记录的是关于设计**文档**的发现。评审循环遗留下来的行为层面残留问题——刻意构造类发现、未落地的关于代码或测试的非阻断发现——改为记入任务的遗留风险清单（见 `## 评审收口`）。
 
-## Design Document Edit Discipline
+## 设计文档编辑纪律
 
-This governs a TASK's design document (under the task directory) — not this repository's own `docs/`, and not any document that is itself the deliverable. The two files have disjoint jobs, and the design document must not take on the other one:
+本节约束的是**任务**的设计文档（位于任务目录下）——不是本仓库自己的 `docs/`，也不是本身就是交付物的文档。两类文件职责互不重叠，设计文档不得承担另一方的职责：
 
-| File | Job | Readers |
+| 文件 | 职责 | 读者 |
 |---|---|---|
-| `<basename>.md` (each design document) | the final design spec | implementation-agent / test-agent / the approving human |
-| `<basename>.review-history.md` (its sibling) | revision log: annotations, rejection reasons, adjudications, design-document findings labeled non-blocking | the next reviewAgent / the main agent |
+| `<basename>.md`（每份设计文档） | 最终设计规格 | implementation-agent / test-agent / 负责批准的人 |
+| `<basename>.review-history.md`（其同级文件） | 修订日志：批注、拒绝理由、裁决、标为非阻断的设计文档发现 | 下一个 reviewAgent / 主 agent |
 
-The review-history file is not reviewed, produces no findings, and may grow without limit — it is the correct carrier for a paper trail. The design document is a reviewed surface, so anything added to it is a new text face that generates findings.
+评审历史文件不被评审，不产生发现，可以无限增长——它是留存书面记录的正确载体。设计文档是被评审的表面，所以往里添加的任何内容都是一个会产生发现的新文本面。
 
-- **A finding that CORRECTS existing text is repaired by editing or deleting that text, never by appending an explanation beside it.** The correct fix for a rotten number is deleting that number, not writing a paragraph about why it was deleted.
-- **A finding that names something MISSING** — an absent requirement, constraint, acceptance criterion, or under-specified mechanism — is fixed by ADDING the missing spec. That growth is expected; this discipline never argues for under-specifying, and the Design Review Standard keeps missing-requirement findings blocking.
-- **For a correcting fix the document holds flat or shrinks** — measured as `wc -c` before vs after applying the round's accepted findings. A design review round whose net effect is growth with no substantive design change is the failure mode this rule exists to stop; a round that grew because it added a genuinely missing spec is not.
-- **"Why it was changed", "what the previous version got wrong", "corrected in round N" go into `<basename>.review-history.md`** and never into the design body. Round numbers, `前版`/`previous version` references, and `订正`/`corrected` markers do not belong in a final-state spec.
-- **Do not write document-text self-check rules into the design document.** Running a grep costs nothing; writing the grep into the deliverable makes it a reviewed surface, an object of its own scan, and a new coupling point at once — measured, such a block caught ~3 issues the review had missed while itself generating 20+ findings. The design document specifies how to check **code** (mutation targets, positive anchors, no-op classification, carrier ownership — things a compiler and a test suite adjudicate). Checks over the document's own prose are performed, not written down.
-- **When stripping accumulated annotations, do it in one pass and leave no trace of the stripping.** Incremental de-annotation with a note about each removal is just another round of appending. Verify a pure-deletion strip mechanically: the set difference of identifiers and `file:line` coordinates before/after must contain only document self-references — a lost code coordinate means the strip cut into the spec.
+- **纠正已有文字的发现，要通过修改或删除那段文字来修复，绝不在旁边追加解释。** 一个过时数字的正确修法是删掉它，而不是写一段话说明为什么删它。
+- **指出缺失内容的发现**——缺少的需求、约束、验收标准，或规定不足的机制——要通过**补上**缺失的规格来修复。这种增长是预期之中的；本纪律从不主张少写规格，"设计评审标准"也让缺失需求类发现保持阻断。
+- **纠正类修复后，文档篇幅持平或缩小**——用应用本轮已接受发现前后的 `wc -c` 来衡量。一轮设计评审的净效果是篇幅增长、却没有实质性设计变化，这正是本规则要阻止的失败模式；因补上真正缺失的规格而增长的一轮则不算。
+- **"为什么改"、"上一版错在哪"、"第 N 轮订正"写进 `<basename>.review-history.md`**，绝不写进设计正文。轮次编号、`前版`/`previous version` 之类的引用、`订正`/`corrected` 之类的标记，都不属于最终态规格。
+- **不要把针对文档文字的自检规则写进设计文档。** 跑一次 grep 没有任何成本；把 grep 写进交付物，却会让它同时成为被评审的表面、自身扫描的对象和一个新的耦合点——实测中，这样一段内容抓到了约 3 个评审漏掉的问题，自己却产生了 20 多条发现。设计文档规定的是如何检查**代码**（变异目标、正向锚点、空转分类、载体归属——这些由编译器和测试套件来裁决）。对文档自身文字的检查是去执行的，而不是写下来的。
+- **清理累积的批注时，一次清完，且不留清理痕迹。** 逐条去批注并为每次删除留一条说明，只是又一轮追加。用机械方式验证纯删除式清理：清理前后标识符和 `file:line` 坐标的集合差，只能包含文档的自我引用——丢了一个代码坐标，就说明清理删进了规格。
 
-## User Design Authority
+## 用户设计主导权
 
-The user's design leads, in the design phase AND the implementation phase. Every role executes that design; no role invents, extends, or "improves" it on its own initiative.
+无论在设计阶段**还是**实现阶段，都由用户的设计主导。每个角色都执行这份设计；任何角色都不得自作主张地发明、扩展或"改进"它。
 
-Every design document opens with a short banner naming the user as its designer (see `templates/design-doc.md`). It is KEPT content, not scaffolding: it stays in the filled document so implementation-agent, test-agent, and the approving human all read it, and it is the one part of the template that must not be deleted on read.
+每份设计文档开头都有一条简短的横幅，写明用户是其设计者（见 `templates/design-doc.md`）。它是**保留**内容，不是脚手架：它留在填好的文档里，让 implementation-agent、test-agent 和负责批准的人都能读到；它也是模板中唯一一处读取时不得删除的部分。
 
-**`## Quick Review` — the user's approval surface.** Every design document carries it directly under the banner, so the user can judge the overall direction from one section without reading the whole spec. Two parts:
+**`## 快速审阅`——用户的审批界面。** 每份设计文档都在横幅正下方带有这一节，让用户不必通读整份规格，只看这一节就能判断总体方向。它分两部分：
 
-- `### Design Summary` — the whole design in a page or less: which modules exist and what each owns, how the work divides between them, the key algorithms, and the main end-to-end flow. It uses the same module and interface names as the body so the user can navigate from it.
-- `### Details Needing Your Attention` — implementation details the user should look at before approving, each with WHY (irreversible or hard-to-change decision, a trade-off with a real alternative, a performance/security/data-shape consequence, a deviation from local convention, or an assumption made absent a user decision). Legitimately EMPTY when there is nothing of the kind: write `none` rather than manufacturing entries, and do not use it as a second home for `## Open Questions` or for review history.
+- `### 设计摘要`——用一页以内概述整个设计：有哪些模块、各自负责什么，工作如何在它们之间划分，关键算法，以及端到端的主流程。它使用与正文相同的模块名和接口名，方便用户从这里跳转到正文。
+- `### 需要你关注的细节`——用户在批准前应该看的实现细节，每条都要写明**原因**（不可逆或难以更改的决定、存在真实替代方案的取舍、对性能/安全/数据形态的影响、偏离本地惯例之处，或在用户未作决定时所做的假设）。没有这类内容时，它完全可以为**空**：写 `none`，不要硬凑条目，也不要把它当成 `## 待解问题` 或评审历史的第二个存放处。
 
-**The body is authoritative; the summary is a map.** A summary goes stale the same way the design body does: someone APPENDS the correction instead of rewriting what is now wrong ("(round 3: now five modules)" bolted onto a sentence that still says four). Having a summary is not the hazard — appending to it instead of rewriting it is (see Design Document Edit Discipline). Three rules keep it honest:
+**正文是权威，摘要只是地图。** 摘要和设计正文一样会过时：有人**追加**一句更正，而不是重写已经错了的内容（在一句仍然写着"四个模块"的话后面硬接上"（第 3 轮：现为五个模块）"）。有摘要本身不是隐患——往摘要上追加而不是重写才是（见"设计文档编辑纪律"）。以下三条规则让摘要保持真实：
 
-- When the body changes, the summary is updated in the SAME edit — never left for later.
-- When the two disagree, **the body wins.** The summary is the defect; the body is never edited to match a summary.
-- **Repair by REGENERATING the affected part of the summary from the body**, not by patching the one sentence that was caught and never by appending a note about what changed. A divergence means the summary was derived from a design state that no longer exists, so the neighbouring claims are suspect too — re-derive the whole affected part (the module list, the flow, or the attention entry) by reading the body as it now stands.
+- 正文变更时，摘要在**同一次**编辑中更新——绝不留到以后。
+- 两者不一致时，**以正文为准。** 摘要才是缺陷所在；绝不为了迁就摘要而修改正文。
+- **修复方式是根据正文重新生成摘要中受影响的部分**，而不是只修补被发现的那一句，更不是追加一条说明改了什么。出现偏差，说明摘要是从一个已不存在的设计状态推导出来的，所以相邻的表述也值得怀疑——要对照正文当前的样子，重新推导整个受影响的部分（模块列表、流程或某条关注条目）。
 
-reviewAgent checks during design review whether the summary still describes the body, and reports a divergence as a blocking finding (a stale summary misleads the approving human, so it reaches the artifact through the approval decision).
+reviewAgent 在设计评审中检查摘要是否仍然准确描述正文，并把偏差报告为阻断发现（过时的摘要会误导负责批准的人，从而经由批准决定影响到产物）。
 
-**Design phase — the main agent organizes, it does not design.** Its whole job on the design document is to take what the user described and make it executable: structure the user's flow and architecture into ordered steps, fill in the mechanical detail an implementer would otherwise have to guess (exact fields, signatures, file paths, error cases, test points), name the gaps, and ask. It does NOT introduce a module, a layer, a data flow, a key algorithm, or an architectural choice the user did not describe. When something is missing or unclear, ask the user — a documented assumption is for a non-blocking detail, never a substitute for a design decision that is the user's to make.
+**设计阶段——主 agent 负责组织，不负责设计。** 它在设计文档上的全部工作，就是把用户描述的内容变得可执行：把用户的流程和架构整理成有序的步骤，补齐实现者否则只能去猜的机械性细节（确切字段、函数签名、文件路径、错误情形、测试点），指出缺口，然后提问。它**不**引入用户没有描述过的模块、层次、数据流、关键算法或架构选择。遇到缺失或不清楚的地方，就问用户——记录假设只适用于不阻断的细节，绝不能替代本应由用户做出的设计决定。
 
-**Surface problems in the user's own design; never resolve them silently.** Filling gaps is only half the job. In what the user DID describe, the main agent (with reviewAgent) actively hunts for four kinds of problem and puts each to the user as a decision:
+**把用户自己设计中的问题摆出来，绝不悄悄解决。** 补缺口只是一半的工作。在用户**确实**描述过的内容里，主 agent（连同 reviewAgent）要主动查找以下四类问题，并把每一个都作为待决事项交给用户：
 
-- **errors** — something stated that is factually wrong or cannot work as written;
-- **contradictions** — two parts of the design that cannot both hold (step 3 assumes X, step 5 assumes not-X);
-- **ambiguities** — a point that admits more than one reasonable reading, where the readings lead to different implementations;
-- **implicit assumptions that may not hold** — an unstated premise the design silently rests on (an upstream returns sorted data, a field is always non-null, a call is idempotent). This is the most-missed kind: the temptation is to encode the premise into the spec and move on. Instead, name it and ask whether it holds.
+- **错误**——陈述的内容在事实上是错的，或者按所写方式行不通；
+- **矛盾**——设计中两个部分不可能同时成立（第 3 步假设 X，第 5 步假设非 X）；
+- **歧义**——某一点可以有不止一种合理理解，而不同理解会导向不同的实现；
+- **可能不成立的隐含假设**——设计默默依赖、却没有写明的前提（上游返回的数据已排序、某字段总是非空、某个调用是幂等的）。这是最容易漏掉的一类：诱惑在于把这个前提直接写进规格然后继续。正确做法是把它点明，并询问它是否成立。
 
-The rule is the same as for a design change: state the problem and the smallest option set, and WAIT. It is strictly forbidden to encounter one of these and not tell the user — to pick an interpretation of an ambiguity, encode a shaky assumption as fact, or "fix" a contradiction by choosing a side — on the agent's own initiative. These findings, and any that touch architecture, flow, modules, or key algorithms, are the user's to decide (see the escalation sequence below), not the agent's to adjudicate away.
+规则与设计变更相同：说明问题和最小的选项集，然后**等待**。严禁在遇到这类问题时不告诉用户——即自作主张地为歧义选一种理解、把站不住的假设当成事实写进去，或者靠选边站来"修复"矛盾。这些发现，以及任何涉及架构、流程、模块或关键算法的发现，都由用户来决定（见下面的升级流程），而不是由 agent 自行裁决掉。
 
-**Any role, any phase: proposing a change to the design requires the user's prior agreement.** This covers adding, removing, restructuring, or substituting a module, a flow, an interface, a data structure, a key algorithm, or any architectural decision — whoever finds the reason (main agent, implementation-agent, test-agent, review-agent). The sequence is fixed:
+**任何角色、任何阶段：提议修改设计都必须事先征得用户同意。** 这涵盖增加、删除、重组或替换模块、流程、接口、数据结构、关键算法或任何架构决定——无论发现理由的是谁（主 agent、implementation-agent、test-agent、review-agent）。流程是固定的：
 
-1. The finding role states it to the main agent: what it found, where (`file:line` or the design section), why the current design does not work, and the smallest option set.
-2. The main agent presents it to the user — the problem and the options, not a fait accompli — and WAITS.
-3. Only after the user agrees does anyone implement it. The main agent then updates the design document to its new final state (see Design Document Edit Discipline) and re-dispatches.
-4. If the user declines, the design stands as written and the role implements it as specified. Record the exchange in the status file.
+1. 发现问题的角色向主 agent 说明：发现了什么、在哪里（`file:line` 或设计章节）、为什么当前设计行不通，以及最小的选项集。
+2. 主 agent 把它呈给用户——呈上的是问题和选项，而不是既成事实——然后**等待**。
+3. 只有在用户同意之后，才有人去实现它。随后主 agent 把设计文档更新到新的最终态（见"设计文档编辑纪律"）并重新派发。
+4. 如果用户拒绝，设计按原样保留，角色按规格实现。把这次往来记录到状态文件中。
 
-Never implement first and report the deviation afterwards; never let a "small" architectural adjustment ride in with an unrelated fix. **This overrides the "do not ask the user by default" posture in `## Automatic Execution Policy`**: that posture governs accept/reject decisions on review findings and test-failure attribution *within* the approved design. It never authorizes changing the design itself. A material change to the approved approach additionally re-arms the design→implementation approval gate (§2 step 8).
+绝不先实现、事后再报告偏差；绝不让一个"小小的"架构调整夹带在无关的修复里。**这一条优先于 `## 自动执行策略` 中"默认不询问用户"的姿态**：那种姿态管的是在已批准设计**之内**对评审发现的接受/拒绝决定和测试失败归因，它从不授权修改设计本身。对已批准方案的实质性修改，还会重新启用设计→实现审批闸门（§2 第 8 步）。
 
-**Implementation phase — implement the design document exactly, with nothing dropped and nothing contradicted.** implementation-agent and test-agent build exactly what the design specifies; review-agent's first coverage dimension is design conformance in both directions:
+**实现阶段——严格按设计文档实现，不遗漏、不违背。** implementation-agent 和 test-agent 严格构建设计所规定的内容；review-agent 的第一个覆盖维度就是双向的设计符合性：
 
-- Every element the design calls for is present — no silently skipped step, field, error case, or acceptance criterion. Something that cannot be implemented as written is escalated through the sequence above, not quietly omitted.
-- Nothing contradicts the design — no substituted mechanism or swapped-out key algorithm, no "equivalent but simpler" structure, no extra module or abstraction the design did not ask for. Convenient-looking latitude is still a design change and needs the user's agreement.
-- review-agent reports a missing or contradicted design element as a blocking finding, and its report says explicitly whether the implementation matches the design element by element (this is a reachability-into-the-artifact finding, so the non-blocking calibration for document hygiene does not apply to it).
+- 设计要求的每个元素都要存在——不能悄悄跳过任何步骤、字段、错误情形或验收标准。无法按所写方式实现的内容，要走上面的升级流程，而不是悄悄省略。
+- 没有任何内容与设计相违背——不替换机制，不换掉关键算法，不用"等价但更简单"的结构，不加设计没要求的额外模块或抽象。看似方便的自由发挥，仍然是设计变更，需要用户同意。
+- review-agent 把缺失或被违背的设计元素报告为阻断发现，并在报告中明确说明实现是否逐元素符合设计（这属于会影响到产物的发现，所以针对文档卫生的非阻断校准不适用于它）。
 
-## Automatic Execution Policy
+## 自动执行策略
 
-By default, do not ask the user — subject to User Design Authority above, which always wins when the decision would change the user's design. Inside the workflow loops, each role decides for itself:
+默认不询问用户——但须服从上文的"用户设计主导权"：只要决定会改变用户的设计，它总是优先。在工作流的各个循环里，每个角色自行决定：
 
-- During design review, the main agent decides whether to accept or reject each review-agent finding. Rejected findings are recorded with reasons in the design document's review-history file (see Review History Files below) and the status file `## Design Review > Rejected Suggestions`.
-- During implementation review, the role responsible for the changed artifact (implementation-agent for implementation, test-agent for tests) decides whether to accept or reject each finding. Rejected findings are recorded in the status file `## Implementation Review > Rejected Suggestions`, prefixed with the originating SubTask ID when SubTasks are used.
-- Cross-harness review findings are adjudicated by the same role at the same point, only after independently verifying each one against the real artifact; each ends accepted or rejected with a recorded reason (see `## Cross-Harness Review`).
-- When a test fails, implementation-agent attributes it in order — change-surface causality, tooling failure, someone else's in-flight edit / environment, and only then a real regression (its `## Test Failure Handling`) — then implementation-agent fixes implementation bugs and test-agent fixes invalid tests. Under parallel execution the third bucket is the most frequent; forcing every failure into "my bug or their bad test" makes agents fix correct code.
+- 设计评审期间，由主 agent 决定接受还是拒绝 review-agent 的每条发现。被拒绝的发现连同理由记录在设计文档的评审历史文件中（见下文"评审历史文件"），以及状态文件的 `## 设计评审 > 被拒绝的建议` 中。
+- 实现评审期间，由被改动产物的负责角色（实现归 implementation-agent，测试归 test-agent）决定接受还是拒绝每条发现。被拒绝的发现记录在状态文件的 `## 实现评审 > 被拒绝的建议` 中；使用 SubTask 时，前面加上来源 SubTask 的 ID。
+- 跨 harness 评审的发现由同一角色在同一时点裁决，但必须先对照真实产物独立核实每一条；每条最终都以接受或拒绝结束，并记录理由（见 `## 跨 harness 交叉评审`）。
+- 测试失败时，由 implementation-agent 按顺序归因——改动面因果关系、工具故障、他人进行中的编辑/环境，最后才是真正的回归（见其 `## 测试失败处理`）——然后由 implementation-agent 修复实现缺陷，由 test-agent 修复无效测试。在并行执行下，第三类最常见；把每次失败都硬塞进"要么是我的缺陷，要么是他们的测试写错了"，会让 agent 去改本来正确的代码。
 
-Escalate to the user only when:
+只在以下情况升级给用户：
 
-- **any role wants to change the design** — add, remove, restructure, or substitute a module, flow, interface, data structure, key algorithm, or architectural decision (see User Design Authority; this one is mandatory, not discretionary, and applies in both phases);
-- a required design element cannot be implemented as written (escalate; never silently omit it);
-- the decision would cause data loss, an irreversible change, or a serious deviation from the agreed Goals / Acceptance Criteria;
-- the design phase reaches the final human approval step (one explicit user touch before implementation starts) — this is a hard stop the agent must WAIT at, not an escalation it can satisfy-and-move-past;
-- the same finding flips between accept and reject across three or more automated iterations without convergence;
-- a review-convergence check concludes that the remaining blocking findings hinge on a scope or threat-model question the design does not answer, or that something should leave the task (see `## Review Convergence`).
+- **任何角色想要修改设计**——增加、删除、重组或替换模块、流程、接口、数据结构、关键算法或架构决定（见"用户设计主导权"；这一条是强制的而非酌情的，并且适用于两个阶段）；
+- 某个必需的设计元素无法按所写方式实现（升级给用户；绝不悄悄省略）；
+- 该决定会造成数据丢失、不可逆变更，或严重偏离已约定的目标 / 验收标准；
+- 设计阶段到达最终人工批准环节（实现开始前用户明确介入的一次）——这是 agent 必须**等待**的硬性停止点，而不是一个满足一下就能越过的升级；
+- 同一条发现在三轮或更多轮自动迭代中在接受与拒绝之间反复翻转，无法收敛；
+- 评审收口检查得出结论：剩余的阻断发现取决于设计没有回答的范围或威胁模型问题，或者某些内容应当移出本任务（见 `## 评审收口`）。
 
-The design phase's review loop (§2 step 7 below) iterates automatically — no user input between iterations — until the review point closes (the closure condition in `## Review Convergence`), EXCEPT that a finding which would change the user's design goes to the user instead of being auto-adjudicated. Only §2 step 8 (final human approval before implementation) is a user touch. This design-approval gate is a hard stop, not an escalation the agent can satisfy-and-move-past: absent explicit user approval (or a recorded explicit prior skip instruction), the workflow holds at the design phase indefinitely and does not enter implementation. The "By default, do not ask the user" posture above and the "prefer continuing through non-blocking ambiguity" guidance do NOT apply to this gate.
+设计阶段的评审循环（下文 §2 第 7 步）自动迭代——各轮之间不需要用户输入——直到该评审点关闭（关闭条件见 `## 评审收口`），**例外**是：会改变用户设计的发现要交给用户，而不是自动裁决。只有 §2 第 8 步（实现前的最终人工批准）需要用户介入。这道设计审批闸门是硬性停止点，而不是 agent 满足一下就能越过的升级：没有用户的明确批准（或已记录的事先明确的跳过指令），工作流就无限期停在设计阶段，不进入实现。上文"默认不询问用户"的姿态和"遇到不阻断的歧义优先继续"的指引，都**不**适用于这道闸门。
 
-### PR Review Handling (external review feedback)
+### PR 评审处理（外部评审反馈）
 
-This is separate from the internal review-agent loop. **PR review results** — review comments, "changes requested" verdicts, inline threads, or automated findings posted on an actual pull request (by humans, maintainers, bots, or CI/LLM review tools) — are advisory input, not a command. The main agent must NOT blindly accept and apply every item: it processes the findings **one at a time**, and for each one **independently verifies whether the problem objectively exists** before deciding. Verified-real findings are routed to the responsible role, fixed, verified through the normal test + review gates, and acknowledged on the PR thread; findings that do not hold are NOT applied and get a posted comment stating the concrete reason. Every item ends as accepted-and-fixed or explicitly-rejected-with-a-posted-reason — "no reply and no change" is not an allowed outcome — and every decision is recorded in the status file `## PR Review`.
+这与内部的 review-agent 循环是两回事。**PR 评审结果**——在真实 PR 上发布的评审评论、"要求修改"结论、行内讨论串或自动化发现（来自人类、维护者、机器人或 CI/LLM 评审工具）——是参考性输入，不是命令。主 agent **不得**盲目接受并套用每一条：它要**逐条**处理这些发现，对每一条都先**独立核实问题是否客观存在**，再做决定。核实为真的发现交给负责的角色修复，经过正常的测试 + 评审关卡验证，并在 PR 讨论串上回复确认；不成立的发现**不**套用，并发布一条评论说明具体理由。每一条最终要么是"已接受并修复"，要么是"已明确拒绝并发布了理由"——"不回复也不改动"不是允许的结局——每个决定都记录在状态文件的 `## PR 评审` 中。
 
-The full contract (verification requirements, escalation triggers, which CLI to post with) lives in `prompts/main-agent.md` `## PR Review Handling`, since the main agent is the only role that handles external review.
+完整约定（核实要求、升级触发条件、用哪个 CLI 发布评论）在 `prompts/main-agent.md` 的 `## PR 评审处理（外部评审反馈）` 中，因为主 agent 是唯一处理外部评审的角色。
 
-## Cross-Harness Review
+## 跨 harness 交叉评审
 
-Every review point runs TWO kinds of reviewer at once: the task's own reviewAgent subagent (in the current harness), and a read-only review session in every OTHER agent harness installed on this machine. When the main agent runs in Claude Code and `codex` is installed, a Codex session reviews too; when it runs in Codex and `claude` is installed, a Claude Code session reviews too. A reviewer from a different product has different blind spots; that is the whole point, and it is also why its report is treated as advisory input rather than as a verdict.
+每个评审点同时运行**两**类评审者：任务自己的 reviewAgent subagent（在当前 harness 中），以及本机已安装的每一个**其他** agent harness 中的一个只读评审会话。主 agent 在 Claude Code 中运行且装有 `codex` 时，由一个 Codex 会话参与评审；主 agent 在 Codex 中运行且装有 `claude` 时，由一个 Claude Code 会话参与评审。来自不同产品的评审者有不同的盲区，这正是全部意义所在；也正因如此，它的报告被视为参考性输入，而不是结论。
 
-**When.** At every reviewAgent dispatch point: each design-review iteration (§2 step 3), each implementation review (§3.A step 4, §3.B step 4), and the aggregate review (§3.C step 2). Launch it in the SAME batch as the reviewAgent dispatch — it is independent work (§3.0.2), so it runs concurrently, never before or after.
+**何时。** 在每个 reviewAgent 派发点：每轮设计评审迭代（§2 第 3 步）、每次实现评审（§3.A 第 4 步、§3.B 第 4 步），以及汇总评审（§3.C 第 2 步）。与 reviewAgent 派发放在**同一**批次中启动——它是独立的工作（§3.0.2），所以并发运行，绝不放在之前或之后。
 
-**How.** Write a short brief file into the task directory, then run (in the background when the platform supports it — e.g. a background Bash call):
+**怎么做。** 在任务目录中写一份简短的评审简报文件，然后运行（平台支持时放到后台运行——例如后台 Bash 调用）：
 
 ```text
 <plugin-root>/scripts/cross-review.sh run --task-dir <task-dir> --kind <design|implementation|aggregate> --brief <brief-file> --label <round-label> [--cwd <primary-worktree>]
 ```
 
-- `<plugin-root>` is two directories above this skill's directory (or `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT` when set). Where the platform has no background tool call, launch it detached with stdout redirected to `<task-dir>/reviews/cross/<label>.summary` (create the directory first) and read that file (plus the `.meta` files) once the reviewAgent has returned. A reviewer can take tens of minutes; do not block the reviewAgent dispatch on it.
-- The brief carries what a reviewAgent dispatch would: the final-state design document path(s); for a design re-review, the review-history file path(s); for an implementation review, the SubTask id, the frozen file set, and the diff base / commit range; the numbered findings already rejected in earlier rounds with their reasons; and the residual-risk register path once one exists (see `## Review Convergence`). Same scope as the reviewAgent dispatch — never a reduced one (the `## Incremental Output` scope rules apply to briefs too).
-- The script detects the host harness, selects every other installed one (`scripts/cross-review.sh detect` shows the selection), renders `templates/cross-review-prompt.md` + the brief, and runs each reviewer concurrently. Output per reviewer lands in `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}` and one summary line per reviewer on stdout: `status=ok|empty|failed|timeout`, plus `tree-stable=yes|no|n/a`.
-- Reviewer sessions are read-only (Codex `-s read-only`; Claude `--permission-mode dontAsk` with read/search tools and read-only git only), run with every `ZYZ_*` variable scrubbed and `ZYZ_HOOKS_DISABLE=1` (so the plugin's own hooks, installed in both harnesses, never mistake the reviewer for this task's agent), and with zero MCP servers by default. They do NOT inject mutations or rerun tests — those obligations stay with the reviewAgent. Because the reviewer reads the live tree, tell the reviewAgent in its dispatch that a concurrent read-only reviewer is reading the tree, so it mutates an out-of-tree copy whenever the task allows it.
-- Knobs: `ZYZ_CROSS_REVIEW=auto` (default) | `off` | an explicit harness list; `ZYZ_CROSS_REVIEW_TIMEOUT` (seconds, default 2400); `ZYZ_CROSS_REVIEW_MCP` (same values as `ZYZ_WORKER_MCP`, default `none`); `ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` for extra CLI args such as a model.
+- `<plugin-root>` 是本 skill 目录往上两级的目录（设置了 `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT` 时则取其值）。如果平台没有后台工具调用，就以分离方式启动它，并把 stdout 重定向到 `<task-dir>/reviews/cross/<label>.summary`（先创建目录），等 reviewAgent 返回后再读取该文件（以及 `.meta` 文件）。一个评审者可能要跑几十分钟；不要让 reviewAgent 的派发因它而阻塞。
+- 简报包含 reviewAgent 派发时会给的内容：最终态设计文档路径；设计复审时，附评审历史文件路径；实现评审时，附 SubTask id、冻结文件集，以及 diff 基线 / 提交范围；之前各轮已被拒绝的带编号发现及其理由；以及遗留风险清单路径（一旦存在，见 `## 评审收口`）。范围与 reviewAgent 派发相同——绝不缩小（`## 增量输出` 中的范围规则同样适用于简报）。
+- 脚本会检测宿主 harness，选出所有其他已安装的 harness（`scripts/cross-review.sh detect` 会显示选择结果），渲染 `templates/cross-review-prompt.md` + 简报，并发运行每个评审者。每个评审者的输出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，每个评审者在 stdout 上输出一行摘要：`status=ok|empty|failed|timeout`，外加 `tree-stable=yes|no|n/a`。
+- 评审会话是只读的（Codex 用 `-s read-only`；Claude 用 `--permission-mode dontAsk`，只带读取/搜索工具和只读 git），运行时会清除所有 `ZYZ_*` 变量并设置 `ZYZ_HOOKS_DISABLE=1`（这样插件自身在两个 harness 中都安装了的 hooks，绝不会把评审者误认为本任务的 agent），并且默认不带任何 MCP 服务器。它们**不**注入变异，也不重跑测试——这些义务仍归 reviewAgent。由于评审者读取的是实时工作树，要在派发 reviewAgent 时告诉它有一个并发的只读评审者正在读取工作树，这样只要任务允许，它就会在工作树之外的副本上做变异。
+- 调节项：`ZYZ_CROSS_REVIEW=auto`（默认）| `off` | 显式的 harness 列表；`ZYZ_CROSS_REVIEW_TIMEOUT`（秒，默认 2400）；`ZYZ_CROSS_REVIEW_MCP`（取值同 `ZYZ_WORKER_MCP`，默认 `none`）；`ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` 用于额外的 CLI 参数，例如指定模型。
 
-**Optional, never blocking.** No other harness installed, `ZYZ_CROSS_REVIEW=off`, or a reviewer that failed / timed out / returned nothing: record the outcome in the status file `## Cross-Harness Review` and continue with the reviewAgent alone. Do not retry a failed cross-harness reviewer more than once per review point, and never hold a review point open waiting on one past its timeout. It supplements the reviewAgent; it never replaces it, and it never substitutes for any registered coverage dimension, mutation evidence, or independent reproduction the reviewAgent owes.
+**可选，绝不阻断。** 没有安装其他 harness、设置了 `ZYZ_CROSS_REVIEW=off`，或者某个评审者失败 / 超时 / 没有返回内容：把结果记入状态文件的 `## 跨 harness 交叉评审`，然后只靠 reviewAgent 继续。每个评审点对失败的跨 harness 评审者最多重试一次，绝不为了等它而让评审点在超时后仍保持打开。它是对 reviewAgent 的补充，绝不取代 reviewAgent，也绝不替代 reviewAgent 应当提供的任何已登记覆盖维度、变异证据或独立复现。
 
-**Posture: independently verified, rejectable.** A cross-harness report is advisory — the same stance as `### PR Review Handling`, and no weaker than the one taken toward reviewAgent's own findings:
+**姿态：独立核实，可以拒绝。** 跨 harness 报告是参考性的——与 `### PR 评审处理（外部评审反馈）` 的立场相同，也不弱于对待 reviewAgent 自身发现的立场：
 
-- Process its findings ONE AT A TIME. For each, whoever adjudicates independently verifies against the real artifact whether the problem objectively exists — read the cited `file:line`, confirm the quoted text is actually there and actually does what the finding claims. Never accept on the reviewer's summary, never batch-accept, and never treat agreement between the two reviewers as proof on its own.
-- The adjudicator is the one who adjudicates a reviewAgent finding at that point: the main agent in design review (with the `file:line` + predicate evidence `## Adjudication Discipline` requires), implementation-agent / test-agent for their own artifacts in implementation review. A finding that would change the user's design, or that surfaces an error / contradiction / ambiguity / shaky assumption in it, goes to the user exactly as a reviewAgent finding would (`## User Design Authority`).
-- Every finding ends as **accepted** (entered in the same finding ledger as reviewAgent findings — adjudicated → dispatched → landed) or **rejected with a concrete reason** (the evidence it does not hold: the cited text is not there, the claimed behavior does not reproduce, it contradicts the approved design, it is out of scope, it duplicates finding N). "Read and ignored" is not a disposition. A finding that duplicates a reviewAgent finding is merged into that ledger row, not adjudicated twice.
-- A report with `tree-stable=no`, or a finding whose evidence does not match the tree as it stands (for example because it read a file mid-mutation), is verified against the current frozen tree; a finding that does not reproduce there is rejected on that ground.
-- Record dispositions in the status file `## Cross-Harness Review`; in the design phase also record rejections and non-blocking findings in the design document's review-history file, exactly as for reviewAgent findings (the brief for the next round then carries them, so a re-raised finding is answered by pointing at its recorded rejection). The accept↔reject 3-iteration escalation rule applies to cross-harness findings too.
+- **逐条**处理它的发现。对每一条，由裁决者对照真实产物独立核实问题是否客观存在——去读所引用的 `file:line`，确认引用的文字确实在那里，而且确实如发现所说的那样运作。绝不凭评审者的摘要就接受，绝不批量接受，也绝不把两个评审者意见一致本身当作证据。
+- 裁决者就是在该时点裁决 reviewAgent 发现的那个角色：设计评审中是主 agent（附上 `## 裁决纪律` 要求的 `file:line` + 谓词证据），实现评审中是 implementation-agent / test-agent 各自裁决自己的产物。会改变用户设计的发现，或者揭示出设计中错误 / 矛盾 / 歧义 / 站不住的假设的发现，要像 reviewAgent 的发现一样交给用户（`## 用户设计主导权`）。
+- 每条发现最终要么是**接受**（记入与 reviewAgent 发现相同的发现台账——已裁决 → 已派发 → 已落地），要么是**附具体理由拒绝**（证明它不成立的证据：引用的文字不存在、声称的行为无法复现、与已批准的设计相矛盾、超出范围、与第 N 条发现重复）。"读过并忽略"不算一种处置。与某条 reviewAgent 发现重复的发现，合并进那一条台账记录，不重复裁决。
+- 带有 `tree-stable=no` 的报告，或者证据与当前工作树不符的发现（例如因为它在变异进行中读了某个文件），要对照当前冻结的工作树核实；在那里无法复现的发现，以此为由拒绝。
+- 把处置记入状态文件的 `## 跨 harness 交叉评审`；设计阶段还要把拒绝和非阻断发现记入设计文档的评审历史文件，做法与 reviewAgent 的发现完全相同（下一轮的简报会带上它们，于是对一条被重新提出的发现，只要指向它已记录的拒绝即可答复）。接受↔拒绝反复 3 轮即升级的规则同样适用于跨 harness 发现。
 
-**Convergence.** A review point closes under the closure condition in `## Review Convergence`. On the cross-harness side, the reviewer's own `changes-requested` verdict does not by itself hold a loop open, and its `no-changes-needed` does not by itself close one. Only two kinds of its findings hold the loop open: those not yet adjudicated, and those accepted as `blocking`. Its findings are tiered exactly like reviewAgent's, and the adjudicator verifies the tier. When an accepted cross-harness finding causes a change, the next round runs both reviewers again.
+**收口。** 评审点按 `## 评审收口` 中的关闭条件关闭。在跨 harness 这一侧，评审者自己给出的 `changes-requested` 结论本身不会让循环保持打开，它的 `no-changes-needed` 本身也不会让循环关闭。只有两类发现会让循环保持打开：尚未裁决的，以及被接受为 `blocking` 的。它的发现与 reviewAgent 的发现采用完全相同的分级，并由裁决者核实分级。被接受的跨 harness 发现引起改动时，下一轮两个评审者都要再跑一遍。
 
-## Review Convergence
+## 评审收口
 
-A review loop that closes only when the reviewer has nothing left to say does not converge on hard inputs: each fix answers one construction, and the next round finds the next variant of the same class. Measured on a real task: a token-redaction SubTask ran from review round 10 to round 20. The early rounds fixed real leaks on real paths; the later ones answered a `__str__` that raises, a metaclass whose `__name__` raises, a `str` subclass overriding `strip`/`startswith`, a cyclic thousand-deep exception chain, a stateful `__str__` that leaks only on its fourth call — while the reviewers themselves kept labeling them contrived and nothing in the workflow said when to stop. A test-only follow-up spent rounds 2–4 on test-strength nits that needed two unnatural changes at once to matter and affected no existing code. These rules make a loop close on what reaches the artifact, and make sure what it leaves behind is recorded rather than lost. They apply at every review point (design, implementation / SubTask, aggregate) and to every reviewer (reviewAgent, cross-harness).
+一个只有在评审者再也说不出什么时才关闭的评审循环，在棘手的输入上无法收敛：每次修复只回应一种构造，下一轮又会找到同一类问题的下一个变体。在一个真实任务上的实测：一个令牌脱敏 SubTask 从第 10 轮评审一直跑到第 20 轮。早期几轮修的是真实路径上的真实泄漏；后面几轮回应的是会抛异常的 `__str__`、`__name__` 会抛异常的元类、重写了 `strip`/`startswith` 的 `str` 子类、一千层深的循环异常链、只在第四次调用时才泄漏的有状态 `__str__`——而评审者自己一直把这些标为刻意构造，工作流里却没有任何规定说何时该停。一个只涉及测试的后续任务在第 2–4 轮都耗在测试强度的细枝末节上，这些问题需要同时出现两处不自然的改动才有意义，而且不影响任何现有代码。以下规则让循环根据"会影响到产物的内容"来关闭，并确保循环遗留下来的内容被记录而不是丢失。它们适用于每个评审点（设计、实现 / SubTask、汇总）和每个评审者（reviewAgent、跨 harness）。
 
-**The yardstick is the declared domain, not how strange a construction looks.** Every design states its scope boundary (`templates/design-doc.md` `## Scope Boundary`): who calls the change and with what inputs, who may control those inputs (the threat model), and which constructions the user has explicitly put out of scope. "Contrived" means *outside that domain*: a hostile object is contrived for a redaction helper fed by the program's own exceptions, and squarely in scope for a sandbox that runs attacker-supplied code. The boundary is part of the user's design. The threat model and every out-of-scope clause are the user's decisions. Any clause the main agent wrote that the user did not state is listed in `### Details Needing Your Attention` as an assumption made without a user decision, so the user approves the yardstick together with the design. Where the design is silent and the finding is security- or data-relevant, whether the construction is in scope is an ambiguity in the user's design. The user decides (`## User Design Authority`), not the reviewer and not the adjudicator. Where the design is silent and nothing security- or data-relevant is at stake, the domain is what the current callers can actually produce, established by enumerating them. For an exported surface (public API, CLI, network or plugin entry point), the callers include its external consumers: its domain is its documented contract and every input those consumers can send, not only the in-repo call sites. Two limits on that caller-enumeration fallback. It only tiers robustness findings against the design as written. And an unstated premise the design's correctness rests on (an upstream returns sorted data, a field is never null) stays a user question under `## User Design Authority`; it never becomes `contrived` just because today's callers happen to satisfy it.
+**衡量标准是声明域，而不是构造看起来有多怪。** 每份设计都要说明它的范围边界（`templates/design-doc.md` 的 `## 范围边界`）：谁调用这次改动、用什么输入，谁可能控制这些输入（威胁模型），以及用户明确排除在范围外的构造有哪些。"刻意构造"指的是*在该域之外*：对于一个只接收程序自身异常的脱敏辅助函数，恶意对象属于刻意构造；而对于一个运行攻击者提供代码的沙箱，它恰恰在范围之内。范围边界是用户设计的一部分。威胁模型和每一条范围外条款都由用户决定。主 agent 写下而用户没有陈述过的任何条款，都要作为"在用户未作决定时所做的假设"列入 `### 需要你关注的细节`，让用户在批准设计时一并批准这把衡量尺。如果设计对此没有说明，而发现又涉及安全或数据，那么该构造是否在范围内，就是用户设计中的一个歧义。由用户决定（`## 用户设计主导权`），而不是评审者，也不是裁决者。如果设计没有说明，而且不涉及任何安全或数据问题，那么域就是当前调用方实际能产生的输入，通过逐一列举调用方来确定。对于对外暴露的接口面（公共 API、CLI、网络或插件入口），调用方包括其外部使用者：它的域是其文档化的契约，以及这些使用者能发送的所有输入，而不只是仓库内的调用点。这种"列举调用方"的兜底方式有两个限制。其一，它只用于对照按原样写成的设计来给健壮性发现分级。其二，设计的正确性所依赖的未陈述前提（上游返回已排序的数据、某字段从不为 null）仍然按 `## 用户设计主导权` 作为问题交给用户；绝不能因为今天的调用方恰好满足它，就把它算作 `contrived`。
 
-**Three tiers, one per finding.**
+**三个等级，每条发现取其一。**
 
-| Tier | Means | Holds the loop open |
+| 等级 | 含义 | 是否让循环保持打开 |
 |---|---|---|
-| `blocking` | Reaches the artifact on an input the declared domain or a current caller can produce: a main-path defect; a reproducible security, correctness, data, or regression defect; an in-domain boundary value handled wrongly; a missing or contradicted design element; plus the design-review blockers in `../../subagents/review-agent.md` `## Design Review Standard` | yes |
-| `non-blocking:normal` | A real improvement that produces no wrong behavior on any reachable input — clarity, maintainability, test strength beyond what the acceptance criteria and claimed coverage need. Design-document hygiene findings are this tier | no |
-| `non-blocking:contrived` | Manifests only outside the declared domain — it needs two or more independent unnatural changes stacked, or an adversarial object or state that no in-domain input produces — AND no current caller reaches it | no |
+| `blocking` | 在声明域或当前调用方能产生的输入上会影响到产物：主路径缺陷；可复现的安全、正确性、数据或回归缺陷；处理错误的域内边界值；缺失或被违背的设计元素；以及 `../../subagents/review-agent.md` 的 `## 设计评审标准` 中列出的设计评审阻断项 | 是 |
+| `non-blocking:normal` | 一项真实的改进，但在任何可达输入上都不会产生错误行为——清晰度、可维护性、超出验收标准和所声称覆盖所需的测试强度。设计文档卫生类发现属于此级 | 否 |
+| `non-blocking:contrived` | 只在声明域之外才会显现——需要叠加两处或更多相互独立的不自然改动，或者需要一个任何域内输入都不会产生的恶意对象或状态——**并且**没有任何当前调用方能触达它 | 否 |
 
-- **A tier carries evidence.** `blocking` names the reachable path (the caller's `file:line`, or the domain clause). `non-blocking:contrived` names why nothing in-domain reaches it: the enumerated call sites, and what would have to change for the construction to arise. The reviewer proposes the tier; the adjudicator verifies it with the same `file:line` + predicate bar as any ruling. Upgrading is always allowed; downgrading a finding the reviewer called `blocking` needs that evidence written into the disposition, exactly like a rejection.
-- **In doubt between `blocking` and `contrived`, it is `blocking`** until the reachability evidence says otherwise. The tier exists to stop chasing constructions nobody produces, not to wave through ones somebody does.
-- **A tier changes the disposition, never the report.** Every finding is still reported, numbered, with its own evidence; asking a reviewer to report only blocking findings is the scope reduction `## Incremental Output` forbids, and L5 denies it. Many variants of one contrived class are reported as ONE finding with the variants enumerated inside it.
+- **等级要带证据。** `blocking` 要指明可达路径（调用方的 `file:line`，或域条款）。`non-blocking:contrived` 要说明为什么没有域内输入能触达它：列举出的调用点，以及要发生什么改变这种构造才会出现。评审者提出等级；裁决者按与任何裁定相同的 `file:line` + 谓词标准来核实它。升级总是允许的；把评审者判为 `blocking` 的发现降级，则需要把那份证据写进处置，与拒绝完全一样。
+- **在 `blocking` 和 `contrived` 之间拿不准时，就按 `blocking` 处理**，直到可达性证据表明并非如此。分级的存在是为了不再追逐没人会产生的构造，而不是为了放过确实有人会产生的构造。
+- **等级改变的是处置，绝不是报告。** 每条发现仍然要报告、编号，并附上各自的证据；要求评审者只报告阻断发现，就是 `## 增量输出` 所禁止的范围缩减，L5 会拒绝这种要求。同一刻意构造类的多个变体，作为**一条**发现报告，在其中列举各个变体。
 
-**Closure.** This is the one closure condition for every review point; every other place that says a review "closes" or "converges" means this. A review point closes on a round in which ALL of the following hold:
+**关闭。** 这是每个评审点唯一的关闭条件；其他任何地方说评审"关闭"或"收敛"，指的都是它。一个评审点在满足以下**全部**条件的那一轮关闭：
 
-1. reviewAgent's own report for the round is `no-changes-needed` — it reports zero `blocking` findings. reviewAgent's `Result` is `changes-requested` exactly when it reports at least one `blocking` finding; a finding it re-raises against an earlier rejection or downgrade counts.
-2. Every cross-harness finding of the round has a disposition, and none was accepted as `blocking`.
-3. No finding marked `requires-user-decision` is still waiting for the user's answer.
-4. Every coverage dimension is registered.
+1. reviewAgent 本轮自己的报告是 `no-changes-needed`——它报告了零条 `blocking` 发现。reviewAgent 的 `结果` 为 `changes-requested`，当且仅当它报告了至少一条 `blocking` 发现；它针对之前的拒绝或降级而重新提出的发现也算在内。
+2. 本轮每一条跨 harness 发现都有了处置，且没有一条被接受为 `blocking`。
+3. 没有标为 `requires-user-decision` 的发现仍在等待用户回答。
+4. 每个覆盖维度都已登记。
 
-Rejecting or downgrading a blocking reviewAgent finding never closes the point by itself. The next round's reviewAgent sees that disposition (review-history file / dispatch), and either accepts it in `## Rejected Suggestions Reviewed` or re-raises it. That re-check is what keeps the accept↔reject three-iteration escalation live. Cross-harness findings stay advisory: their disposition alone settles them. Non-blocking findings never hold a loop open:
+拒绝或降级一条 reviewAgent 的阻断发现，本身绝不会关闭评审点。下一轮的 reviewAgent 会看到该处置（评审历史文件 / 派发内容），要么在 `## 已复核的被拒绝建议` 中接受它，要么重新提出它。正是这种复查，让接受↔拒绝反复三轮即升级的规则保持有效。跨 harness 发现仍然是参考性的：只要有了处置就算了结。非阻断发现绝不会让循环保持打开：
 
-- `non-blocking:normal` — an accepted one may land in the same iteration when a blocking fix is reopening the round anyway, and is reviewed with it. After a round with no blocking findings, the main agent may open ONE further round per review point solely to land accepted normal findings. It is one round per review point, not one per clean round. Whatever that round raises below `blocking` is recorded, not landed. Design-document hygiene findings are never landed this way: they stay in the review-history file (`### Document-Hygiene Findings Are Non-Blocking`). Unlanded normal findings are recorded — in the review-history file when they concern the design document (as before), in the residual-risk register when they concern behavior or tests.
-- `non-blocking:contrived` — never fixed inside this review loop. Each goes into the residual-risk register (below), and the loop moves on.
+- `non-blocking:normal`——如果某个阻断修复反正要重开这一轮，已接受的此类发现可以在同一轮落地，并随之一起评审。在一个没有阻断发现的轮次之后，主 agent 可以在每个评审点额外再开**一**轮，专门用于落地已接受的 `non-blocking:normal` 发现。这是每个评审点一轮，而不是每个干净轮次一轮。那一轮提出的任何低于 `blocking` 的内容都只记录，不落地。设计文档卫生类发现绝不通过这种方式落地：它们留在评审历史文件里（`### 文档卫生类发现不阻断`）。未落地的 `non-blocking:normal` 发现要记录下来——涉及设计文档的记入评审历史文件（与以前一样），涉及行为或测试的记入遗留风险清单。
+- `non-blocking:contrived`——绝不在本评审循环内修复。每一条都进入遗留风险清单（见下文），循环继续推进。
 
-**Recurring class: stop patching variants.** When a finding is a new variant of a class already fixed at the same review point in an earlier round (same mechanism, different construction), the reviewer marks it `recurring: <class> (rounds …)`. The second variant is the signal that point fixes are the wrong shape, so the adjudicator does not answer it with another one:
+**反复出现的类别：别再逐个修补变体。** 当一条发现是同一评审点在之前某一轮已修复过的某类问题的新变体（同一机制，不同构造）时，评审者将其标为 `recurring: <class> (rounds …)`。第二个变体的出现，就是"逐点修复不对路"的信号，所以裁决者不再用又一个逐点修复来回应它：
 
-- If the class is inside the declared domain, require ONE class-level fix that removes the whole class — a single total guard around the untrusted operation with a fixed safe fallback, one depth/cycle bound at the traversal, one normalization point in front of the comparisons — and a test that drives the class through a table or generator rather than one more hand-built case. This is implementation-agent's "make the wrong form inexpressible" rule applied to a review loop.
-- If the class is outside the domain, record the class ONCE in the residual-risk register. A later variant may be dispositioned by pointing at that entry only when every producer of the variant falls inside the call sites the entry already cleared, and the disposition says so. A variant reached by a producer the entry did not enumerate is a new finding with its own tier and its own reachability evidence; membership in a registered class never substitutes for that check.
+- 如果该类别在声明域之内，就要求**一个**能消除整个类别的类级修复——在不受信任的操作外面加一个完整的守卫并提供固定的安全兜底，在遍历处设一个深度/环的上限，在比较之前设一个统一的规范化点——并配一个通过表格或生成器驱动整个类别的测试，而不是再手写一个用例。这就是 implementation-agent 的"让错误写法无法表达"规则在评审循环中的应用。
+- 如果该类别在域之外，就在遗留风险清单中把该类别记录**一次**。之后的某个变体，只有当它的每一个产生者都落在该条目已经排查过的调用点之内时，才能通过指向该条目来处置，并且处置中要写明这一点。由该条目没有列举到的产生者触达的变体，是一条新发现，有它自己的等级和自己的可达性证据；属于某个已登记的类别，绝不能代替这项检查。
 
-**Round budget: a convergence check, not a cap.** Count rounds per review point in the status file `## Review Convergence`. When a review point finishes its third round still holding blocking findings — and every third round after that — the main agent runs a convergence check before opening the next round, and records it: each open blocking finding re-checked for reachability, with evidence; each recurring class and whether it got a class-level fix; the blocking count per round (shrinking, flat, or growing). The outcome is one of:
+**轮次预算：是收敛检查，不是上限。** 在状态文件的 `## 评审收口` 中按评审点统计轮次。当一个评审点跑完第三轮仍有阻断发现时——以及此后每满三轮——主 agent 在开启下一轮之前要做一次收敛检查并记录下来：对每条未关闭的阻断发现重新检查可达性并附证据；每个反复出现的类别以及它是否得到了类级修复；每轮的阻断发现数（在减少、持平还是增长）。结论是以下之一：
 
-- **continue** — the blocking findings are real-path and shrinking;
-- **switch to class-level fixes** for the recurring classes;
-- **re-sequence hardening** — when in-scope hardening (adversarial input the domain DOES include) is what keeps the main path from converging, move it into its own hardening SubTask scheduled after the main-path SubTask(s), so the main path closes, commits, and becomes usable first. This orders work inside the approved design, so it is the main agent's call. The hardening SubTask stays in this task and is still delivered (`## Total Goal Fidelity`). Every blocking finding it takes over gets a finding-ledger row with `dispatched-to: <hardening SubTask>`. The hardening SubTask's first review dispatch lists those findings as expected to land, and §4 verifies each one landed;
-- **escalate** — when the remaining blocking findings hinge on a scope or threat-model question the design does not answer, or the outcome would take anything out of the task. That changes the design and is the user's decision.
+- **继续**——阻断发现都在真实路径上，并且在减少；
+- **对反复出现的类别改用类级修复**；
+- **调整加固的顺序**——当阻碍主路径收敛的是范围内的加固工作（域**确实**包含的对抗性输入）时，把它移到单独的加固 SubTask 中，排在主路径 SubTask 之后，让主路径先关闭、提交并可用。这是在已批准设计之内安排工作顺序，所以由主 agent 决定。加固 SubTask 仍留在本任务中，并且仍要交付（`## 总目标忠实度`）。它接手的每一条阻断发现，都要在发现台账中有一行记录，带 `dispatched-to: <hardening SubTask>`。加固 SubTask 的第一次评审派发要把这些发现列为预期应落地的内容，§4 会逐条核实其已落地；
+- **升级给用户**——当剩余的阻断发现取决于设计没有回答的范围或威胁模型问题，或者结论会把任何内容移出本任务时。这会改变设计，由用户决定。
 
-Every check outcome is reported to the user in a short message with its reason, so a long loop is never silent. Only the escalate outcome waits for an answer. In orchestrated mode, the message goes to the worker pane and to the status file. An escalation goes through the `ZYZ_QUESTION_FILE` Q&A like any other user question.
+每次检查的结论都要用一条简短消息连同理由告诉用户，这样长时间的循环绝不会悄无声息。只有"升级给用户"这一结论需要等待回答。在编排模式下，这条消息发到 worker 的 pane 和状态文件。升级则像其他任何用户问题一样，通过 `ZYZ_QUESTION_FILE` 问答进行。
 
-**Main path first.** Organize the work so the main path converges and ships first. In design, lock the main path and its key constraints before working through boundary cases, and put scope-boundary questions that do not block the main path to the user together — listed in `### Details Needing Your Attention` and decided at the §2 step 8 gate — rather than one interruption per case. They remain the user's decisions and are resolved before approval; batching changes when they are asked, not who answers them. In the Implementation Plan, in-scope adversarial hardening is its own step or SubTask after the main path, never folded into the main path's review loop.
+**主路径优先。** 组织工作时，让主路径先收敛、先交付。设计时，先锁定主路径及其关键约束，再处理边界情形；把不阻碍主路径的范围边界问题集中起来一起交给用户——列入 `### 需要你关注的细节`，在 §2 第 8 步的闸门处决定——而不是每个情形打断一次。它们仍然由用户决定，并在批准前解决；集中处理改变的是提问的时机，而不是由谁来回答。在实施计划中，范围内的对抗性加固要作为主路径之后的独立步骤或 SubTask，绝不并入主路径的评审循环。
 
-**Residual-risk register.** `<task-dir>/residual-risks.md`, from `templates/residual-risks.md`, created on its first entry. It holds the behavior-level residuals a review loop leaves behind: every `non-blocking:contrived` finding (one entry per class, not per variant) and every behavior- or test-level `non-blocking:normal` finding that did not land. Each entry carries its origin (review point label, finding number, reviewer), tier and class, a minimal concrete reproduction, the impact assessment (why nothing in-domain reaches it today — the enumerated callers — and what change would make it reachable), the hardening plan if a reviewer or role verified one (what, where, how it was verified), and its status. The register is the input of any later hardening task, so an entry that task could not act on without re-deriving it is incomplete. Pass the register's path to every later reviewer — reviewAgent dispatch and cross-harness brief — so a registered item is answered by pointing at its entry instead of being re-raised; it comes back only with new evidence that it is reachable, as a new `blocking` finding. The final report summarizes it (`## Known Risks`) and proposes the follow-up that consumes it (`## Follow-Up`).
+**遗留风险清单。** `<task-dir>/residual-risks.md`，基于 `templates/residual-risks.md`，在写入第一条时创建。它保存评审循环遗留下来的行为层面残留问题：每一条 `non-blocking:contrived` 发现（每个类别一条，而不是每个变体一条），以及每一条没有落地的行为或测试层面的 `non-blocking:normal` 发现。每个条目包含：来源（评审点标签、发现编号、评审者）、等级和类别、一个最小的具体复现、影响评估（为什么当前没有域内输入能触达它——列举出的调用方——以及什么改变会让它变得可达）、加固方案（如果有评审者或角色核实过：做什么、在哪里、如何核实的），以及它的状态。这份清单是之后任何加固任务的输入，所以如果某个条目必须重新推导才能被那个任务使用，它就是不完整的。把清单路径传给之后的每一个评审者——reviewAgent 的派发和跨 harness 的简报——这样对已登记的条目，只要指向它的条目即可答复，而不会被重新提出；只有出现它可达的新证据时，它才会作为一条新的 `blocking` 发现重新出现。最终报告会总结它（`## 已知风险`），并提出消化它的后续工作（`## 后续工作`）。
 
-## Total Goal Fidelity
+## 总目标忠实度
 
-The user always describes the final, complete target. The final deliverable of the overall task must satisfy that target in full.
+用户描述的始终是最终的、完整的目标。整个任务的最终交付物必须完全满足这个目标。
 
-- Do not unilaterally narrow, simplify, defer, or substitute an "experimental placeholder" for any part of the user's stated goal at the overall-task level.
-- Phrases like "deferred to next milestone", "in-memory only for now, replace later", "experimental placeholder", or "ship a simplified version first and iterate" describe intermediate states only. They may appear inside SubTask execution, never as the final state of the overall task.
-- SubTasks may be implemented step by step or via TODO-style staging. That is expected. But once all SubTasks are done, the overall task must completely fulfill the user's goal.
-- To prevent the overall goal from being forgotten or drifting, record it explicitly. Write the user's full target into the design document `## Goals` and copy a concise statement of it into the status file `## Total Goal`. Every phase checks final output against this record before delivery.
-- If genuinely fulfilling the full goal is impossible (true blocker, contradiction, or it would cause data loss / irreversible change), escalate to the user instead of silently shipping a reduced version.
-- Recording a `non-blocking:contrived` finding in the residual-risk register instead of fixing it does not narrow the goal — the construction lies outside the domain the user approved (`## Review Convergence`). Leaving an in-domain requirement unmet does narrow it, whatever tier label it was given; and moving a boundary of the declared domain is the user's decision.
+- 不得在整体任务层面擅自收窄、简化、推迟用户陈述目标的任何部分，也不得用"实验性占位"来替代其中任何部分。
+- "推迟到下一个里程碑"、"暂时只做内存版，以后再替换"、"实验性占位"、"先交付简化版再迭代"之类的说法，只能描述中间状态。它们可以出现在 SubTask 执行过程中，但绝不能成为整体任务的最终状态。
+- SubTask 可以分步实现，也可以用 TODO 式的分阶段推进。这是预期之中的。但所有 SubTask 完成后，整体任务必须完全实现用户的目标。
+- 为防止总体目标被遗忘或发生漂移，要把它明确记录下来。把用户的完整目标写进设计文档的 `## 目标`，并把它的简明表述抄进状态文件的 `## 总目标`。每个阶段在交付前都要对照这份记录检查最终产出。
+- 如果确实无法完全实现目标（真正的阻塞、矛盾，或者会导致数据丢失 / 不可逆变更），就升级给用户，而不是悄悄交付一个缩水版本。
+- 把一条 `non-blocking:contrived` 发现记入遗留风险清单而不修复，并不算收窄目标——该构造位于用户批准的域之外（`## 评审收口`）。而让一项域内需求没有得到满足，无论给它贴了什么等级标签，都是在收窄目标；移动声明域的边界则由用户决定。
 
-## Incremental Output
+## 增量输出
 
-Agents (the main agent and every subagent) do not have to produce a complete result in a single response. Producing a large artifact over multiple passes and edits is allowed and encouraged.
+各 agent（主 agent 和每个 subagent）不必在一次回复中产出完整结果。允许、也鼓励通过多轮输出和多次编辑来完成一个大型产物。
 
-- Split large implementation, test, document, or report writing into several smaller outputs or successive edits rather than one oversized response.
-- This improves model and API stability, reduces the chance of truncated or failed responses, and avoids context anxiety from trying to emit everything at once.
-- Multi-pass output is a delivery technique, not a license to defer scope. It does not relax Total Goal Fidelity: the final state must still completely fulfill the user's goal.
-- Large implementation/test lanes write a coherent skeleton first and then make regular incremental disk updates, with an artifact inventory in their SubTask status. Conversation-only progress is not durable after an API kill.
-- The exact supported runtime operations are `adopt-legacy`, `finalize`, `gc-step`, `probe-ack`, `probe-cancel`, `probe-create`, `probe-status`, `reconcile-start`, and `reconcile-stop`. Only the main/watchdog/lifecycle/system-timer audiences may invoke the matching `gc-step` trigger; role prompts do not gain manual GC permission. Never fabricate or delete runtime records manually.
+- 把大块的实现、测试、文档或报告写作拆成若干较小的输出或连续的编辑，而不是一次超大的回复。
+- 这能提高模型和 API 的稳定性，降低回复被截断或失败的概率，也能避免因试图一次输出全部内容而产生的上下文焦虑。
+- 多轮输出是一种交付技巧，不是推迟范围的许可。它不放宽"总目标忠实度"：最终状态仍必须完全实现用户的目标。
+- 大型实现/测试并行通道（lane）先写出连贯的骨架，再定期增量地写盘，并在其 SubTask 状态中维护一份产物清单。只存在于对话中的进度，在 API 被强制终止后无法保留。
+- 受支持的运行时操作恰好是 `adopt-legacy`、`finalize`、`gc-step`、`probe-ack`、`probe-cancel`、`probe-create`、`probe-status`、`reconcile-start` 和 `reconcile-stop`。只有 main/watchdog/lifecycle/system-timer 这几类调用方可以触发对应的 `gc-step`；角色提示词不因此获得手动 GC 的权限。绝不手工伪造或删除运行时记录。
 
-### Recovering a stuck role: never trade scope for a delivery
+### 恢复卡住的角色：绝不拿范围换交付
 
-A stalled or timed-out role creates pressure to "just get something out of it". The specific failure to avoid is **reducing what was asked for so the role can finish**. Reducing the per-round output volume is always allowed; reducing the total deliverable requirement never is.
+一个停滞或超时的角色，会带来"好歹先从它那拿点东西出来"的压力。要特别避免的失败是**为了让角色能完成，而缩减所要求的内容**。缩减每轮输出量总是允许的；缩减总的交付要求则绝不允许。
 
-- Allowed: split the work into labeled steps or dimensions and take one per message; smaller successive edits; riskiest part first; less context to re-read.
-- Forbidden in any recovery or re-dispatch instruction: "just the overall verdict", "only the top 3 findings", "most severe N is enough", "a one-line conclusion is fine", "skip the details", "只要总结论", "最严重 3 条就行", "一句话结论也行", plus count caps ("limit to 3 findings", "no more than 3", "blockers only", "重点问题就行").
-- Staging is not a loophole: a capped first installment is acceptable only as real staging — commit to the remainder, record the step plan in `## Restart And Recovery Notes`, and actually collect every installment. An untracked promise to continue is a scope reduction wearing a disguise.
-- This is a distinct surface from Total Goal Fidelity, which guards the user's stated goal and the overall deliverable. A single role's asked-for scope — a review's coverage, a test suite's breadth, an implementation step's completeness — can be shrunk without tripping that rule, and the incomplete result then passes every downstream gate looking clean.
-- Standard recipe: re-dispatch at the same full scope with an explicit N-step split, one message per step, flushing each step before the next; for a review, split along the coverage dimensions (see §3.C). Record the recovery event and step plan in the status file `## Restart And Recovery Notes`.
-- A role that proposes or delivers its own reduced scope is sent back with the step-split recipe, not accepted. If it genuinely cannot complete the scope after retries, escalate to the user with what is and is not covered — never record a partial result as complete.
+- 允许：把工作拆成带标签的步骤或维度，每条消息完成一个；更小的连续编辑；先做风险最高的部分；减少需要重读的上下文。
+- 在任何恢复或重新派发的指令中都禁止（中英文措辞同样禁止）："只给总体结论"（"just the overall verdict"）、"只报最重要的 3 条发现"（"only the top 3 findings"）、"最严重的 N 条就够了"（"most severe N is enough"）、"一行结论就行"（"a one-line conclusion is fine"）、"细节就省了"（"skip the details"）、"只要总结论"、"最严重 3 条就行"、"一句话结论也行"、"只要前 3 条"，以及数量上限（"限 3 条发现"（"limit to 3 findings"）、"不超过 3 条"（"no more than 3"）、"只报阻断项"（"blockers only"）、"重点问题就行"）。
+- 分阶段不是漏洞：一个设了上限的第一批交付，只有作为真正的分阶段才可以接受——承诺交付剩余部分，把步骤计划记入 `## 重启与恢复记录`，并真正收齐每一批。没有被跟踪的"后续再继续"的承诺，就是披着伪装的范围缩减。
+- 这与"总目标忠实度"是不同的防护面，后者守护的是用户陈述的目标和整体交付物。单个角色被要求的范围——一次评审的覆盖面、一套测试的广度、一个实现步骤的完整性——可以在不触犯那条规则的情况下被缩小，而不完整的结果随后会看起来干干净净地通过下游每一道关卡。
+- 标准做法：以同样完整的范围重新派发，并明确拆成 N 步，每步一条消息，每一步写盘后再做下一步；对评审而言，按覆盖维度拆分（见 §3.C）。把这次恢复事件和步骤计划记入状态文件的 `## 重启与恢复记录`。
+- 一个自行提出或交付缩减范围的角色，要用分步拆分的做法打回，而不是接受。如果重试之后它确实无法完成该范围，就升级给用户，说明哪些覆盖了、哪些没有——绝不把部分结果记为完成。
 
-## Version Control
+## 版本控制
 
-zyz-worker is designed to complete the whole task autonomously from the design document, so version-control steps run on their own and never block the workflow.
+zyz-worker 的设计目标是依据设计文档自主完成整个任务，因此版本控制步骤会自行执行，绝不阻断工作流。
 
-- Commit autonomously. Create a commit after each completed SubTask, and a final commit for the overall task. Do not stop to ask the user whether to commit.
-- Push autonomously when a remote/upstream is configured. Do not stop to ask the user whether to push.
-- Commit and push are non-blocking. If a commit or push fails (no remote, auth, hook, conflict, or any other reason), record the failure in the status file and continue the task. A failed commit or push is never a blocker and must not interrupt or pause the workflow.
-- Still respect destructive-action safety: do not force-push, reset --hard, or rewrite published history on your own. On a shared working tree (parallel-agent worktrees), `git stash push/pop` is also treated as destructive — another agent's stash may be present and a pop can land on the wrong state (a conflicted `go.mod` still BUILDS but breaks `go test` at module parse, which reads as "their code is broken"); use `git diff > /tmp/<name>.patch` + `git apply -R` for temporary set-asides. **`git checkout <file>` / `git restore <file>` on a shared working tree are destructive in the same way**: they reset to HEAD and delete every agent's uncommitted work in that file, and never-committed content is in no git recovery mechanism (no reflog, no stash, no fsck) — a real incident lost a ~5000-char security guard this way while `go build` stayed green. Revert only your own change, from a backup copy taken before editing (or `git apply -R` of your own diff); read the committed version with `git show HEAD:<file>`. A PreToolUse hook (`checkout-guard.sh`) denies the dangerous form when the target has uncommitted modifications. Autonomy here covers ordinary `git commit` and `git push`, not destructive operations.
-- On explicit user instruction (via conversation in standalone mode, or via a matching `## Pending Merge Approval` token in orchestrated mode), the worker MAY also `git merge` the task branch into its base and push the result — this still respects the no-force-push / no-history-rewrite limit. Autonomy never covers merge to base; only user-instructed merges are allowed. In orchestrated mode the orchestrator performs the merge (the worker does not), to avoid both layers writing the base concurrently. For a multi-worktree task each repo merges on its own branch into its own base — the merge is per-repo (see the multi-worktree rules under `## Orchestrated Mode`).
+- 自主提交。每完成一个 SubTask 就创建一次提交，整体任务完成时再做一次最终提交。不要停下来问用户是否提交。
+- 配置了 remote/upstream 时自主推送。不要停下来问用户是否推送。
+- 提交和推送不阻断流程。如果提交或推送失败（没有 remote、认证问题、hook、冲突或其他任何原因），把失败记入状态文件并继续任务。提交或推送失败绝不是阻塞项，不得中断或暂停工作流。
+- 仍要遵守破坏性操作的安全规则：不要自行 force-push、reset --hard 或改写已发布的历史。在共享工作树上（并行 agent 的 worktree），`git stash push/pop` 同样被视为破坏性操作——可能存在另一个 agent 的 stash，而一次 pop 可能落到错误的状态上（一个有冲突的 `go.mod` 仍然能**构建**，但 `go test` 会在解析模块时失败，看起来就像"他们的代码坏了"）；临时搁置改动请用 `git diff > /tmp/<name>.patch` + `git apply -R`。**在共享工作树上，`git checkout <file>` / `git restore <file>` 同样具有破坏性**：它们会重置到 HEAD，删掉该文件中所有 agent 的未提交工作，而从未提交过的内容不在任何 git 恢复机制里（没有 reflog、没有 stash、没有 fsck）——一次真实事故就这样丢掉了一段约 5000 字符的安全防护代码，而 `go build` 依然是绿的。只回退你自己的改动，并且用编辑前做好的备份副本来回退（或者用 `git apply -R` 回退你自己的 diff）；读取已提交的版本用 `git show HEAD:<file>`。一个 PreToolUse hook（`checkout-guard.sh`）会在目标文件有未提交修改时拒绝这种危险写法。这里的自主权涵盖普通的 `git commit` 和 `git push`，不包括破坏性操作。
+- 在用户明确指示下（独立模式下通过对话，编排模式下通过 `## Pending Merge Approval` 中对应的令牌），worker **可以**把任务分支 `git merge` 进其基线分支并推送结果——这仍然遵守不 force-push / 不改写历史的限制。自主权从不涵盖合并到基线分支；只允许用户指示的合并。在编排模式下由编排器执行合并（worker 不执行），以免两层同时写基线分支。对于多 worktree 任务，每个仓库在自己的分支上合并进自己的基线分支——合并是按仓库进行的（见 `## 编排模式` 下的多 worktree 规则）。
 
-## Role Boundaries
+## 角色边界
 
-The main agent is the current user-facing conversation agent. It coordinates and records. It must not directly write implementation code, modify tests, run tests, or perform review.
+主 agent 就是当前面向用户的对话 agent。它负责协调和记录。它不得直接编写实现代码、修改测试、运行测试或进行评审。
 
-implementationAgent writes implementation and runs tests. It must not modify test code.
+implementationAgent 编写实现并运行测试。它不得修改测试代码。
 
-testAgent writes and maintains test code. It carries `Bash` scoped to self-verifying its OWN test code: it MUST compile / type-check / vet / lint its tests and fix syntax, import, type, and arity errors before handoff (so uncompilable test code never leaks downstream), and it MAY additionally smoke-run its own lightweight cases (`-run`-scoped to what it just wrote, no external resources, nothing heavy / e2e / concurrent) purely as private authoring feedback. That smoke-run is not a verdict — its result is not reported to the main agent and never substitutes for the authoritative run. testAgent must not run the full suite to certify a green verdict, must not run heavy / e2e / DB-backed / concurrent suites, and must not execute the mutation or injected-degradation manifests (implementationAgent runs those and returns KILLED/SURVIVED) — that keeps a test's author from being the sole judge of that test's result and keeps execution centralized.
+testAgent 编写和维护测试代码。它带有 `Bash`，作用范围限定为自我验证它**自己的**测试代码：它**必须**在交接前对自己的测试做编译 / 类型检查 / vet / lint，并修复语法、导入、类型和参数个数错误（这样无法编译的测试代码就绝不会流到下游）；它**可以**另外对自己刚写的轻量用例做冒烟运行（用 `-run` 限定在刚写的内容上，不依赖外部资源，不做任何重型 / e2e / 并发测试），这纯粹作为自己编写时的私下反馈。这种冒烟运行不是结论——其结果不报告给主 agent，也绝不替代权威运行。testAgent 不得运行完整测试套件来认证一个通过的结论，不得运行重型 / e2e / 依赖数据库 / 并发的测试套件，也不得执行变异清单或注入式降级清单（这些由 implementationAgent 运行并返回 KILLED/SURVIVED）——这样测试的作者就不会成为该测试结果的唯一评判者，执行也保持集中。
 
-reviewAgent reviews design, implementation, and tests. It must not leave any modified file as a deliverable. It MAY, however, run tests read-only and inject throwaway mutations to measure discriminating power — this workflow grants that boundary change explicitly (it is why `agents/review-agent.md` carries `Bash`). The conditions are hard: every injected edit is restored **from a backup copy taken before mutating**, verified per-file against that backup (not "`git status` clean", which a shared tree legitimately never is), and an unverifiable restoration is reported as an incident rather than swallowed. Never via `git checkout`/`git restore` — see `## Version Control` for why those destroy other agents' uncommitted work. The reason for the grant: a read-only review can check whether an argument is self-consistent but not whether its inputs were real, so auditing a report without re-deriving it co-signs the author's tool failures — and measured, reading alone caught none of the silently-empty assertions that mutation injection caught.
+reviewAgent 评审设计、实现和测试。它不得把任何被修改的文件留作交付物。不过，它**可以**以只读方式运行测试，并注入一次性的变异来衡量测试的区分能力——本工作流明确授予了这一边界变更（这就是 `agents/review-agent.md` 带有 `Bash` 的原因）。条件是硬性的：每一处注入的编辑都要**从变异前做好的备份副本**恢复，并逐文件对照该备份进行验证（而不是看"`git status` 干净"，共享工作树本来就不会干净），无法验证的恢复要作为事故报告，而不是悄悄吞掉。绝不通过 `git checkout`/`git restore` 恢复——原因见 `## 版本控制`：它们会毁掉其他 agent 的未提交工作。授予这一权限的理由是：只读评审能检查一个论证是否自洽，却无法检查它的输入是否真实，所以不重新推导就审核一份报告，等于为作者的工具故障联署背书——实测中，单靠阅读一条也没抓到那些由变异注入抓到的、悄无声息的空断言。
 
-Under this grant reviewAgent is a test-running lane like any other, so when it runs tests concurrently with an implementation lane it needs its own resource lease (§3.0.3) — never the lane's ports or test DB, or the two will silently probe each other's processes.
+在这一授权下，reviewAgent 和其他任何运行测试的并行通道一样，所以当它与某个实现通道并发运行测试时，需要有自己的资源租约（§3.0.3）——绝不能用那个通道的端口或测试数据库，否则两者会悄无声息地探测到对方的进程。
 
-If the platform cannot enforce these boundaries technically, enforce them procedurally by separating role outputs and clearly labeling which role is acting.
+如果平台无法从技术上强制这些边界，就从流程上强制：把各角色的输出分开，并清楚标注当前是哪个角色在行动。
 
-## Workflow
+## 工作流
 
-### 1. Start Task
+### 1. 启动任务
 
-1. Create or identify a task id.
-2. Create a task directory, preferably `.zyz-worker/tasks/<task-id>/`.
-3. Create a status file from `templates/task-status.md`, named `status.md` inside the task directory. This is the single mandatory overall task status file. The filename `status.md` is load-bearing: the watchdog layer resolves the overall status file as `<task-dir>/status.md`, so a differently-named file leaves L1/L3/L4 freshness enforcement silently inert (see `## Watchdog Enforcement`).
-4. Write the task id (a single line) into the pointer file `.zyz-worker/current-task` **under the session cwd** — the directory this conversation is running in, which is what the hooks receive as `cwd`. "Project root" is ambiguous here and has caused a real outage: `git rev-parse --show-toplevel` returns the *worktree* root inside a linked worktree, so a task run in a worktree created by the `git-worktree` skill (which places worktrees OUTSIDE the main checkout and does not cd into them) ends up with its pointer somewhere the session cwd is not inside.
-   - **If the task directory is not under the session cwd, the pointer's contents MUST be an ABSOLUTE path to the task directory.** A bare id (or a relative path) is resolved against the directory holding the pointer, so it cannot reach across trees.
-   - The resolver looks ONLY at that pointer (and at `$ZYZ_TASK_DIR` when an orchestrated spawn exported it). It deliberately does NOT search sibling git worktrees: an earlier fallback that did so attached a session to a concurrent session's task and drove authoritative-looking staleness alerts about a task this session did not own (issue #18). A missing pointer therefore fails deterministically — the watchdog stays silent — and the armed check below is what surfaces that.
-   - This pointer is what the plugin's watchdog hooks and monitor use to locate the active task; without a resolvable pointer the entire watchdog layer silently no-ops (see `## Watchdog Enforcement`).
-   - **Verify the layer actually armed.** After a few tool calls, use the read-only fixed-pack observer and confirm its authenticated `main_heartbeat_epoch` is present and advancing. Do not probe for or create a standalone main heartbeat inode: main heartbeat authority is the catalog PACK_HEADER. If the observer cannot verify it, the watchdog is inert: say so explicitly in the status file and to the user rather than proceeding as if protected — an unarmed watchdog is indistinguishable from a healthy quiet one, which is how a full task once ran with every layer inert and two dead subagents unreported.
-5. Record the task name, phase, known inputs, open questions, and current assumptions.
-6. Record the user's full, final goal in the status file `## Total Goal` so the overall target cannot drift later (see Total Goal Fidelity).
+1. 创建或确定一个任务 id。
+2. 创建任务目录，首选 `.zyz-worker/tasks/<task-id>/`。
+3. 基于 `templates/task-status.md` 创建状态文件，在任务目录中命名为 `status.md`。这是唯一必需的总任务状态文件。文件名 `status.md` 是承重的：watchdog 层把总状态文件解析为 `<task-dir>/status.md`，换个文件名会让 L1/L3/L4 的新鲜度强制悄无声息地失效（见 `## Watchdog 强制层`）。
+4. 把任务 id（单独一行）写入**会话 cwd 下**的指针文件 `.zyz-worker/current-task`——会话 cwd 就是本次对话运行所在的目录，也就是 hooks 收到的 `cwd`。"项目根目录"在这里含义不清，并且已经造成过一次真实故障：在链接 worktree 内，`git rev-parse --show-toplevel` 返回的是 *worktree* 的根目录，所以在 `git-worktree` skill 创建的 worktree 中运行的任务（该 skill 把 worktree 放在主检出目录**之外**，也不会 cd 进去），其指针最终会落在一个不包含会话 cwd 的地方。
+   - **如果任务目录不在会话 cwd 下，指针的内容必须是任务目录的绝对路径。** 裸 id（或相对路径）会相对于存放指针的目录来解析，因此无法跨目录树访问。
+   - 解析器**只**看这个指针（以及编排模式派生时导出的 `$ZYZ_TASK_DIR`）。它有意**不**搜索同级的 git worktree：早先一个这样做的兜底逻辑曾把一个会话挂到并发会话的任务上，并针对一个不属于本会话的任务发出看似权威的过期告警（issue #18）。因此缺少指针时会确定性地失败——watchdog 保持沉默——而下面的"确认已启用"检查就是用来发现这种情况的。
+   - 插件的 watchdog hooks 和 monitor 就是通过这个指针来定位当前活动任务的；没有可解析的指针，整个 watchdog 层会悄无声息地什么都不做（见 `## Watchdog 强制层`）。
+   - **确认该层确实已启用。** 在几次工具调用之后，用只读的 fixed-pack 观察器确认其经过认证的 `main_heartbeat_epoch` 存在并且在推进。不要去探测或创建独立的主心跳 inode：主心跳的权威来源是 catalog 的 PACK_HEADER。如果观察器无法验证它，就说明 watchdog 未生效：要在状态文件中和对用户明确说明，而不是当作受保护一样继续推进——一个未启用的 watchdog 与一个健康而安静的 watchdog 看起来毫无区别，曾经就有一整个任务在所有层都失效的情况下跑完，两个死掉的 subagent 都没有被报告。
+5. 记录任务名称、阶段、已知输入、待解问题和当前假设。
+6. 把用户完整的最终目标记入状态文件的 `## 总目标`，使总体目标之后无法漂移（见"总目标忠实度"）。
 
-### 2. Design
+### 2. 设计
 
-1. Work with the user to produce a Markdown design document from `templates/design-doc.md`. The main agent ORGANIZES here: it turns the user's described flow and structure into an executable spec — ordered steps, exact fields/signatures/paths, error cases, test points — and never introduces a module, layer, data flow, key algorithm, or architectural choice the user did not describe (see User Design Authority). Fill `## Quick Review` as part of producing the document, and keep it in step with the body on every later edit. Decide whether one document is enough or whether the design should be split into multiple focused documents (by domain, module, layer, or step). Prefer splitting when the task touches several domains/modules/layers, the Implementation Plan has many steps, or a single document would grow long enough to dilute model context. When splitting, create a short index document that lists and links every part, and reuse the template (in full or partial form) for each part. The design document's `## Testing Plan` is not a formality: design the actual test cases and flows THIS task needs from its real scenario. Unit, regression, and end-to-end (e2e) tests are a hard floor — plan concrete, scenario-specific cases for all three (omitting any one needs an explicit written reason and the user's agreement, never silence), and additionally judge from the requirement scenario whether pressure/stress tests are warranted. This emphasis exists because tasks have shipped with no e2e test at all, badly hurting delivery quality — do not let that recur.
-2. Ask the user about unclear requirements, constraints, non-goals, acceptance criteria, risky implementation details, and important tests. Beyond gaps, actively surface the four problem kinds in what the user DID describe — errors, contradictions, ambiguities, and implicit assumptions that may not hold (see User Design Authority) — and put each to the user as a decision. Never silently pick an interpretation, encode a shaky assumption as fact, or resolve a contradiction on your own.
-3. When the design draft is ready, use reviewAgent to review it, and in the same batch launch the cross-harness review (`--kind design`, see `## Cross-Harness Review`). On re-review iterations, also pass the design document's review-history file path so reviewAgent (and the cross-harness brief) can see prior rejection reasons.
-4. The main agent decides accept-or-reject for each review-agent finding based on the design and Goals, and for each cross-harness finding after independently verifying it (see `## Cross-Harness Review`). Do not present ordinary findings to the user — EXCEPT a finding that would change the user's design (a module, flow, interface, data structure, key algorithm, or architectural decision), or one that surfaces an error, contradiction, ambiguity, or shaky implicit assumption in the user's design: those are not the main agent's to adjudicate and go to the user with the options (see User Design Authority).
-5. Record rejected findings with reasons in the design document's review-history file (see Review History Files) and the status file `## Design Review > Rejected Suggestions`. Record design-document findings reviewAgent labeled `non-blocking:normal` in the same review-history file and in the status file `## Design Review > Non-Blocking Findings Recorded To Review History`. They are recorded rather than edited into the design body, and they do not hold back `no-changes-needed`. A non-blocking finding about the future behavior rather than the document goes to the residual-risk register (`## Review Convergence`); that includes every `non-blocking:contrived` one.
-6. Update the design document and status file; when a change touches anything `## Quick Review` describes, update that section in the SAME edit so the map never lags the spec. Apply an accepted finding that CORRECTS existing text by editing or deleting that text in place — never by appending an explanatory annotation next to it (see Design Document Edit Discipline); the reason for the change goes to the review-history file. An accepted finding that names something MISSING is fixed by adding the missing spec, and that growth is expected. If a finding implies a goal-level or acceptance-criteria-level change, escalate to the user instead of unilaterally rewriting Goals.
-7. Repeat review until the review point closes: reviewAgent reports zero blocking findings, every cross-harness finding of the round has a disposition with none accepted as blocking, and no user decision is pending. This is the closure condition in `## Review Convergence`; its convergence check runs at round 3 and every third round after.
-   This loop runs automatically without user input, apart from the design-change escalations in step 4; only step 8 below is a scheduled user touch.
-8. Wait for explicit final human approval before implementation. Point the user at `## Quick Review` — that section exists so this decision can be made without reading the whole spec — and confirm it is current before asking. The main agent MUST NOT proceed to §3 until the user has given **explicit user approval** — an affirmative, unambiguous go-ahead to enter implementation (a reply to a Goals/Acceptance-Criteria escalation during design is NOT such a go-ahead). On user timeout, silence, or absence, WAIT indefinitely and NEVER self-advance into implementation. The ONLY exception is an **explicit prior skip instruction**: an instruction that explicitly authorizes skipping THIS design→implementation approval (e.g. "design then implement and release directly", "skip approval"). Generic expressions of trust or autonomy ("work autonomously", "I trust you", "I'll be away") do NOT count, and a bare goal statement ("release a version") does NOT count. Before invoking the exception, record the verbatim skip instruction into the status file `## Design Review > Design Approval Record`; do not self-advance on an unrecorded exception.
+1. 与用户一起基于 `templates/design-doc.md` 产出一份 Markdown 设计文档。主 agent 在这里负责**组织**：它把用户描述的流程和结构转化为可执行的规格——有序的步骤、确切的字段/签名/路径、错误情形、测试点——绝不引入用户没有描述过的模块、层次、数据流、关键算法或架构选择（见"用户设计主导权"）。在产出文档的过程中填写 `## 快速审阅`，并在之后的每次编辑中让它与正文保持同步。决定一份文档是否足够，还是应把设计拆成多份聚焦的文档（按领域、模块、层次或步骤）。当任务涉及多个领域/模块/层次、实施计划步骤很多，或单份文档会长到稀释模型上下文时，优先拆分。拆分时，创建一份简短的索引文档列出并链接每一部分，并为每一部分复用模板（全部或部分）。设计文档的 `## 测试计划` 不是走形式：要根据**本**任务的真实场景，设计它实际需要的测试用例和流程。单元测试、回归测试和端到端（e2e）测试是硬性底线——三者都要规划具体的、针对场景的用例（省略其中任何一项都需要明确写出理由并征得用户同意，绝不能不声不响地省掉），此外还要根据需求场景判断是否需要压力/负载测试。之所以强调这一点，是因为曾有任务在完全没有 e2e 测试的情况下交付，严重损害了交付质量——不要让这种情况再次发生。
+2. 就不清楚的需求、约束、非目标、验收标准、有风险的实现细节和重要测试询问用户。除了缺口之外，还要在用户**确实**描述过的内容中主动找出四类问题——错误、矛盾、歧义和可能不成立的隐含假设（见"用户设计主导权"）——并把每一个都作为待决事项交给用户。绝不悄悄选一种理解、把站不住的假设当成事实写进去，或自行解决矛盾。
+3. 设计草稿就绪后，用 reviewAgent 评审它，并在同一批次中启动跨 harness 评审（`--kind design`，见 `## 跨 harness 交叉评审`）。在复审迭代中，还要传入设计文档的评审历史文件路径，让 reviewAgent（以及跨 harness 的简报）能看到之前的拒绝理由。
+4. 主 agent 根据设计和目标，对 review-agent 的每条发现做出接受或拒绝的决定；对每条跨 harness 发现，则在独立核实之后再做决定（见 `## 跨 harness 交叉评审`）。不要把普通发现呈给用户——**例外**是会改变用户设计的发现（模块、流程、接口、数据结构、关键算法或架构决定），或者揭示出用户设计中的错误、矛盾、歧义或站不住的隐含假设的发现：这些不归主 agent 裁决，要连同选项交给用户（见"用户设计主导权"）。
+5. 把被拒绝的发现连同理由记入设计文档的评审历史文件（见"评审历史文件"）和状态文件的 `## 设计评审 > 被拒绝的建议`。把 reviewAgent 标为 `non-blocking:normal` 的设计文档发现记入同一评审历史文件，以及状态文件的 `## 设计评审 > 记入评审历史的非阻断发现`。它们只做记录，不改进设计正文，也不妨碍 `no-changes-needed`。关于未来行为而非文档本身的非阻断发现，进入遗留风险清单（`## 评审收口`）；所有 `non-blocking:contrived` 发现都包括在内。
+6. 更新设计文档和状态文件；当某处改动涉及 `## 快速审阅` 所描述的任何内容时，在**同一次**编辑中更新该节，使这张地图永远不落后于规格。应用一条纠正已有文字的已接受发现时，直接就地修改或删除那段文字——绝不在旁边追加解释性批注（见"设计文档编辑纪律"）；改动的理由写进评审历史文件。指出缺失内容的已接受发现，通过补上缺失的规格来修复，这种增长是预期之中的。如果某条发现意味着目标层面或验收标准层面的改动，就升级给用户，而不是擅自重写目标。
+7. 反复评审，直到该评审点关闭：reviewAgent 报告零条阻断发现，本轮每条跨 harness 发现都有了处置且没有一条被接受为阻断，并且没有待决的用户决定。这就是 `## 评审收口` 中的关闭条件；其中的收敛检查在第 3 轮以及此后每满三轮时执行。
+   除了第 4 步中的设计变更升级之外，这个循环无需用户输入，自动运行；只有下面的第 8 步是预定的用户介入点。
+8. 在实现之前等待明确的最终人工批准。引导用户去看 `## 快速审阅`——这一节存在的意义，就是让用户无需通读整份规格就能做出这个决定——并在提问前确认它是最新的。在用户给出**明确的用户批准**——一个肯定的、毫不含糊的进入实现的许可（设计期间对目标/验收标准升级的答复**不**算这种许可）——之前，主 agent **不得**进入 §3。遇到用户超时、沉默或不在场时，无限期**等待**，**绝不**自行推进到实现。**唯一**的例外是**事先明确的跳过指令**：一条明确授权跳过**这一次**设计→实现批准的指令（例如"设计完直接实现并发布"、"跳过审批"）。泛泛表达信任或自主（"自主工作"、"我信任你"、"我要离开一阵"）**不**算，单纯陈述目标（"发布一个版本"）也**不**算。在援引该例外之前，把这条跳过指令原文记入状态文件的 `## 设计评审 > 设计批准记录`；不得凭一条未记录的例外自行推进。
 
-Do not enter implementation until both reviewAgent and the user approve the design. Never self-advance from design to implementation on timeout, silence, or user absence — proceed only on explicit user approval, or when the user gave an explicit prior instruction to skip this gate that has been recorded verbatim in the status file `## Design Review > Design Approval Record`.
+在 reviewAgent 和用户都批准设计之前，不要进入实现。绝不因超时、沉默或用户不在场而从设计自行推进到实现——只有在获得明确的用户批准，或者用户事先给出过跳过这道闸门的明确指令、且该指令已原文记录在状态文件的 `## 设计评审 > 设计批准记录` 中时，才能继续。
 
-### 3. Implementation And Testing
+### 3. 实现与测试
 
-#### 3.0 Decide whether to split
+#### 3.0 决定是否拆分
 
-The main agent decides on its own whether to split the task into SubTasks. Splitting is optional; do not ask the user. Consider splitting when:
+是否把任务拆成 SubTask，由主 agent 自行决定。拆分是可选的；不要问用户。出现以下情况时考虑拆分：
 
-- the change spans 3 or more directories or layers;
-- the Implementation Plan lists 4 or more steps;
-- the task includes independently verifiable sub-capabilities.
+- 改动跨越 3 个或更多目录或层次；
+- 实施计划列出了 4 个或更多步骤；
+- 任务包含可以独立验证的子能力。
 
-Not splitting is also valid for simple tasks.
+对简单任务而言，不拆分同样可行。
 
-#### 3.0.0 Implement the design document exactly
+#### 3.0.0 严格按设计文档实现
 
-The approved design document is the specification, not a suggestion. Every implementation-phase dispatch carries this: build what the design says, complete and unaltered.
+已批准的设计文档是规格，而不是建议。每一次实现阶段的派发都带着这一要求：完整、不加改动地构建设计所说的内容。
 
-- **Nothing dropped.** Every module, step, field, error case, interface, and acceptance criterion the design names gets implemented. A design element that turns out to be impossible or wrong as written is escalated through User Design Authority — not silently skipped, not deferred to a "later" that never comes, not replaced with a TODO.
-- **Nothing contradicted.** No substituted mechanism or swapped-out key algorithm, no "equivalent but simpler" structure, no additional module or abstraction the design did not ask for, no reordered flow. Latitude that looks harmless is still a design change and needs the user's prior agreement.
-- **Deviations go through the user, before the code.** Any role that believes the design needs to change states the case to the main agent, which puts it to the user and waits (see User Design Authority). Implement-then-report is a violation even when the result is better.
-- **review-agent audits conformance element by element.** Its design-conformance dimension checks both directions — missing design elements AND unrequested additions — and reports either as a blocking finding with the design section and the `file:line` where the divergence is (or is absent). "Looks consistent with the design" is not an answer; the report states what it checked against what.
+- **不遗漏。** 设计中提到的每个模块、步骤、字段、错误情形、接口和验收标准都要实现。如果某个设计元素按所写方式被证明不可行或是错的，就按"用户设计主导权"升级给用户——不能悄悄跳过，不能推迟到一个永远不会到来的"以后"，也不能用一个 TODO 来替代。
+- **不违背。** 不替换机制，不换掉关键算法，不用"等价但更简单"的结构，不加设计没要求的额外模块或抽象，不调整流程顺序。看似无害的自由发挥仍然是设计变更，需要事先征得用户同意。
+- **偏离要先经过用户，再写代码。** 任何认为设计需要修改的角色，都要向主 agent 陈述理由，由主 agent 呈给用户并等待（见"用户设计主导权"）。先实现后报告是违规，即使结果更好也一样。
+- **review-agent 逐元素审核符合性。** 它的设计符合性维度双向检查——缺失的设计元素**以及**未被要求的添加——并把两者都报告为阻断发现，附上设计章节和出现偏离（或缺失）之处的 `file:line`。"看起来与设计一致"不算答案；报告要说明它拿什么对照了什么。
 
-#### 3.0.1 Implementation and testing run in parallel by default
+#### 3.0.1 实现与测试默认并行
 
-In most cases implementation-agent and test-agent can work at the same time: both derive their work from the approved design document, so test-agent does not need to wait for the implementation to exist before writing tests. Dispatch them together (in a single batch) unless the design makes the tests depend on a concrete implementation detail that is not yet settled. Their outputs still converge at the test-run step (implementation-agent runs tests after both finish).
+大多数情况下，implementation-agent 和 test-agent 可以同时工作：两者都从已批准的设计文档出发，所以 test-agent 不需要等实现写出来才开始写测试。除非设计让测试依赖于某个尚未确定的具体实现细节，否则就把它们一起派发（放在同一批次中）。它们的产出仍然在测试运行这一步汇合（两者都完成后由 implementation-agent 运行测试）。
 
-#### 3.0.2 Maximize parallelism: schedule by the dependency graph, not the list order
+#### 3.0.2 最大化并行：按依赖图调度，而不是按列表顺序
 
-This is a general scheduling discipline, not limited to the implementation/test pair. At every dispatch point — before sending any subagent, review, or research request — the main agent must first ask: *of all the work that is not yet done, which items have no unmet dependency on each other right now?* Send every such ready, independent item in a single batch (one message with multiple tool calls), then wait.
+这是一条通用的调度纪律，不限于实现/测试这一对。在每个派发点——发送任何 subagent、评审或调研请求之前——主 agent 都必须先问：*在所有尚未完成的工作中，此刻哪些事项彼此之间没有未满足的依赖？* 把所有这样就绪且相互独立的事项放在一个批次中发出（一条消息包含多个工具调用），然后等待。
 
-The common failure this prevents: treating the order things are written down (SubTask 1, 2, 3; step a, b, c) as if it were a dependency order, and so doing them one at a time. List order is not dependency order. Two SubTasks that both depend only on a third are independent of *each other* and must be dispatched together once that third is done — even though the list shows them sequentially. The same holds for multiple independent reviews, multiple research lookups, or any fan-out of work.
+这条纪律防止的常见失败是：把事情写下来的顺序（SubTask 1、2、3；步骤 a、b、c）当成依赖顺序，于是一次只做一件。列表顺序不等于依赖顺序。两个都只依赖第三个的 SubTask，*彼此之间*是独立的，一旦第三个完成就必须一起派发——即使列表上它们是先后排列的。多个相互独立的评审、多个调研查询，或任何扇出式的工作，也都是如此。
 
-Concretely:
+具体来说：
 
-- Derive dependencies from the design's Implementation Plan and Files To Change (who reads/writes whose output), never from the numbering.
-- When a blocking item completes, re-scan *all* remaining work and release every item it was the last blocker for — in one batch, not one at a time.
-- Run items sequentially only when there is a real data dependency (item B consumes item A's concrete output). Record that reason if it is not obvious.
-- A shared FILE is not by itself a serialization reason. Assembly points (`main.go` wiring, service facades) are naturally appended to by several parallel SubTasks; serializing on them collapses genuinely independent work into a chain. Instead, declare the hotspot at dispatch time: list the shared files and give each lane its own insertion region; each agent appends only within its region and never reorders others' code. Serialize only when two items would REWRITE the same logic, not merely touch the same file.
-- Parallelism is a scheduling technique only; it never relaxes Total Goal Fidelity, the per-item review/test gates, or the dependency correctness below.
+- 依赖关系要从设计的实施计划和改动文件中推导（谁读/写谁的输出），绝不从编号推导。
+- 一个阻塞事项完成时，重新扫描*全部*剩余工作，把以它为最后一个阻塞项的事项全部释放——放在一个批次中，而不是一次一个。
+- 只有存在真实的数据依赖时（事项 B 消费事项 A 的具体输出），才顺序执行。如果理由不明显，就把它记录下来。
+- 共享同一个**文件**本身不是串行化的理由。装配点（`main.go` 的组装、服务门面）天然会被多个并行 SubTask 追加内容；在它们上面串行化，会把真正独立的工作压成一条链。正确的做法是在派发时声明热点：列出共享文件，给每个并行通道分配自己的插入区域；每个 agent 只在自己的区域内追加，绝不重排别人的代码。只有当两个事项会**重写**同一段逻辑时才串行化，仅仅碰到同一个文件则不必。
+- 并行只是一种调度技巧；它绝不放宽"总目标忠实度"、每个事项的评审/测试关卡，或下文所述的依赖正确性。
 
-#### 3.0.3 Parallel resource leases (mandatory at ≥2 concurrent lanes)
+#### 3.0.3 并行资源租约（≥2 个并发并行通道时强制）
 
-Under parallel execution, "green" is a claim about an environment, and shared environments make both false reds and — worse — false greens. Two measured failure classes: parallel lanes truncating shared dev-DB tables produce waves of spurious failures that look like real regressions (deadlocks, vanishing rows, "green → 3 red → green" on the same command); and a port collision does not even error — a wrong port env name is silently ignored, the process binds the default port, and the probe happily tests SOMEONE ELSE'S server (a DB collision fails loudly; a port collision fails silently).
+在并行执行下，"通过"是对某个环境的断言，而共享环境既会造成假失败，更糟的是还会造成假通过。实测到的两类失败：并行通道截断共享开发数据库的表，会产生一波波看起来像真实回归的虚假失败（死锁、行消失、同一条命令"通过 → 3 个失败 → 通过"）；而端口冲突甚至不会报错——写错的端口环境变量名会被悄悄忽略，进程绑定到默认端口，探测请求高高兴兴地测试了**别人的**服务器（数据库冲突会大声失败；端口冲突则悄无声息地失败）。
 
-Before dispatching ≥2 concurrent lanes, the main agent assigns leases and records them in the status file `## Parallel Resource Leases`:
+在派发 ≥2 个并发并行通道之前，主 agent 分配租约，并记入状态文件的 `## 并行资源租约`：
 
-- Each lane gets an exclusive FULL port group (HTTP / gRPC / metrics / pprof — pprof is the most-missed) and its own test database.
-- Sharing a dev DB across lanes is prohibited; full-table cleanup (TRUNCATE and friends) against any shared DB is prohibited.
-- After starting a service, the lane must positively confirm it is talking to its own instance (probe an identifying endpoint), not assume.
-- Exactly one lane per batch owns regenerating shared build artifacts (bundle/dist); generated-file churn from a non-owner lane turns formatting checks red for reasons unrelated to any code change.
-- **Mutation execution does not run concurrently with other lanes' edits to the same files.** A lane that temporarily modifies production files (mutation testing, large-scale refactor probes) runs while no other lane has uncommitted work in the files it will touch — its revert step is the single most dangerous write on a shared tree (see Version Control: the checkout accident class). Backup-copy discipline is mandatory. Do NOT reach for `isolation: worktree` as the default escape hatch: a subagent spawned into a fresh worktree usually lands outside the session's permitted directories and gets its writes denied, so it cannot work (see `prompts/main-agent.md` — dispatch subagents in your own working directory). Use worktree isolation only after confirming the worktree path is permitted.
+- 每个并行通道获得一组独占的**完整**端口（HTTP / gRPC / metrics / pprof——pprof 最容易漏掉），以及自己的测试数据库。
+- 禁止多个并行通道共享开发数据库；禁止对任何共享数据库做全表清理（TRUNCATE 之类）。
+- 启动服务后，并行通道必须正面确认它连的是自己的实例（探测一个能识别身份的端点），而不是想当然。
+- 每个批次恰好由一个并行通道负责重新生成共享构建产物（bundle/dist）；非负责通道造成的生成文件变动，会让格式检查因为与任何代码改动都无关的原因而失败。
+- **变异执行不与其他通道对同一批文件的编辑并发进行。** 一个会临时修改生产文件的并行通道（变异测试、大规模重构探测），要在没有其他通道在它将要碰到的文件中有未提交工作时运行——它的回退步骤是共享工作树上最危险的一次写入（见"版本控制"：checkout 事故那一类）。备份副本纪律是强制的。**不要**把 `isolation: worktree` 当作默认的逃生口：派生到全新 worktree 中的 subagent 通常落在会话允许的目录之外，写入会被拒绝，因此无法工作（见 `prompts/main-agent.md`——在你自己的工作目录中派发 subagent）。只有在确认 worktree 路径被允许之后，才使用 worktree 隔离。
 
-#### 3.A No-split path
+#### 3.A 不拆分路径
 
-When the task is not split, run a single iteration:
+任务不拆分时，执行单次迭代：
 
-1. implementation-agent implements the engineering changes, and test-agent writes or updates tests from the design document. Run these two in parallel by default (see §3.0.1).
-2. implementation-agent runs the tests, and executes test-agent's mutation manifest (each coverage claim's mutation applied → named cases red → restored byte-identical).
-3. If tests fail, implementation-agent attributes the failure FIRST — change-surface causality, then tooling, then concurrent edits/environment, then real regression (see its `## Test Failure Handling`) — and only then fixes: implementation-agent fixes implementation bugs and test-agent fixes invalid tests. The parallel-execution case (someone else's in-flight edit) is a real third bucket, not a variant of "invalid test".
-4. After tests pass, obtain implementation-agent's workspace-frozen declaration, record it in the status file, then review-agent reviews implementation and tests, with the cross-harness review (`--kind implementation`) launched in the same batch. Each role decides accept-or-reject for findings affecting its artifact — cross-harness findings only after independent verification.
-5. Repeat 2-4 until tests pass (with mutations killed), and the review point closes (the closure condition in `## Review Convergence`).
+1. implementation-agent 实现工程改动，test-agent 依据设计文档编写或更新测试。这两者默认并行（见 §3.0.1）。
+2. implementation-agent 运行测试，并执行 test-agent 的变异清单（每条覆盖声明对应的变异施加后 → 指定的用例变红 → 恢复后逐字节一致）。
+3. 如果测试失败，implementation-agent **先**归因——先看改动面因果关系，再看工具，再看并发编辑/环境，最后才是真正的回归（见其 `## 测试失败处理`）——然后才修复：implementation-agent 修复实现缺陷，test-agent 修复无效测试。并行执行的情形（他人进行中的编辑）是真实存在的第三类，而不是"无效测试"的一个变体。
+4. 测试通过后，取得 implementation-agent 的工作区冻结声明并记入状态文件，然后由 review-agent 评审实现和测试，同时在同一批次中启动跨 harness 评审（`--kind implementation`）。每个角色对影响其产物的发现做出接受或拒绝的决定——跨 harness 发现须先经独立核实。
+5. 重复第 2–4 步，直到测试通过（且变异全部被杀死），并且评审点关闭（`## 评审收口` 中的关闭条件）。
 
-Then proceed to §3.C aggregate testing and aggregate review. Per-iteration test runs (§3.A step 2 / §3.B step 2) are not the aggregate gate; before delivery every category must be registered ran-or-skipped at §3.C and verified at §4.
+然后进入 §3.C 的汇总测试和汇总评审。每轮迭代中的测试运行（§3.A 第 2 步 / §3.B 第 2 步）不是汇总关卡；交付前，每个类别都必须在 §3.C 登记为已运行或已跳过，并在 §4 核实。
 
-#### 3.B Split path
+#### 3.B 拆分路径
 
-When split, the main agent records SubTasks in the status file `## SubTasks` section. For each SubTask:
+拆分时，主 agent 把 SubTask 记入状态文件的 `## SubTasks` 小节。对每个 SubTask：
 
-1. implementation-agent implements that SubTask's engineering changes, and test-agent writes or updates tests for that SubTask. Run these two in parallel by default (see §3.0.1).
-2. implementation-agent runs that SubTask's tests, and executes test-agent's mutation manifest for the SubTask (each coverage claim's mutation applied → named cases red → restored byte-identical).
-3. If tests fail, implementation-agent attributes first (change-surface → tooling → concurrent edits → real regression, per its `## Test Failure Handling`) and the responsible role fixes; loop until tests pass.
-3.5. **Freeze.** Before dispatching review, obtain that lane's implementation-agent workspace-frozen declaration and record it (with the frozen file set) in the status file; the reviewed files must not change during the review. review-agent records mtimes/hashes at start and re-checks at finish — a mid-review change voids the review, which is reported for re-dispatch, not patched. Without this, in parallel execution the review's conclusion may describe a tree that no longer exists.
-4. review-agent reviews the SubTask's implementation and tests, with the cross-harness review (`--kind implementation`, SubTask id in the brief and label) launched in the same batch. Each role decides accept-or-reject — cross-harness findings only after independent verification — and records rejections (prefixed with SubTask ID) in `## Implementation Review > Rejected Suggestions` and cross-harness dispositions in `## Cross-Harness Review`.
-5. Loop 2-4 until tests pass (with mutations killed) and this SubTask's review point closes (the closure condition in `## Review Convergence`, including its round-3 convergence check).
-6. Set the SubTask's `Coded`, `Tested`, `Reviewed` flags to true. **Flipping any one of these bits is not complete until the MAIN status file is written — the write is part of the transition, not a follow-up.** Do not batch several flips and reconcile later, and do not update only the SubTask's own file: a main file that says "not done" while `subtasks/*.md` say "done" is the single most expensive failure mode for a recovering session, because the main file is the first thing it reads. Observed: a 9-SubTask task whose main file froze at ST1 while all nine were implemented, tested, reviewed and pushed — recovery misjudged the interruption point and had to reconstruct it from `git log` plus transcripts, and treated every status conclusion as untrustworthy.
-   - `Coded: true` when implementation is complete.
-   - `Tested: true` when this SubTask's tests pass **and every mechanism claimed as covered has a recorded killed mutation** (from the executed manifest). Green alone is "ran", not "tested" — measured reality: the no-op assertions that green hides are found by mutation injection and not by review.
-   - `Reviewed: true` when this SubTask's review point has closed (the closure condition in `## Review Convergence`) and every non-blocking finding is dispositioned (landed, or recorded in the review-history file / residual-risk register); rejected findings are allowed if reasons are recorded — AND that review registered every coverage dimension (§3.C step 2) AND every cross-harness finding for this SubTask has a disposition (or the cross-harness outcome — none / failed / timeout — is recorded). A review whose dimensions are unregistered — for example one that only reported its worst few findings — does not satisfy this flag. Like the per-iteration test runs, this per-SubTask review is not the aggregate registration gate; §3.C and §4 still apply.
-7. Update the overall task status file (and this SubTask's status file, if one exists) to reflect the completed SubTask before moving on. Do not leave the progress only in the conversation.
-8. After a SubTask is complete, autonomously create one git commit for that SubTask's changes (one commit per completed SubTask). See Version Control — commit and push without asking, and never let a commit or push failure interrupt the task. **Exception — shared assembly files:** when a batch of parallel SubTasks all append to shared wiring files and per-SubTask commits would create commits that DO NOT COMPILE (one SubTask's wiring without the sibling's), commit the smallest compilable unit instead: one commit covering those SubTasks, its message listing each SubTask's scope, and the deviation recorded in the status file. "One SubTask, one commit" is a readability convention; "every commit compiles" is a hard constraint (bisect, CI, and rollback all depend on it).
+1. implementation-agent 实现该 SubTask 的工程改动，test-agent 为该 SubTask 编写或更新测试。这两者默认并行（见 §3.0.1）。
+2. implementation-agent 运行该 SubTask 的测试，并执行 test-agent 为该 SubTask 写的变异清单（每条覆盖声明对应的变异施加后 → 指定的用例变红 → 恢复后逐字节一致）。
+3. 如果测试失败，implementation-agent 先归因（改动面 → 工具 → 并发编辑 → 真正的回归，按其 `## 测试失败处理`），由负责的角色修复；循环直到测试通过。
+3.5. **冻结。** 在派发评审之前，取得该并行通道 implementation-agent 的工作区冻结声明，并（连同冻结文件集）记入状态文件；评审期间被评审的文件不得改变。review-agent 在开始时记录 mtime/哈希，结束时再次检查——评审中途发生改动会使该次评审作废，要报告并重新派发，而不是打补丁。没有这一步，在并行执行下，评审结论描述的可能是一棵已经不存在的树。
+4. review-agent 评审该 SubTask 的实现和测试，同时在同一批次中启动跨 harness 评审（`--kind implementation`，在简报和标签中带上 SubTask id）。每个角色做出接受或拒绝的决定——跨 harness 发现须先经独立核实——把拒绝（加上 SubTask ID 前缀）记入 `## 实现评审 > 被拒绝的建议`，把跨 harness 处置记入 `## 跨 harness 交叉评审`。
+5. 循环第 2–4 步，直到测试通过（且变异全部被杀死），并且该 SubTask 的评审点关闭（`## 评审收口` 中的关闭条件，包括其第 3 轮的收敛检查）。
+6. 把该 SubTask 的 `Coded`、`Tested`、`Reviewed` 标志置为 true。**翻转其中任何一位，都要等到写入了主状态文件才算完成——这次写入是状态转换的一部分，而不是事后的补充。** 不要攒着几次翻转稍后再统一对账，也不要只更新 SubTask 自己的文件：主文件写着"未完成"而 `subtasks/*.md` 写着"已完成"，对一个正在恢复的会话来说是代价最高的失败模式，因为主文件是它最先读取的东西。实际观察到：一个有 9 个 SubTask 的任务，主文件停在了 ST1，而九个 SubTask 其实都已实现、测试、评审并推送——恢复时误判了中断点，只能根据 `git log` 加会话记录重建现场，并且把每一条状态结论都视为不可信。
+   - 实现完成时 `Coded: true`。
+   - 该 SubTask 的测试通过，**并且每个被声称已覆盖的机制都有一条已记录的被杀死变异**（来自已执行的清单）时，`Tested: true`。只是变绿算"跑过"，不算"测过"——实测的现实是：被绿色掩盖的空转断言，是靠变异注入发现的，而不是靠评审。
+   - 该 SubTask 的评审点已关闭（`## 评审收口` 中的关闭条件），并且每条非阻断发现都已有处置（已落地，或已记入评审历史文件 / 遗留风险清单）时，`Reviewed: true`；被拒绝的发现只要记录了理由就允许存在——**并且**该次评审登记了每个覆盖维度（§3.C 第 2 步），**并且**该 SubTask 的每条跨 harness 发现都有了处置（或者已记录跨 harness 的结果——无 / 失败 / 超时）。维度未登记的评审——例如只报告了最严重几条发现的评审——不满足这个标志。和每轮迭代中的测试运行一样，这种按 SubTask 进行的评审不是汇总登记关卡；§3.C 和 §4 依然适用。
+7. 在继续之前，更新总任务状态文件（以及该 SubTask 的状态文件，如有），反映该 SubTask 已完成。不要把进度只留在对话里。
+8. 一个 SubTask 完成后，为该 SubTask 的改动自主创建一次 git 提交（每完成一个 SubTask 一次提交）。见"版本控制"——不经询问就提交和推送，绝不让提交或推送失败中断任务。**例外——共享装配文件：** 当一批并行 SubTask 都往共享的组装文件里追加内容，而按 SubTask 分别提交会产生**无法编译**的提交（只有一个 SubTask 的组装代码，缺了兄弟 SubTask 的）时，改为提交最小的可编译单元：一次提交覆盖这些 SubTask，提交信息中列出每个 SubTask 的范围，并把这一偏离记入状态文件。"一个 SubTask 一次提交"是为了可读性的约定；"每次提交都能编译"是硬性约束（bisect、CI 和回滚都依赖于它）。
 
-Do not start SubTask N+1 until SubTask N has all three flags true, unless the main agent records SubTask N as "blocked, deferred" with all of the following:
+在 SubTask N 的三个标志都为 true 之前，不要开始 SubTask N+1，除非主 agent 把 SubTask N 记为"阻塞，推迟"，并同时具备以下全部条件：
 
-- a written rationale showing no later SubTask has a static dependency on SubTask N's code path (per the design's Implementation Plan and Files To Change);
-- an entry added to `## Progress > Blocked` and the SubTask's `Notes`.
+- 一份书面理由，说明后续没有任何 SubTask 对 SubTask N 的代码路径存在静态依赖（依据设计的实施计划和改动文件）；
+- 在 `## 进度 > 阻塞` 和该 SubTask 的 `备注` 中添加了一条记录。
 
-SubTasks are scheduled by their dependency graph, not by their list order (see §3.0.2). Dispatch independent SubTasks — those with no unmet dependency on each other — together in one batch. The dependency-correctness rule above still holds for each chain: do not start a SubTask until the SubTasks it actually depends on have all three flags true. So in a typical fan-out where ST2 and ST3 both depend only on ST1, run ST1 first, then dispatch ST2 and ST3 in parallel once ST1 is done — do not serialize ST2 then ST3 just because the list numbers them in order. Record a real data dependency in `## SubTasks > Notes` when it forces two SubTasks to run sequentially; a shared assembly file is declared as a hotspot with per-lane insertion regions (§3.0.2), not treated as a dependency.
+SubTask 按依赖图调度，而不是按列表顺序（见 §3.0.2）。把相互独立的 SubTask——彼此之间没有未满足依赖的那些——放在一个批次中一起派发。上面的依赖正确性规则对每条依赖链仍然成立：在一个 SubTask 实际依赖的那些 SubTask 的三个标志都为 true 之前，不要开始它。所以在 ST2 和 ST3 都只依赖 ST1 的典型扇出场景中，先运行 ST1，等 ST1 完成后并行派发 ST2 和 ST3——不要只因为列表按顺序编号，就先 ST2 后 ST3 地串行执行。当真实的数据依赖迫使两个 SubTask 顺序执行时，把它记入 `## SubTasks > 备注`；共享装配文件要声明为热点并为每个并行通道划分插入区域（§3.0.2），而不是当作依赖处理。
 
-**The implementation phase runs to completion autonomously — no per-SubTask user approval.** Once the design→implementation gate (§2 step 8) has been passed, finishing one SubTask is not a checkpoint to ask the user whether to continue. As soon as a SubTask's three flags are true (or it is recorded blocked-and-deferred), the main agent immediately dispatches the next ready SubTask(s) and keeps going until every SubTask is done and the overall Total Goal is met. The rule "do not start SubTask N+1 until SubTask N has all three flags true" is about dependency correctness, NOT user approval — it never means pause and ask the user between SubTasks. Stop mid-implementation ONLY for a genuine blocking issue from `## Automatic Execution Policy` (a role wanting to change the user's design, data loss / irreversible change, a decision contradicting Goals or Acceptance Criteria, or a true blocker); absent one, SubTasks chain through without a user touch.
+**实现阶段自主运行到完成——不需要每个 SubTask 都经用户批准。** 一旦通过了设计→实现闸门（§2 第 8 步），完成一个 SubTask 就不是询问用户是否继续的检查点。一个 SubTask 的三个标志都为 true（或已记录为阻塞并推迟）后，主 agent 立即派发下一个（或下一批）就绪的 SubTask，一直推进到所有 SubTask 完成、整体总目标达成为止。"在 SubTask N 的三个标志都为 true 之前不要开始 SubTask N+1"这条规则关乎依赖正确性，**而不是**用户批准——它从来不意味着在 SubTask 之间停下来问用户。**只有**遇到 `## 自动执行策略` 中列出的真正阻断问题时（某个角色想修改用户的设计、数据丢失 / 不可逆变更、与目标或验收标准相矛盾的决定，或真正的阻塞），才在实现中途停下；没有这类问题时，SubTask 一个接一个地推进，无需用户介入。
 
-#### 3.C Aggregate testing and aggregate review
+#### 3.C 汇总测试与汇总评审
 
-When all SubTasks (or the single no-split iteration) are complete, run:
+所有 SubTask（或不拆分时的单次迭代）都完成后，执行：
 
-1. Aggregate testing by implementation-agent must account for every category the design's `## Testing Plan` calls for — the standing set is unit tests, end-to-end tests, regression tests (plus pressure tests when the design's `## Risks` calls out performance or capacity risk), but the Testing Plan's own categories are authoritative: a category the user named (frontend tests, per-SDK e2e, …) gets its own registration line rather than being squeezed into the nearest standing slot, and each registered category carries a one-line note of that layer's structural coverage ceiling. For each category, record it in the status file `## Final Aggregate Testing` per-category checklist as either `ran` (with its result) or `skipped` (with a non-empty reason). This is a registration requirement, not a "must run all" requirement: a cost-bearing category may be skipped, but it must never be silently omitted. A fixed enumeration would let a user-named, explicitly-not-skippable category pass the delivery gate silently just because the template had no slot for it.
-2. Aggregate review by review-agent across all SubTasks for consistency, contracts, and regression. Review coverage is registered per dimension exactly as test categories are: **design conformance, correctness, test quality, regression risk**, plus one dimension per risk the design's `## Risks` calls out. Each dimension is registered as `covered` or `not-covered: <reason>` in the review report's `## Coverage Dimensions` section and mirrored into the status file `## Final Aggregate Review`. A review with an unregistered dimension is NOT closed, whatever verdict it reports — this is what prevents a review that only reported its worst few findings from passing as complete. Launch the cross-harness review (`--kind aggregate`) in the same batch. Each role decides accept-or-reject for findings affecting its artifact — cross-harness findings only after independent verification; rejections recorded as in §3.B. Record the verdict in the status file `## Final Aggregate Review`.
-3. Loop aggregate test and aggregate review until both converge (for the review: `## Review Convergence`).
+1. implementation-agent 做的汇总测试，必须涵盖设计的 `## 测试计划` 要求的每一个类别——常设集合是单元测试、端到端测试、回归测试（当设计的 `## 风险` 指出性能或容量风险时还要加上压力测试），但以测试计划自身列出的类别为准：用户点名的类别（前端测试、按 SDK 划分的 e2e……）要有自己的登记行，而不是被塞进最接近的常设类别里；每个登记的类别都附一行说明，写明该层在结构上的覆盖上限。对每个类别，在状态文件 `## 最终汇总测试` 的逐类别清单中，将其记为 `ran`（附结果）或 `skipped`（附非空理由）。这是一项登记要求，而不是"必须全部运行"的要求：有成本的类别可以跳过，但绝不能被悄悄省略。如果用固定的枚举，那么一个用户点名、明确不可跳过的类别，就可能仅仅因为模板里没有它的位置而悄无声息地通过交付关卡。
+2. review-agent 跨所有 SubTask 做汇总评审，检查一致性、契约和回归。评审覆盖与测试类别一样按维度登记：**设计符合性、正确性、测试质量、回归风险**，再加上设计的 `## 风险` 中指出的每项风险各一个维度。每个维度在评审报告的 `## 覆盖维度` 小节中登记为 `covered` 或 `not-covered: <reason>`，并同步到状态文件的 `## 最终汇总评审`。有未登记维度的评审**不算**关闭，无论它给出什么结论——正是这一点，防止一个只报告了最严重几条发现的评审被当作完整评审通过。在同一批次中启动跨 harness 评审（`--kind aggregate`）。每个角色对影响其产物的发现做出接受或拒绝的决定——跨 harness 发现须先经独立核实；拒绝按 §3.B 的方式记录。把结论记入状态文件的 `## 最终汇总评审`。
+3. 循环进行汇总测试和汇总评审，直到两者都收敛（评审方面按 `## 评审收口`）。
 
-The final report's `## Tests` section must enumerate the aggregate categories actually executed — the same Testing-Plan-derived list registered at §3.C step 1 (unit / e2e / regression / pressure are the standing examples; a user-named category gets its own line), each with a one-line note of that layer's structural coverage ceiling. The final report's `## Review Result` section must record the aggregate review verdict separately from per-SubTask verdicts when SubTasks were used.
+最终报告的 `## 测试结果` 小节必须列举实际执行过的汇总类别——即 §3.C 第 1 步登记的、源自测试计划的同一份列表（单元 / e2e / 回归 / 压力是常设的例子；用户点名的类别各占一行），每个类别附一行说明，写明该层在结构上的覆盖上限。使用了 SubTask 时，最终报告的 `## 评审结果` 小节必须把汇总评审的结论与各 SubTask 的结论分开记录。
 
-### 4. Deliver
+### 4. 交付
 
-1. Verify the final output against the recorded Total Goal (design `## Goals` and status `## Total Goal`). Confirm nothing from the user's stated target was silently narrowed, deferred, or replaced with a placeholder. If any gap remains, either close it or escalate to the user — do not deliver a reduced version as final.
-2. Verify `## Final Aggregate Testing` (populated at §3.C) registers **every required category** (the design `## Testing Plan`'s categories — at minimum unit / e2e / regression, plus pressure when `## Risks` demands it, plus any user-named category) as either `ran` (with result) or `skipped` (with a non-empty reason), each carrying its one-line structural-coverage-ceiling note. The ceiling matters because same-named layers are not substitutes: frontend unit tests and browser e2e have opposite structural limits (one cannot reach real backend contracts, the other cannot enumerate precision cases), so "we did e2e" never covers what the unit layer owed. If any required category is unregistered, do not deliver — run it or record an explicit skip reason first. A cost-bearing test (e.g. e2e consuming API quota) may be skipped, but the reason must be recorded; in orchestrated or standalone mode, ask the user before skipping a cost-bearing test when feasible — never silently omit a category.
-3. Verify `## Final Aggregate Review` registers **every coverage dimension** (design conformance / correctness / test quality / regression risk; plus one per risk `## Risks` calls out) as either `covered` or `not-covered` with a non-empty reason. If any dimension is unregistered, do not deliver — get it covered or record an explicit reason first. Same contract as the testing gate above: a dimension may go uncovered for a stated reason, but it must never be silently omitted. Also check `## Restart And Recovery Notes` for any staged delivery whose later installments never arrived; an outstanding installment is an uncovered dimension, not a completed one. Likewise check `## Cross-Harness Review`: every review point records either a disposition for each cross-harness finding or the reviewer outcome (none / failed / timeout / disabled); an accepted finding not yet landed, or a finding with no disposition, blocks delivery like any open review finding. Finally check `## Review Convergence`: every blocking finding moved into a hardening SubTask is landed, every recurring class was answered by a class-level fix or a single register entry, and every residual-risk register entry has all its fields (origin, tier and class, reproduction, impact, hardening plan or `none proposed`, status) — an entry a later hardening task could not act on is an open item.
-4. Verify the status file `## Pre-Delivery Checklist` is answered item by item with evidence (test effectiveness incl. mutation evidence, verdict hygiene, environment coordinates, attribution/collaboration, scope sweeps and the final report's `## Weakest Link` self-disclosure). An unanswered item blocks delivery exactly as an unregistered test category does; "the rest are fine" is not an answer.
-5. Update the status file with final phase, completed work, test results, review result, assumptions, and known risks.
-6. Autonomously create a final commit for the overall task and push if a remote is configured (see Version Control — do not ask, do not block on failure).
-7. Produce a final report from `templates/final-report.md`. After shipping the final report the worker enters `phase=awaiting-confirmation` and WAITS for the user to confirm delivery; it does not self-advance.
-8. Advance to `phase=done` ONLY when the user confirms — either directly in the worker window/conversation (standalone or attached), or via an L1-relayed confirmation message arriving in the pane. The worker never self-advances to `done`. On user confirmation, flush `phase=done` (atomically, valid frontmatter) in orchestrated mode. `done` is the sole non-reversible absorbing terminal.
-9. Ask the user whether to delete the task status files.
+1. 对照已记录的总目标（设计的 `## 目标` 和状态文件的 `## 总目标`）核实最终产出。确认用户陈述的目标没有任何部分被悄悄收窄、推迟或用占位替代。如果仍有缺口，要么补上，要么升级给用户——不要把缩水版本当作最终版交付。
+2. 核实 `## 最终汇总测试`（在 §3.C 填写）登记了**每一个必需的类别**（设计的 `## 测试计划` 中的类别——至少包括单元 / e2e / 回归，`## 风险` 要求时加上压力测试，再加上任何用户点名的类别），每个都记为 `ran`（附结果）或 `skipped`（附非空理由），并各带一行结构覆盖上限说明。覆盖上限之所以重要，是因为同名的层并不能互相替代：前端单元测试和浏览器 e2e 的结构性局限恰好相反（一个触达不了真实的后端契约，另一个无法穷举精度用例），所以"我们做了 e2e"永远覆盖不了单元层应当承担的内容。如果有任何必需类别未登记，就不要交付——先运行它，或者记录一个明确的跳过理由。有成本的测试（例如消耗 API 配额的 e2e）可以跳过，但必须记录理由；在编排模式或独立模式下，只要可行，跳过有成本的测试前要先问用户——绝不悄悄省略任何类别。
+3. 核实 `## 最终汇总评审` 登记了**每一个覆盖维度**（设计符合性 / 正确性 / 测试质量 / 回归风险；再加上 `## 风险` 中指出的每项风险各一个），每个都记为 `covered`，或记为 `not-covered` 并附非空理由。如果有任何维度未登记，就不要交付——先让它被覆盖，或者记录一个明确的理由。与上面的测试关卡是同一约定：一个维度可以因陈述的理由而不覆盖，但绝不能被悄悄省略。还要检查 `## 重启与恢复记录` 中是否有分阶段交付的后续批次始终没有到达；未到达的批次是一个未覆盖的维度，而不是已完成的维度。同样检查 `## 跨 harness 交叉评审`：每个评审点要么为每条跨 harness 发现记录了处置，要么记录了评审者的结果（无 / 失败 / 超时 / 已禁用）；已接受但尚未落地的发现，或者没有处置的发现，和任何未关闭的评审发现一样会阻断交付。最后检查 `## 评审收口`：每条移入加固 SubTask 的阻断发现都已落地，每个反复出现的类别都已通过类级修复或一条清单条目予以回应，并且遗留风险清单中的每个条目都具备所有字段（来源、等级和类别、复现、影响、加固方案或 `none proposed`、状态）——之后的加固任务无法据以行动的条目，算作未关闭事项。
+4. 核实状态文件的 `## 交付前检查清单` 已逐项作答并附证据（测试有效性，包括变异证据；结论卫生；环境坐标；归因/协作；范围排查，以及最终报告中 `## 最薄弱环节` 的自我披露）。未作答的条目会像未登记的测试类别一样阻断交付；"其余都没问题"不算答案。
+5. 用最终阶段、已完成的工作、测试结果、评审结果、假设和已知风险更新状态文件。
+6. 为整体任务自主创建最终提交，配置了 remote 时推送（见"版本控制"——不要询问，失败也不阻断）。
+7. 基于 `templates/final-report.md` 生成最终报告。发出最终报告后，worker 进入 `phase=awaiting-confirmation`，并**等待**用户确认交付；它不会自行推进。
+8. **只有**在用户确认时才推进到 `phase=done`——用户可以直接在 worker 窗口/对话中确认（独立模式或已接入），也可以通过 L1 转达、到达 pane 中的确认消息来确认。worker 绝不自行推进到 `done`。用户确认后，在编排模式下写入 `phase=done`（原子写入，frontmatter 有效）。`done` 是唯一不可逆的吸收终态。
+9. 询问用户是否删除任务状态文件。
 
-## Resuming An Existing Task
+## 恢复进行中的任务
 
-When picking up a task that was already in flight (a frozen or restarted session), the status file is the FIRST thing you read — and it is the thing most likely to be stale, because it only advances when somebody remembers to write it. Before trusting any of it, cross-check it against sources that advance by themselves:
+接手一个已经在进行中的任务时（会话冻结或重启过），状态文件是你**最先**读取的东西——而它也最可能已经过时，因为只有有人记得去写，它才会前进。在信任其中任何内容之前，先拿它与那些会自行前进的来源交叉核对：
 
-1. **`git log` / `git status`** for the task's branch. Commits are written by the work itself, so they cannot lag the way the status file can. A `Coded: false` SubTask with commits implementing it means the status file is behind, not that the work is missing.
-2. **`subtasks/*.md` against the main file.** These are written by different actors at different times; when they disagree, the more advanced one is usually right, and a SubTask file can also contradict *itself* (one section marking a piece complete while a later line still lists it as pending).
-3. **The read-only fixed-pack observer** to tell "lost" from "still running". A non-terminal instance with authenticated START and an advancing HEARTBEAT is ALIVE — re-dispatching it would put two agents in the same workspace writing the same files. A stale heartbeat is only weak evidence and must be combined with platform/probe state before finalization. If the observer cannot validate the catalog/runtime at all, the watchdog never armed (see §1 step 4) and you have no liveness evidence — say so rather than guessing.
+1. **任务分支的 `git log` / `git status`。** 提交是由工作本身写出的，所以它们不会像状态文件那样滞后。一个 `Coded: false` 的 SubTask 如果已有实现它的提交，说明是状态文件落后了，而不是工作缺失。
+2. **拿 `subtasks/*.md` 与主文件对照。** 它们由不同的执行者在不同时间写入；两者不一致时，进度更靠前的那个通常是对的，而且一个 SubTask 文件还可能*自相*矛盾（某一节标记某部分已完成，后面某一行却仍把它列为待处理）。
+3. **只读的 fixed-pack 观察器**，用来区分"已丢失"和"仍在运行"。一个非终态的实例，如果有经过认证的 START 和一个仍在推进的 HEARTBEAT，那它就是**活着的**——重新派发它，会让两个 agent 在同一个工作区里写同样的文件。心跳过期只是弱证据，必须结合平台/探测状态才能做终结处理。如果观察器根本无法验证 catalog/runtime，说明 watchdog 从未启用（见 §1 第 4 步），你也就没有任何存活证据——要如实说明，而不是去猜。
 
-If the cross-check finds a conflict, write the reconciled state into the main status file immediately and mark plainly which parts were reconstructed from code rather than recorded. Do not silently continue from a file you have just proven wrong; the next reader will trust it exactly as much as you did.
+如果交叉核对发现冲突，立即把核对后的状态写进主状态文件，并清楚标明哪些部分是根据代码重建的、而不是原本记录的。不要从一个你刚刚证明有误的文件上悄悄继续；下一个读者会像你一样信任它。
 
-### Recovering destroyed uncommitted work from transcripts
+### 从会话记录恢复被毁的未提交工作
 
-When uncommitted work is lost (a checkout/stash accident, a crashed editor, a deleted file that never reached a commit), git has nothing: never-committed content is in no reflog, no stash, and `git fsck --lost-found` cannot see it. But **everything an agent ever wrote is recorded verbatim in its transcript**:
+当未提交的工作丢失时（checkout/stash 事故、编辑器崩溃、一个从未进入提交的文件被删除），git 里什么都没有：从未提交过的内容不在任何 reflog、任何 stash 里，`git fsck --lost-found` 也看不到它。但是，**agent 写过的一切都逐字记录在它的会话记录里**：
 
 ```text
 ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl              (main agent)
@@ -467,117 +467,117 @@ When uncommitted work is lost (a checkout/stash accident, a crashed editor, a de
 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl                    (Codex events)
 ```
 
-Each `tool_use` entry for Write carries the full file in `input.content`; each Edit carries `input.old_string`/`input.new_string`. Recovery procedure: identify WHICH agent wrote the lost content (the status file's agent state, or grep the transcripts for a distinctive identifier from the lost code), extract its Edit/Write inputs for the affected file, and **replay them in original order** — do not reconstruct from memory. This matters most for security-sensitive code (guards, adjudicators, redaction): a from-memory rebuild that is subtly wrong is a silent bypass, which is worse than the visible absence. Verify the replay with the tests that exposed the loss. This path recovered a ~5000-char guard function verbatim in the incident that motivated it.
+每个 Write 的 `tool_use` 条目都在 `input.content` 中带有完整文件；每个 Edit 带有 `input.old_string`/`input.new_string`。恢复步骤：确定是**哪个** agent 写了丢失的内容（看状态文件中的 agent 状态，或者在会话记录中 grep 丢失代码里一个有辨识度的标识符），提取它对受影响文件的 Edit/Write 输入，并**按原始顺序重放**——不要凭记忆重建。这对安全敏感的代码（防护、裁决器、脱敏）尤为重要：一个凭记忆重建、却有细微错误的版本就是一个悄无声息的绕过，比明摆着的缺失更糟。用暴露出丢失问题的那些测试来验证重放结果。在催生这条规则的那次事故中，正是这条路径逐字恢复了一个约 5000 字符的防护函数。
 
-## Long-Running Work
+## 长期运行工作
 
-During long implementation phases, the main agent should keep the status file current. Record the active role, latest output, blocked items, next action, and restart notes.
+在漫长的实现阶段，主 agent 应保持状态文件为最新。记录当前活动的角色、最新输出、阻塞事项、下一步行动和重启记录。
 
-**The status file is only worth what its last write is worth.** Every state transition writes through to the main file as part of the transition (§3.B step 6); it is never a separate bookkeeping pass to be done "when there is a pause". Two-layer drift — main file frozen while `subtasks/*.md` advance — is the specific shape that makes a recovering session misjudge where the work stopped.
+**状态文件的价值取决于它最后一次写入的价值。** 每次状态转换都要作为转换的一部分写入主文件（§3.B 第 6 步）；它从来不是一项"等有空时"再做的单独记账工作。两层漂移——主文件停滞而 `subtasks/*.md` 在前进——正是让恢复中的会话误判工作停在哪里的那种具体形态。
 
-If a subagent is stuck, interrupted, or silent for too long, the main agent restarts that role as a **continuation, never a redo**. Under long multi-instance runs, timeouts are the norm, not the exception; default-redo costs O(lanes × timeouts) repeated work AND leaves dirty data that masquerades as regressions. Three steps:
+如果某个 subagent 卡住、中断或长时间无响应，主 agent 以**续做而绝非重做**的方式重启该角色。在长时间的多实例运行中，超时是常态而不是例外；默认重做会造成 O(并行通道数 × 超时次数) 的重复工作，**并且**会留下伪装成回归的脏数据。三个步骤：
 
-1. **Inventory first.** List what the interrupted role already produced on disk — files written, test DBs/fixtures/migrations created, ports held — using `git status` plus the resource-lease table. The inventory must come from disk, not from the interrupted context (which is gone).
-2. **Resume, don't rebuild.** Put the inventory into the restart prompt as the continuation point, with an explicit "continue; do not recreate the following artifacts".
-3. **Clean the debris.** An interrupted run must be assumed to have left dirty data (half-written fixture rows with fixed ids cause primary-key collisions that look exactly like implementation regressions — the tell: a rerun reproduces them stably, so it is not a race). Clean before rerunning.
+1. **先盘点。** 用 `git status` 加上资源租约表，列出被中断的角色已经在磁盘上产出了什么——写过的文件、创建的测试数据库/fixture/迁移、占用的端口。盘点必须来自磁盘，而不是来自被中断的上下文（它已经没了）。
+2. **续做，不重建。** 把盘点结果作为续做起点放进重启提示词，并明确写上"继续；不要重新创建以下产物"。
+3. **清理残骸。** 必须假定一次被中断的运行留下了脏数据（写了一半、带固定 id 的 fixture 行会造成主键冲突，看起来和实现回归一模一样——识别特征是：重跑能稳定复现，所以不是竞态）。重跑前先清理。
 
-Record each event as a new row in the status file `## Restart And Recovery Notes` (it is an append-only event list, not a single-slot form). If no real subagent runtime exists, resume from the status file and re-issue the relevant role prompt with the latest design and status summary. Restart at the same scope — see `## Incremental Output > Recovering a stuck role: never trade scope for a delivery`.
+把每个事件作为新的一行记入状态文件的 `## 重启与恢复记录`（它是只追加的事件列表，而不是只有一个槽位的表单）。如果没有真正的 subagent 运行时，就从状态文件恢复，并用最新的设计和状态摘要重新下发相关角色的提示词。以相同的范围重启——见 `## 增量输出 > 恢复卡住的角色：绝不拿范围换交付`。
 
-See also [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md) — long-running tasks must persist state to files, not context.
+另见 [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md)——长时间运行的任务必须把状态持久化到文件，而不是上下文。
 
-## Watchdog Enforcement
+## Watchdog 强制层
 
-The two rules above — "restart silent roles" and "keep the status file current" — are also enforced mechanically by the plugin's hooks (`hooks/hooks.json`) and background monitor (`monitors/monitors.json`). Prompt discipline remains the primary behavior; the watchdog is the deterministic backstop for when it slips. The layers:
+上面两条规则——"重启无响应的角色"和"保持状态文件为最新"——也由插件的 hooks（`hooks/hooks.json`）和后台 monitor（`monitors/monitors.json`）从机制上强制。提示词纪律仍然是主要的行为约束；watchdog 是它失守时的确定性兜底。各层如下：
 
-- **L0 heartbeats (automatic, invisible).** Every main tool call advances the catalog PACK_HEADER heartbeat; every dynamic-role tool call advances fixed HEARTBEAT/INFLIGHT records. SubagentStart establishes fixed immutable IDENTITY/START and a physical baseline for implementation/test; clean SubagentStop writes logical DONE. Confirmed API-kill death uses `finalize` to write distinct logical FINALIZED. Either terminal record wins over late liveness.
-- **L1 freshness reminders.** When the overall status file goes stale during an active phase (implementation/testing/review/delivery), a PostToolUse hook injects a reminder into the current context (main agent: "persist progress now"; implementation/test subagents: "report progress / update your SubTask-status file"). Rate-limited; advisory only.
-- **L2 subagent exit gate.** A SubagentStop hook blocks a role from finishing with an empty or too-short final message and instructs it to emit a proper final report first (so the main agent always has something to persist). One block maximum per stop; never loops.
-- **L3 background watchdog.** Claude Code uses the plugin monitor and can deliver its stdout as wake-up notifications. Codex currently has no async-hook/monitor notification channel; its synchronous `SessionStart` hook detaches the same scanner to a per-thread temp log for diagnostics, while L0/L1 and the synchronous Stop gate provide deterministic in-session enforcement. The workflow remains correct if this layer is degraded.
-- **L4 main-agent stop gate.** A Stop hook prevents the main agent from going idle while the authenticated observer reports a non-terminal role with stale liveness/unarmed tracking that is not present as a running background task, or while the status file is badly stale in an active phase. The block reason names the exact roles to check.
-- **L5 dispatch scope guard.** A PreToolUse hook on the Agent tool inspects what a dispatch *asks for* — the only layer acting before the fact. A prompt that caps a role's deliverable ("only the top 3 findings", "just the overall verdict", "只要总结论", "一句话结论") is denied unless the same prompt commits to delivering the remainder ("then continue with the rest", "step 1 of 4", "分维度"). This closes the recovery-path failure where a stalled role's scope gets shrunk so it can finish — see `## Incremental Output > Recovering a stuck role`. Matching is heuristic; `ZYZ_SCOPE_GUARD_DISABLE=1` turns just this guard off.
-- **L6 shared-worktree checkout guard.** A PreToolUse hook on Bash denies `git checkout <file>` / `git restore <file>` when the target has uncommitted modifications, and the state-moving `git stash` forms. These reset shared working-tree state to HEAD and destroy OTHER agents' uncommitted work unrecoverably (no reflog / stash / fsck holds never-committed content) — a real incident lost a ~5000-char security guard this way with `go build` staying green. The deny message carries the safe recipe (pre-edit `cp` backup + `mv` restore; `git show HEAD:<file>` for read-only; `git diff` + `git apply -R` for set-asides). Matching is heuristic; `ZYZ_CHECKOUT_GUARD_DISABLE=1` turns just this guard off. If work is lost anyway, see `## Resuming An Existing Task > Recovering destroyed uncommitted work from transcripts`.
+- **L0 心跳（自动、不可见）。** 主 agent 的每次工具调用都会推进 catalog 的 PACK_HEADER 心跳；动态角色的每次工具调用都会推进固定的 HEARTBEAT/INFLIGHT 记录。SubagentStart 建立固定且不可变的 IDENTITY/START，并为 implementation/test 建立物理基线；干净的 SubagentStop 写入逻辑上的 DONE。经确认的 API 强杀死亡用 `finalize` 写入另一种逻辑记录 FINALIZED。这两种终态记录都优先于迟到的存活信号。
+- **L1 新鲜度提醒。** 当总状态文件在活动阶段（implementation/testing/review/delivery）变得过时时，一个 PostToolUse hook 会向当前上下文注入提醒（对主 agent："立即持久化进度"；对 implementation/test subagent："报告进度 / 更新你的 SubTask 状态文件"）。有频率限制；仅作提示。
+- **L2 subagent 退出门。** 一个 SubagentStop hook 会阻止角色以空的或过短的最终消息结束，并指示它先输出一份像样的最终报告（这样主 agent 总有东西可以持久化）。每次停止最多拦截一次；绝不循环。
+- **L3 后台 watchdog。** Claude Code 使用插件 monitor，并能把它的 stdout 作为唤醒通知送达。Codex 目前没有异步 hook/monitor 通知通道；它的同步 `SessionStart` hook 会把同一个扫描器以分离方式启动，输出到按线程划分的临时日志中用于诊断，而 L0/L1 和同步的 Stop 门提供会话内的确定性强制。即使这一层降级，工作流依然正确。
+- **L4 主 agent 停止门。** 当经认证的观察器报告某个非终态角色存活信号过期/跟踪未启用、且它并不作为一个正在运行的后台任务存在时，或者当状态文件在活动阶段严重过时时，一个 Stop hook 会阻止主 agent 进入空闲。拦截理由会写明需要检查的具体角色。
+- **L5 派发范围守卫。** Agent 工具上的一个 PreToolUse hook 检查一次派发*要求了什么*——这是唯一在事前起作用的一层。一个给角色的交付物设上限的提示词（"只报最重要的 3 条发现" / "only the top 3 findings"、"只给总体结论" / "just the overall verdict"、"只要总结论"、"一句话结论"）会被拒绝，除非同一提示词承诺交付其余部分（"然后继续做剩余部分" / "then continue with the rest"、"第 1 步，共 4 步" / "step 1 of 4"、"分维度"）。中英文措辞都会被识别。这堵住了恢复路径上的一种失败：为了让停滞的角色能完成而缩小它的范围——见 `## 增量输出 > 恢复卡住的角色：绝不拿范围换交付`。匹配是启发式的；`ZYZ_SCOPE_GUARD_DISABLE=1` 只关闭这一个守卫。
+- **L6 共享 worktree 的 checkout 守卫。** Bash 上的一个 PreToolUse hook 会在目标有未提交修改时拒绝 `git checkout <file>` / `git restore <file>`，也会拒绝会移动状态的 `git stash` 写法。这些操作会把共享工作树的状态重置到 HEAD，不可恢复地毁掉**其他** agent 的未提交工作（从未提交过的内容不在任何 reflog / stash / fsck 中）——一次真实事故就这样丢掉了一段约 5000 字符的安全防护代码，而 `go build` 依然是绿的。拒绝消息中附有安全做法（编辑前 `cp` 备份 + `mv` 恢复；只读用 `git show HEAD:<file>`；临时搁置用 `git diff` + `git apply -R`）。匹配是启发式的；`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关闭这一个守卫。如果工作还是丢了，见 `## 恢复进行中的任务 > 从会话记录恢复被毁的未提交工作`。
 
-Main-agent obligations toward the watchdog:
+主 agent 对 watchdog 的义务：
 
-- Write the `.zyz-worker/current-task` pointer at §1 Start Task (and update it if the active task changes). No pointer → no watchdog.
-- Name the overall status file `status.md` inside the task directory. The watchdog resolves it as `<task-dir>/status.md` and reads its `Current Phase` label; any other filename makes the freshness layers (L1/L3/L4) no-op silently.
-- Treat any `[zyz-worker watchdog]` notification or injected context as an actionable instruction, not noise: re-dispatch the named role with the latest design and status summary, or flush the status file, immediately — do not defer to the next delivery milestone.
-- **But verify ownership before writing.** A watchdog alert that names a status file or task directory is only actionable if that path belongs to THIS session's task (the one your pointer or `$ZYZ_TASK_DIR` names). If it does not — a concurrent session's task in a sibling worktree, a stale pointer, a mis-set env — do not write into it: writing "current progress" into another session's status file fabricates that task's source of truth. Report the mismatch to the user instead. Watchdog output can both miss real problems (#9) and, historically, report someone else's (#18); it is a backstop, not an oracle.
-- Keep the status file's `Current Phase` field accurate; the watchdog only enforces during active execution phases and deliberately stays quiet during design and awaiting-confirmation (where waiting on the user is correct).
-- The runtime markers under `<task-dir>/runtime/` are watchdog bookkeeping. Do not hand-edit them. Use `probe-create` and include its exact id in a reconnect; only the receiving role that observes it runs `probe-ack`. Heartbeat is never ACK. A bounded `Waiting On` row suppresses only status freshness and must be removed on result/expiry.
+- 在 §1 启动任务时写入 `.zyz-worker/current-task` 指针（活动任务变化时更新它）。没有指针 → 没有 watchdog。
+- 把总状态文件在任务目录中命名为 `status.md`。watchdog 把它解析为 `<task-dir>/status.md`，并读取其中的 `Current Phase` 标签；用其他任何文件名，都会让新鲜度相关的各层（L1/L3/L4）悄无声息地什么都不做。
+- 把任何 `[zyz-worker watchdog]` 通知或注入的上下文都当作可执行的指令，而不是噪音：立即用最新的设计和状态摘要重新派发被点名的角色，或者写入状态文件——不要推迟到下一个交付里程碑。
+- **但写入之前要核实归属。** 一条点名了某个状态文件或任务目录的 watchdog 告警，只有在该路径属于**本**会话的任务（你的指针或 `$ZYZ_TASK_DIR` 指向的那个）时才可执行。如果不属于——同级 worktree 中并发会话的任务、过时的指针、设错的环境变量——就不要往里写：把"当前进度"写进另一个会话的状态文件，等于伪造了那个任务的事实来源。改为向用户报告这一不匹配。watchdog 的输出既可能漏掉真实问题（#9），历史上也曾报告过别人的问题（#18）；它是兜底，不是神谕。
+- 保持状态文件的 `Current Phase` 字段准确；watchdog 只在活动执行阶段强制，并有意在 design 和 awaiting-confirmation 阶段保持安静（这些阶段等待用户是正确的）。
+- `<task-dir>/runtime/` 下的运行时标记是 watchdog 的记账数据。不要手工编辑它们。用 `probe-create`，并在重连时带上它的确切 id；只有观察到它的接收方角色才运行 `probe-ack`。心跳永远不是 ACK。一条有时限的 `Waiting On` 行只抑制状态新鲜度检查，并且必须在得到结果/到期时删除。
 
-Degraded environments: hooks and monitors may be unavailable (plugin hooks disabled by policy, monitors unsupported on this platform or version). Everything still works — the prompt-level monitoring duties in `## Long-Running Work` and the flush rules in `## Core Rules` remain in force and become the only enforcement. The watchdog never replaces those duties; it only backstops them. All thresholds are tunable via `ZYZ_*` env vars (see `hooks/README.md`); `ZYZ_HOOKS_DISABLE=1` turns the whole layer off.
+降级环境：hooks 和 monitor 可能不可用（插件 hooks 被策略禁用、当前平台或版本不支持 monitor）。一切仍然可以工作——`## 长期运行工作` 中提示词层面的监控职责和 `## 核心规则` 中的写盘规则依然有效，并成为唯一的强制手段。watchdog 从不取代这些职责，只为它们兜底。所有阈值都可以通过 `ZYZ_*` 环境变量调节（见 `hooks/README.md`）；`ZYZ_HOOKS_DISABLE=1` 关闭整个强制层。
 
-## Optional Skills And Plugins
+## 可选技能与插件
 
-Before writing design docs, implementation, tests, or review reports, check whether the current agent already has relevant skills, plugins, or tools available.
+在编写设计文档、实现、测试或评审报告之前，先检查当前 agent 是否已经有相关的 skill、插件或工具可用。
 
-Examples:
+例如：
 
-- Use documentation skills or plugins, such as llmdoc, to improve design document quality if already available.
-- Use engineering workflow skills or plugins, such as superpowers, to improve implementation or review quality if already available.
-- Use language, framework, testing, browser, document, or spreadsheet skills when the task naturally needs them.
+- 如果已经可用，就用文档类 skill 或插件（例如 llmdoc）来提升设计文档质量。
+- 如果已经可用，就用工程工作流类 skill 或插件（例如 superpowers）来提升实现或评审质量。
+- 当任务自然需要时，使用语言、框架、测试、浏览器、文档或电子表格类 skill。
 
-Do not block, fail, or ask the user to install anything when these optional capabilities are unavailable.
+这些可选能力不可用时，不要阻断、不要报错，也不要要求用户安装任何东西。
 
-When optional capabilities are used, record them briefly in the task status file or final report.
+使用了可选能力时，在任务状态文件或最终报告中简要记录。
 
-## Orchestrated Mode
+## 编排模式
 
-When the environment variable `ZYZ_WORKER_STATUS_FILE` is set, this skill runs in orchestrated mode — i.e. it has been dispatched by the `orchestration-scheduling-task` skill into its own tmux session. In this mode the main agent (and every subagent through it) MUST flush a small status snapshot to that file path so the orchestrator can see what this worker is doing.
+设置了环境变量 `ZYZ_WORKER_STATUS_FILE` 时，本 skill 在编排模式下运行——也就是说，它是由 `orchestration-scheduling-task` skill 派发到自己的 tmux 会话中的。在此模式下，主 agent（以及经由它的每一个 subagent）**必须**把一份小的状态快照写入该文件路径，让编排器能看到这个 worker 在做什么。
 
-The required fields in `worker-status.md` are:
+`worker-status.md` 中的必需字段是：
 
-- `phase` — one of `design | implementation | testing | review | delivery | awaiting-confirmation | done | error`
-- `phase-since` — ISO timestamp of when the current `phase` was entered
-- `wait-state` — one of `none | waiting-user | waiting-subagent | waiting-resource`
-- `waiting-reason` — free text, non-empty only when `wait-state != none`
-- `expected-resume-by` — ISO timestamp, non-empty only when `wait-state != none`
-- `last-flush` — ISO timestamp of this write
+- `phase`——取值为 `design | implementation | testing | review | delivery | awaiting-confirmation | done | error` 之一
+- `phase-since`——进入当前 `phase` 时的 ISO 时间戳
+- `wait-state`——取值为 `none | waiting-user | waiting-subagent | waiting-resource` 之一
+- `waiting-reason`——自由文本，仅当 `wait-state != none` 时非空
+- `expected-resume-by`——ISO 时间戳，仅当 `wait-state != none` 时非空
+- `last-flush`——本次写入的 ISO 时间戳
 
-Hard rules in orchestrated mode:
+编排模式下的硬性规则：
 
-- **Flush before any suspend.** Before suspending, before dispatching a subagent, after receiving a subagent result, and on entering any new workflow phase, write `ZYZ_WORKER_STATUS_FILE` atomically (tmpfile + rename). Never edit the file in place.
-- **`worker-status.md` must be a valid YAML frontmatter document.** Write all required snapshot fields enclosed in a single pair of `---` fences, with the very first line of the file being `---`, the fields next, and a closing `---` line. A bare field dump without fences (e.g. a file that starts directly with `phase: review`) is malformed: the orchestrator's frontmatter parser reads nothing and cannot see this worker's progress. The shipped `skills/orchestration-scheduling-task/templates/worker-status.md` template already has the correct shape — match it.
-- **`phase` may roll back, except `done` which is absorbing.** `phase` MAY move both forward and backward among `design`, `implementation`, `testing`, `review`, `delivery`, and `awaiting-confirmation` to reflect real iteration — e.g. a review of an `awaiting-confirmation` worker that asks for changes rolls the phase back to `implementation`. The ONLY non-reversible phase is `done`: once written it is the **absorbing** terminal and is never changed to an earlier phase. `done` means the **user has confirmed delivery**; the worker writes `done` ONLY after explicit user confirmation (in the worker window in standalone mode, or relayed from L1 in orchestrated mode) — NEVER autonomously, and never self-advanced from `awaiting-confirmation` without user confirmation. `awaiting-confirmation` means the worker self-declares finished and is waiting for that confirmation, and remains reversible. `error` remains reversible — after the error is fixed, resume to a working phase.
-- **`wait-state` is orthogonal to `phase`.** Set `wait-state` independently from `phase`. Set `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource` with a non-empty `waiting-reason` before suspending; set `wait-state=none` immediately on resume.
-- **Confirmation advances the worker to `done`.** After producing the final report the worker enters `phase=awaiting-confirmation` (self-declared finished) and WAITS. It advances to `phase=done` ONLY when the user confirms — either directly in the worker window/conversation, or via an L1-relayed confirmation message that arrives in the pane (the orchestrator dispatches an `orch-driver-agent` with `intent=relay-confirmation` when the user wrote the `confirmed` token). The worker never self-advances to `done`. On user confirmation the worker flushes `phase=done` (atomically, valid frontmatter); the orchestrator mirrors that into `state: completed` on the next poll.
-- **Design→implementation is a hard user-approval gate.** Before entering implementation the worker MUST flush `wait-state=waiting-user` (holding `phase=design`) and MUST NOT write `phase=implementation` or dispatch implementation-agent until explicit user approval arrives. Legal approval channels are ONLY: the user attached to the worker pane, or a matching `answer.md` (the worker first emits a question-id'd approval request to `ZYZ_QUESTION_FILE`; only an `answer.md` answering that id counts — a stale or unrelated answer does not). The orchestrator never relays design approval. The worker records the approval event (or the verbatim explicit prior skip instruction) into the on-disk `.zyz-worker/tasks/<task-id>/status.md` `## Design Review > Design Approval Record` BEFORE writing `phase=implementation`; a resuming or rehydrated worker enters implementation ONLY if that on-disk record is present — never on `phase` alone.
-- **Async user Q&A goes through files.** Use `ZYZ_QUESTION_FILE` and `ZYZ_ANSWER_FILE` when the user is not attached to the tmux pane. After consuming an `answer.md`, rename it to `answer.md.consumed.<question-id>`.
-- **Two status files, not one.** Orchestrated mode keeps the existing `.zyz-worker/tasks/<task-id>/status.md` as the worker's detailed task status (used by execute-task workflow), and adds `worker-status.md` at the path in `ZYZ_WORKER_STATUS_FILE` as the orchestrator-facing snapshot. The two files do not replace each other.
-- **In-band runtime-config block OVERRIDES launch-time env (container-reuse contract).** When a worker is dispatched onto a REUSED container (the orchestration `reuse-dispatch` path), it may receive an in-band runtime-config block in its conversation — a structured, human-readable message fenced by `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` carrying `task-id`, `worker-status-file`, `question-file`, `answer-file`, `heartbeat-file`, and — for a multi-repo reused container only — an OPTIONAL `worktrees:` line. This happens because a reused, still-running claude process cannot see freshly re-exported env (a Bash subprocess inherits the env claude started with, not later `export`s in the pane). The contract:
-  - **Once this block is received, its values are authoritative for the whole task lifecycle and override the launch-time env.** Use the block's `task-id` as this task's orchestrated-mode task identity **in place of the inherited `ZYZ_TASK_ID`**, and the block's `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file` in place of `ZYZ_WORKER_STATUS_FILE` / `ZYZ_QUESTION_FILE` / `ZYZ_ANSWER_FILE` / `ZYZ_HEARTBEAT_FILE`.
-  - **The override applies to ALL task-id-derived paths**, not just the snapshot/Q&A/heartbeat files: the detailed task status directory `.zyz-worker/tasks/<task-id>/` (the "Two status files" one above), and any commit message / branch reference that embeds the task-id, all use the block's `task-id`. A worker that ignores this would write its detailed status into the OLD task's directory and use the wrong task-id — that is the failure this contract prevents.
-  - **A `worktrees:` line in the block is the authoritative worktree set (overrides `ZYZ_WORKTREES`).** When the block carries `worktrees: <wt1>:<wt2>:…` (colon-separated, primary worktree first), treat that as this task's authoritative set of worktrees, overriding any launch-time `ZYZ_WORKTREES` — the worker manages all listed worktrees (see the multi-worktree rules below). When the block OMITS the `worktrees:` line, fall back to the launch-time env: `ZYZ_WORKTREES` if it is set, otherwise the single cwd (current single-worktree behavior). Worktree paths never contain a colon, so the colon is an unambiguous separator.
-  - **A reuse worker also `touch`es the block's `heartbeat-file` on every flush** (every `worker-status.md` write), as a second liveness signal alongside the orchestrator's same-session new-window heartbeat daemon. (The primary heartbeat is the daemon; this touch is the backup.)
-  - If no such block is received, behave exactly as before — the launch-time `ZYZ_*` env is authoritative (standard spawn).
+- **任何挂起之前先写盘。** 在挂起之前、派发 subagent 之前、收到 subagent 结果之后，以及进入任何新的工作流阶段时，都要原子地写入 `ZYZ_WORKER_STATUS_FILE`（tmpfile + rename）。绝不就地编辑该文件。
+- **`worker-status.md` 必须是一个有效的 YAML frontmatter 文档。** 把所有必需的快照字段写在一对 `---` 围栏之内：文件第一行就是 `---`，接着是各字段，然后是一行收尾的 `---`。没有围栏的裸字段转储（例如一个直接以 `phase: review` 开头的文件）是格式错误的：编排器的 frontmatter 解析器读不到任何内容，也就看不到这个 worker 的进度。随插件发布的 `skills/orchestration-scheduling-task/templates/worker-status.md` 模板已经是正确的形状——照着它写。
+- **`phase` 可以回退，但 `done` 是吸收态。** `phase` **可以**在 `design`、`implementation`、`testing`、`review`、`delivery` 和 `awaiting-confirmation` 之间前进或后退，以反映真实的迭代——例如对一个处于 `awaiting-confirmation` 的 worker 做的评审要求修改时，phase 回退到 `implementation`。**唯一**不可逆的阶段是 `done`：一旦写入，它就是**吸收**终态，永远不会再改成更早的阶段。`done` 表示**用户已确认交付**；worker **只有**在用户明确确认之后（独立模式下在 worker 窗口中，编排模式下经由 L1 转达）才写入 `done`——**绝不**自主写入，也绝不在没有用户确认的情况下从 `awaiting-confirmation` 自行推进。`awaiting-confirmation` 表示 worker 自我声明已完成、正在等待那次确认，它仍然是可逆的。`error` 也是可逆的——错误修复后，恢复到某个工作阶段。
+- **`wait-state` 与 `phase` 相互正交。** 独立于 `phase` 设置 `wait-state`。挂起之前设置 `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource`，并附非空的 `waiting-reason`；恢复后立即设置 `wait-state=none`。
+- **确认会把 worker 推进到 `done`。** 生成最终报告后，worker 进入 `phase=awaiting-confirmation`（自我声明已完成）并**等待**。**只有**在用户确认时它才推进到 `phase=done`——用户可以直接在 worker 窗口/对话中确认，也可以通过 L1 转达、到达 pane 中的确认消息来确认（用户写下 `confirmed` 令牌时，编排器会派发一个带 `intent=relay-confirmation` 的 `orch-driver-agent`）。worker 绝不自行推进到 `done`。用户确认后，worker 写入 `phase=done`（原子写入，frontmatter 有效）；编排器在下一次轮询时把它同步为 `state: completed`。
+- **设计→实现是一道硬性的用户批准闸门。** 进入实现之前，worker **必须**写入 `wait-state=waiting-user`（保持 `phase=design`），并且在明确的用户批准到达之前，**不得**写入 `phase=implementation`，也不得派发 implementation-agent。合法的批准渠道**只有**：用户接入 worker 的 pane，或者一份匹配的 `answer.md`（worker 先向 `ZYZ_QUESTION_FILE` 发出一个带 question-id 的批准请求；只有回答了该 id 的 `answer.md` 才算——过时或无关的答复不算）。编排器从不转达设计批准。worker 在写入 `phase=implementation` **之前**，把批准事件（或事先明确的跳过指令原文）记入磁盘上 `.zyz-worker/tasks/<task-id>/status.md` 的 `## 设计评审 > 设计批准记录`；一个恢复中或重新装载的 worker，**只有**在磁盘上存在该记录时才进入实现——绝不单凭 `phase` 进入。
+- **异步的用户问答走文件。** 用户没有接入 tmux pane 时，使用 `ZYZ_QUESTION_FILE` 和 `ZYZ_ANSWER_FILE`。消费完一份 `answer.md` 后，把它重命名为 `answer.md.consumed.<question-id>`。
+- **两个状态文件，而不是一个。** 编排模式保留现有的 `.zyz-worker/tasks/<task-id>/status.md` 作为 worker 的详细任务状态（供 execute-task 工作流使用），并在 `ZYZ_WORKER_STATUS_FILE` 所指的路径上新增 `worker-status.md`，作为面向编排器的快照。两个文件互不替代。
+- **带内的运行时配置块优先于启动时的环境变量（容器复用约定）。** 当 worker 被派发到一个**复用的**容器上时（编排的 `reuse-dispatch` 路径），它可能会在对话中收到一个带内运行时配置块——一条结构化、人类可读的消息，以 `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` 围起，携带 `task-id`、`worker-status-file`、`question-file`、`answer-file`、`heartbeat-file`，以及——仅对多仓库的复用容器——一行**可选的** `worktrees:`。之所以会这样，是因为一个被复用、仍在运行的 claude 进程看不到新重新导出的环境变量（Bash 子进程继承的是 claude 启动时的环境，而不是之后在 pane 中执行的 `export`）。约定如下：
+  - **一旦收到这个块，它的值在整个任务生命周期内都是权威的，并优先于启动时的环境变量。** 用块中的 `task-id` 作为本任务在编排模式下的任务身份，**取代继承来的 `ZYZ_TASK_ID`**；用块中的 `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file` 取代 `ZYZ_WORKER_STATUS_FILE` / `ZYZ_QUESTION_FILE` / `ZYZ_ANSWER_FILE` / `ZYZ_HEARTBEAT_FILE`。
+  - **这种覆盖适用于所有由 task-id 派生的路径**，而不只是快照/问答/心跳文件：详细任务状态目录 `.zyz-worker/tasks/<task-id>/`（即上面"两个状态文件"中的那个），以及任何嵌入了 task-id 的提交信息 / 分支引用，都使用块中的 `task-id`。忽略这一点的 worker 会把详细状态写进**旧**任务的目录，并使用错误的 task-id——这正是本约定要防止的失败。
+  - **块中的 `worktrees:` 行是权威的 worktree 集合（优先于 `ZYZ_WORKTREES`）。** 当块中带有 `worktrees: <wt1>:<wt2>:…`（冒号分隔，主 worktree 在前）时，把它视为本任务权威的 worktree 集合，覆盖任何启动时的 `ZYZ_WORKTREES`——worker 管理所有列出的 worktree（见下面的多 worktree 规则）。当块中**省略**了 `worktrees:` 行时，回退到启动时的环境变量：设置了 `ZYZ_WORKTREES` 就用它，否则就用单一的 cwd（当前的单 worktree 行为）。worktree 路径绝不包含冒号，所以冒号是无歧义的分隔符。
+  - **复用的 worker 还要在每次写盘时（每次写 `worker-status.md` 时）`touch` 块中的 `heartbeat-file`**，作为编排器同会话新窗口心跳守护进程之外的第二个存活信号。（主要的心跳来自守护进程；这次 touch 是备份。）
+  - 如果没有收到这样的块，行为与以前完全相同——启动时的 `ZYZ_*` 环境变量是权威的（标准派生）。
 
-- **Multi-worktree awareness and per-repo delivery (multi-repo tasks).** A single worker (one tmux session + one claude process) may manage n git worktrees, one per repo:
-  - **Worktree-set discovery.** If `ZYZ_WORKTREES` (colon-separated, primary worktree first) is set — or the reuse-runtime-config block carries a `worktrees:` line (which overrides `ZYZ_WORKTREES`, per the block contract above) — the worker manages ALL listed worktrees. If neither is present, the worker manages the single cwd worktree (unchanged single-repo behavior). The first entry is the primary worktree (the pane cwd).
-  - **Write-permission boundary.** The worker has FULL write access to every one of its own worktrees. It MUST NOT write into any other worker's worktree. Isolation is between workers, not between a worker and its own repos: within one worker, all its worktrees are writable; across workers, worktree sets are disjoint (spawn enforces this).
-  - **Per-repo commits, push, and delivery.** Each repo lives on its own branch in its own worktree; commit and push per-repo (a SubTask commits in each repo it touched; the final delivery commit is created per-repo). Merge to base is per-repo too (each repo's branch into that repo's base — orchestrator-driven in orchestrated mode). Delivery reporting is split by repo: the final report `## Changes` section lists per-repo (repo / branch / commits / push result), and the task-status `## SubTasks > Committed` field records `<repo>:<sha>` on multiple lines for a multi-repo SubTask.
+- **多 worktree 感知与按仓库交付（多仓库任务）。** 一个 worker（一个 tmux 会话 + 一个 claude 进程）可以管理 n 个 git worktree，每个仓库一个：
+  - **worktree 集合的发现。** 如果设置了 `ZYZ_WORKTREES`（冒号分隔，主 worktree 在前）——或者 reuse-runtime-config 块中带有 `worktrees:` 行（按上面的块约定，它优先于 `ZYZ_WORKTREES`）——worker 就管理**所有**列出的 worktree。两者都不存在时，worker 管理单一的 cwd worktree（单仓库行为不变）。第一项是主 worktree（即 pane 的 cwd）。
+  - **写权限边界。** worker 对自己的每一个 worktree 都有**完全**的写权限。它**不得**写入任何其他 worker 的 worktree。隔离存在于 worker 之间，而不是 worker 与它自己的仓库之间：在一个 worker 内，它的所有 worktree 都可写；跨 worker 时，各自的 worktree 集合互不相交（由 spawn 脚本强制保证）。
+  - **按仓库提交、推送和交付。** 每个仓库在自己的 worktree 中、在自己的分支上；按仓库提交和推送（一个 SubTask 在它碰过的每个仓库中各提交一次；最终交付提交也按仓库分别创建）。合并到基线分支同样按仓库进行（每个仓库的分支合并进该仓库的基线分支——编排模式下由编排器驱动）。交付报告按仓库拆分：最终报告的 `## 变更` 小节按仓库列出（仓库 / 分支 / 提交 / 推送结果），任务状态的 `## SubTasks > Committed` 字段对多仓库 SubTask 分多行记录 `<repo>:<sha>`。
 
-Phase mapping (when each phase value must be written to `worker-status.md`):
+阶段映射（每个 phase 值必须在何时写入 `worker-status.md`）：
 
-| execute-task workflow position | phase to write | flush moment |
+| execute-task 工作流位置 | 要写入的 phase | 写盘时机 |
 |---|---|---|
-| §1 Start Task | `design` | when initializing the task status file |
-| §2 Design (all of it, including review loops) | `design` | once on entry; on each return to main agent |
-| §3.A step 1 / §3.B step 1 — implementation-agent dispatched | `implementation` (on user approval only — never autonomous; see the design→implementation hard-gate rule) | before dispatching the subagent |
-| §3.A step 2 / §3.B step 2 — test-agent / running tests | `testing` | before dispatching / before running |
-| §3.A step 4 / §3.B step 3.5+4 — workspace frozen, then review-agent dispatched | `review` | before dispatching |
-| §3.A step 5 / §3.B step 5 — review → implementation revisions loop | `review` (held by default; MAY roll back to `implementation` if it genuinely returns to substantial implementation work — rollback is allowed) | no flush |
-| §3.C aggregate testing | `testing` | on entry |
-| §3.C aggregate review | `review` | on entry |
-| §4 Deliver | `delivery` | on entry |
-| final report shipped (worker's furthest self-reachable state) | `awaiting-confirmation` | last write |
-| user confirms delivery (worker window, or relayed from L1) | `done` | on user confirmation only — never autonomous |
-| unrecoverable error | `error` (set `wait-state=none`) | immediately |
+| §1 启动任务 | `design` | 初始化任务状态文件时 |
+| §2 设计（全部，包括评审循环） | `design` | 进入时写一次；每次返回主 agent 时 |
+| §3.A 第 1 步 / §3.B 第 1 步——派发 implementation-agent | `implementation`（仅在用户批准后——绝不自主；见设计→实现硬性闸门规则） | 派发 subagent 之前 |
+| §3.A 第 2 步 / §3.B 第 2 步——test-agent / 运行测试 | `testing` | 派发之前 / 运行之前 |
+| §3.A 第 4 步 / §3.B 第 3.5+4 步——工作区冻结，然后派发 review-agent | `review` | 派发之前 |
+| §3.A 第 5 步 / §3.B 第 5 步——评审 → 实现修订循环 | `review`（默认保持；如果确实回到了大量实现工作，**可以**回退到 `implementation`——允许回退） | 不写盘 |
+| §3.C 汇总测试 | `testing` | 进入时 |
+| §3.C 汇总评审 | `review` | 进入时 |
+| §4 交付 | `delivery` | 进入时 |
+| 最终报告已发出（worker 自己能到达的最远状态） | `awaiting-confirmation` | 最后一次写入 |
+| 用户确认交付（在 worker 窗口中，或经由 L1 转达） | `done` | 仅在用户确认时——绝不自主 |
+| 无法恢复的错误 | `error`（设置 `wait-state=none`） | 立即 |
 
-The worker writes `phase=done` ONLY after explicit user confirmation (never autonomously); `done` is the sole non-reversible absorbing terminal. In orchestrated mode the orchestrator mirrors a worker's `phase=done` into master-entry `state: completed`; in standalone mode `phase=done` is itself the terminal. Merge to base remains a separate, independently-tokened action that may or may not happen (decoupled from done) — see `skills/orchestration-scheduling-task/SKILL.md` `## State Machine`.
+worker **只有**在用户明确确认之后才写入 `phase=done`（绝不自主写入）；`done` 是唯一不可逆的吸收终态。在编排模式下，编排器把 worker 的 `phase=done` 同步为主条目的 `state: completed`；在独立模式下，`phase=done` 本身就是终态。合并到基线分支仍然是一个单独的、需要独立令牌的操作，可能发生也可能不发生（与 done 解耦）——见 `skills/orchestration-scheduling-task/SKILL.md` 的 `## 状态机`。
 
-If `ZYZ_WORKER_STATUS_FILE` is unset, ignore this entire section — the skill runs in standalone mode and behaves exactly as the rest of the document describes.
+如果没有设置 `ZYZ_WORKER_STATUS_FILE`，就忽略本节全部内容——本 skill 在独立模式下运行，行为与本文档其余部分描述的完全一致。
 
-### Maintenance note
+### 维护说明
 
-This section is coupled to the `orchestration-scheduling-task` skill's contract. If the execute-task workflow gains a new phase, extend the `phase` enum here and in `skills/orchestration-scheduling-task/templates/worker-status.md`, and extend the phase mapping table here in lockstep.
+本节与 `orchestration-scheduling-task` skill 的约定相耦合。如果 execute-task 工作流新增了一个阶段，要同步扩展这里和 `skills/orchestration-scheduling-task/templates/worker-status.md` 中的 `phase` 枚举，并同步扩展这里的阶段映射表。

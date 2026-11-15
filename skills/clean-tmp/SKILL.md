@@ -1,9 +1,9 @@
 ---
 name: clean-tmp
-description: Use when the user wants to safely clean up leftover temporary files, Docker resources (images/volumes/build cache), or language build caches owned by the current user (Linux /tmp; macOS /tmp and $TMPDIR). Dual mode - interactive inventory-then-confirm-then-delete (default), or auto/unattended mode (--auto or explicit authorization) deleting by tightened criteria with a post-run report; never removes live-process sockets or long-lived session dirs. Cross-platform (macOS + Linux). Triggers like "clean /tmp", "清理 tmp", "清临时文件", "定期磁盘整理", "清 docker", "配额超了", "quota 超限", "无人值守清理", "unattended cleanup".
+description: 当用户希望安全清理当前用户名下残留的临时文件、Docker 资源（镜像/卷/构建缓存）或各语言的构建缓存时使用（Linux 为 /tmp；macOS 为 /tmp 与 $TMPDIR）。双模式——交互模式（默认）先列清单、再经用户确认、然后删除；自动/无人值守模式（--auto 或明确授权）按收紧后的判据直接删除，并在执行后输出报告；绝不删除活进程的 socket 或长期存在的会话目录。跨平台（macOS + Linux）。触发词如 "clean /tmp", "清理 tmp", "清临时文件", "定期磁盘整理", "清 docker", "配额超了", "quota 超限", "无人值守清理", "unattended cleanup".
 ---
 
-# Clean Temp
+# 清理临时文件
 
 ## 何时加载本 skill
 
@@ -25,7 +25,7 @@ description: Use when the user wants to safely clean up leftover temporary files
    - **自动模式**：**列清单 → 按收紧后的 DELETE 判据直接删除 → 事后报告**。完整执行盘点→分类→生成具名清单，把「等确认」替换为「五条件判据全满足才删 + 自动模式事后报告」（见「自动模式 DELETE 判据」「自动模式事后报告」两节）。
 2. **绝不 `rm -rf /tmp/*`**（或对任何临时根做通配符批量删除）。永远走**具名清单**——删除命令里出现的每一条路径都必须是盘点时列出的具体条目。**两种模式都不放宽。**
 3. **绝不动其他用户的文件**。盘点一律用属主过滤（`-user "$(id -un)"`）。**Linux 与 macOS 上 `/tmp` 都是多用户共享空间**（多用户共享的开发机上最常见），那里可能有别的用户或系统进程的临时文件；属主过滤保证只碰当前用户自己属主的条目，其余一律跳过。**两种模式都不放宽。**
-4. **不确定就保留（fail → keep）**。凡是「无法确定持有者」「无法确定是否还在被使用」「不认识的目录/工具」，一律归入「保留 / 需要你拍板」，**绝不静默判定为可删并删除**。宁可留下垃圾，不可误删活文件。**两种模式都不放宽。**
+4. **不确定就保留（失败即保留）**。凡是「无法确定持有者」「无法确定是否还在被使用」「不认识的目录/工具」，一律归入「保留 / 需要你拍板」，**绝不静默判定为可删并删除**。宁可留下垃圾，不可误删活文件。**两种模式都不放宽。**
 
 自动模式下，NEEDS-YOUR-CALL（需要你拍板）类条目**一律保留**并在事后报告中列出，留给下次交互处理；自动模式绝不把「不确定」升级为删除。
 
@@ -57,13 +57,13 @@ add_root /tmp
 ```
 
 - Linux：`$TMPDIR` 通常未设置，`ROOTS` 就是 `/tmp`（本身就是物理路径）。
-- macOS：交互 shell 恒有 `$TMPDIR`，解析后 `ROOTS` = `/private/tmp`（即 `/tmp` 的物理路径）+ per-user 真实临时目录。两端 `/tmp` 都是多用户共享空间，格外注意属主过滤。
+- macOS：交互 shell 恒有 `$TMPDIR`，解析后 `ROOTS` = `/private/tmp`（即 `/tmp` 的物理路径）+ 每个用户各自的真实临时目录。两端 `/tmp` 都是多用户共享空间，格外注意属主过滤。
 
 后续所有步骤对 `ROOTS` 里的**每一个根**独立执行一遍。
 
 ## 自动模式 DELETE 判据（五条件合取，宁可漏删）
 
-自动模式下，一个条目**同时满足全部五条**才可删除。任一条件不满足或探测失败 → 保留，并标注原因（recent / in-use / needs-call / protected / not-on-allowlist）。**每条判据的失败方向都是 fail → keep**——自动模式没有用户兜底，方向写反就是事故。
+自动模式下，一个条目**同时满足全部五条**才可删除。任一条件不满足或探测失败 → 保留，并标注原因（recent / in-use / needs-call / protected / not-on-allowlist）。**每条判据的失败方向都是"失败即保留"**——自动模式没有用户兜底，方向写反就是事故。
 
 1. **属主 = 当前用户**：盘点已用 `find -user "$(id -un)"` 保证；属主查不出来 → 保留。
 2. **mtime > 48 小时**：mtime 距今不足 **48 小时**的条目视为可能仍在使用，一律保留。选 mtime 而非 atime：atime 在 noatime/relatime 挂载上不可靠（多数服务器默认 noatime，读文件不更新 atime）。find 探测失败（权限等）≠ 够老 → 保留。
@@ -133,7 +133,7 @@ df -h "$root"
 **socket 活性判断要点**（完整的双分支示例与退出码语义详见 `references/socket-liveness.md`）：
 
 - Linux 优先用 `ss -lxp` 解析 unix socket 的持有者 pid；macOS / 无 ss 时回退 `lsof -nP`。
-- 拿到候选 pid 后用 POSIX 的 `kill -0` 复核存活：EPERM（not permitted）= 进程**还活着**（属他人 uid，无权发信号）→ ALIVE，保留；只有 ESRCH（no such process）才允许归入 STALE 候选。不能把「`kill -0` 非零」一律当作 gone。
+- 拿到候选 pid 后用 POSIX 的 `kill -0` 复核存活：EPERM（not permitted）= 进程**还活着**（属他人 uid，无权发信号）→ ALIVE，保留；只有 ESRCH（no such process）才允许归入 STALE 候选。不能把「`kill -0` 非零」一律当作进程已退出。
 - **持有者无法确定**（`ss`/`lsof` 都查不到、或命令失败）→ **默认 KEEP，归入「需要你拍板」，绝不静默判 STALE 删除**。
 - 目录占用用 `lsof +D "$dir"` 探测；命令失败或超时（macOS 上可能较慢）→ 默认保留该目录。
 
@@ -158,11 +158,11 @@ df -h "$root"
 
 **执行前提**：处于自动模式，或用户在交互中明确授权清 Docker。仅「清理 /tmp」的交互请求不自动触发 Docker 清理，但 daemon 可达时应在盘点报告里附 `docker system df` 结果提示可回收量。
 
-**前置探测**：`docker system df` 报告镜像/容器/卷/构建缓存的可回收量。`docker info` 或 `docker system df` 失败（无 daemon / 无权限 / 无 docker CLI）→ **整块跳过并在报告中标注**，不算失败（fail→keep 哲学：docker 探测失败 ≠ 可清）。
+**前置探测**：`docker system df` 报告镜像/容器/卷/构建缓存的可回收量。`docker info` 或 `docker system df` 失败（无 daemon / 无权限 / 无 docker CLI）→ **整块跳过并在报告中标注**，不算失败（"失败即保留"原则：docker 探测失败 ≠ 可清）。
 
 - **镜像**：`docker image prune -a -f`——删所有未被任何容器引用的镜像。成本提示：短周期 loop（如每 2 小时）下反复 prune 会导致常用基础镜像反复重拉，属预期行为，仅作提醒。
 - **卷**：默认 `docker volume prune -f`。**卷保护语义要记准**：被**任何现存容器**（无论运行中还是已停止）引用的卷都不会被 prune/rm 删除——风险仅在**容器本身已被删除**、具名卷失去引用之后。版本语义差异：Docker ≥23 的 `volume prune` 默认只删匿名卷，加 `-a` 才含具名卷。**若环境存在「容器已删但数据要保留」的具名卷**（如测试数据库）：用户在授权时声明排除名单（或调用参数 `--keep-volumes=<name1,name2,…>`），此时不用 prune，改为枚举 `docker volume ls -q` → 逐名跳过排除项 → 对其余非活跃卷逐个 `docker volume rm <name>`（与契约第 2 条「具名清单删除」同哲学）。**注意**：该枚举路径的删除范围等价于 `prune -a`（含所有失去引用的具名卷），排除名单在使用前必须被视为完备——没把握列全就退回默认 prune 或交互确认。
-- **构建缓存**（可选，同样 gated）：`docker builder prune -f`。
+- **构建缓存**（可选，执行前提同上）：`docker builder prune -f`。
 
 事后报告记录 prune 前后 `docker system df` 对比。
 
@@ -208,7 +208,7 @@ df -h "$root"
 - **不熟悉的 IDE / 工具目录宁可保留**：遇到不认识的目录名（各类编辑器、语言工具链、构建缓存），当「需要你拍板」，不擅自删。
 - **绝不 `rm -rf /tmp/*`**：永远具名清单删除，绝不通配批量删。
 - **不清其他用户的文件**：盘点一律 `-user "$(id -un)"` 过滤。
-- **`/tmp` 是多用户共享空间（Linux 与 macOS 都是）**：共享开发机上 `/tmp` 常有多个用户的临时文件；跨用户清理禁令在 `/tmp` 上尤其要严格——只清自己属主的条目。macOS 额外之处在于 `/tmp` → `/private/tmp` 是软链，per-user 真实临时目录落在 `$TMPDIR`。
+- **`/tmp` 是多用户共享空间（Linux 与 macOS 都是）**：共享开发机上 `/tmp` 常有多个用户的临时文件；跨用户清理禁令在 `/tmp` 上尤其要严格——只清自己属主的条目。macOS 额外之处在于 `/tmp` → `/private/tmp` 是软链，每个用户各自的真实临时目录落在 `$TMPDIR`。
 - **不要用不带属主过滤的 `du -sk /tmp/*` 评估自己的占用**：共享机上会把他人文件（可达数十 GB）误算成自己的，导致误判清理收益（实测教训：/tmp 里 30GB 的 review 目录实际属于其他用户）。正确姿势：先 `find "$root" -maxdepth 1 -mindepth 1 -user "$(id -un)"` 拿属主清单，再对清单逐条 `du -sk`。
 - **quota 视角**：配额按 uid 统计**全文件系统**的文件（home + /tmp 中属主文件都算），清理评估应以 `quota -s` + 属主过滤的 du 为准。
 - **不确定持有者 → 保留**：`ss`/`lsof` 查不到、命令失败、权限不足，一律 KEEP + 标「需要你拍板」，绝不静默删。
@@ -228,7 +228,7 @@ df -h "$root"
 
 - 列出**残留条目**（被保留的 / 用户选择不删的），让用户知道当前状态（自动模式下该信息已含在事后报告的保留清单里）。
 - 对每个根重新跑 `df -h "$root"`，展示清理前后磁盘用量变化。
-- 提醒用户：若本次确认了某些新的「以后也总是要保留」的路径/模式，可以把它们保存到记忆（memory）里，下次清理自动纳入默认保留清单。
+- 提醒用户：若本次确认了某些新的「以后也总是要保留」的路径/模式，可以把它们保存到记忆里，下次清理自动纳入默认保留清单。
 
 ## 失败与升级行为
 

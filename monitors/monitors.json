@@ -2,7 +2,7 @@
   {
     "name": "zyz-worker-watchdog",
     "command": "\"${CLAUDE_PLUGIN_ROOT}\"/monitors/watchdog.sh \"${CLAUDE_PROJECT_DIR}\"",
-    "description": "execute-task watchdog: reports silent/dead subagent roles and stale task status files so the main agent intervenes. Armed with when=always because on-skill-invoke matches the EMITTED skill name exactly, and a plugin-loaded skill emits the qualified form (zyz-worker:execute-task) while the same skill used in project mode emits the bare form (execute-task) — one literal cannot cover both. watchdog.sh is itself gated on the .zyz-worker/current-task pointer, so arming it always is equivalent in effect and costs one sleeping process.",
+    "description": "execute-task watchdog：报告静默/死亡的 subagent 角色和过期的任务状态文件，让主 agent 介入。之所以用 when=always 启用，是因为 on-skill-invoke 只按“实际发出的” skill 名精确匹配：插件加载的 skill 发出限定名（zyz-worker:execute-task），而同一 skill 在项目模式下发出裸名（execute-task）——一个字面量无法同时覆盖两者。watchdog.sh 本身受 .zyz-worker/current-task 指针门控，所以始终启用在效果上等价，代价只是一个休眠进程。",
     "when": "always"
   }
 ]

@@ -1,14 +1,13 @@
 # zyz-worker
 
-Standalone `execute-task` role instances are hash-keyed and auditable. Fixed
-audit/work packs hold logical START, HEARTBEAT, DONE, FINALIZED, probe,
-diagnostic, receipt, and baseline-inventory records; they are not standalone
-marker files. Confirmed API-kill deaths use `agent-runtime-state.sh finalize`,
-reconnects use explicit challenge/ACK, bounded `Waiting On` rows suppress only
-status freshness, and bounded cleanup uses `gc-step`. **Platform note:** the
-fixed-pack tracking layer requires Linux (`statx` mount identity); on macOS it
-fails closed as `genesis-capability-unavailable` and dead-role detection is
-disabled — see [hooks/README.md](hooks/README.md) `## Degraded environments`.
+独立模式下 `execute-task` 的角色实例以哈希为键，可审计。固定的 audit/work
+pack 承载逻辑上的 START、HEARTBEAT、DONE、FINALIZED、探测、诊断、回执和
+基线清单记录；它们不是独立的标记文件。已确认因 API 错误被杀
+而死亡的角色用 `agent-runtime-state.sh finalize` 收尾，重连走显式的
+质询/确认，带期限的 `Waiting On` 行只抑制状态新鲜度检查，有界清理用
+`gc-step`。**平台说明：** 固定 pack 跟踪层依赖 Linux（`statx` 挂载标识）；在
+macOS 上它以 `genesis-capability-unavailable` fail-closed，死角色检测随之停用
+——见 [hooks/README.md](hooks/README.md) `## 降级环境`。
 
 我是周钰喆，一名光荣的工人，隶属于伟大的工人阶级。我会和同志们一起解放全人类，最后解放我自己。
 
@@ -67,7 +66,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - `reuse-scope: worktree | tmux | both` —— 复用粒度（默认 `both`）。复用交接的是旧任务的**整个 worktree 集合**（多仓时全部仓，不支持只复用其中某一仓）。`worktree`=复用旧 worktree 集合 + 新 session + 新 claude；`tmux`=复用旧 session（新任务跑在旧 pane 的主仓 worktree 里，cwd 不可变，`worktree:` 字段被忽略，其余仓随集合整体交接）；`both`=复用旧 worktree 集合 + 旧 session。多仓复用时通过带内运行时配置块的可选 `worktrees:` 行（冒号分隔、主仓在前）把整套 worktree 交给 claude。
 - `reuse-claude: true | false` —— 仅在复用 tmux 时有意义。`true`（默认）=复用同一个正在运行的 claude 进程（不重启，新任务运行时通过 *带内运行时配置块* 交给它）；`false`=在复用的 session 里重启 claude。`worktree` scope 下被忽略（一定是新 claude）。
 
-落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree（多仓时为整套 worktree）——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## Container Reuse`。
+落地为独立脚本 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（与 `orch-spawn-worker.sh` 并列；同样只关联/创建容器、写 Phase-1 `dispatch.md`、**从不**启动 claude）。复用只做容器关联，**绝不**推进或改写旧任务（旧任务始终 `completed`）。dispatch 步会据 `reuse-from` 路由到该脚本并派发 L2 `intent=reuse-dispatch`。**注意**：复用任务与其 `reuse-from` 旧任务**共享容器**，对任一方跑 cleanup 会同时销毁共享的 session/worktree（多仓时为整套 worktree）——确保所有共享方都已 `completed` 再清理。详见 `skills/orchestration-scheduling-task/SKILL.md` `## 容器复用`。
 
 ## Worker MCP 隔离（ZYZ_WORKER_MCP）
 
@@ -90,9 +89,9 @@ orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型
 execute-task 的每个评审点（设计评审每一轮、每个实现 / SubTask 评审、汇总评审）除了派发本工程的 `review-agent` subAgent，还会**同时**为本机装着的**其它** agent 产品各起一个只读评审会话：主 agent 跑在 Claude Code 且装了 `codex`，就同时起 `codex exec` 评审；跑在 Codex 且装了 `claude`，就同时起 `claude -p` 评审。宿主自身的产品不会重复起（那就是 review-agent）。
 
 - **入口**：`scripts/cross-review.sh detect` 查看会选中哪些 harness；`scripts/cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <l>] [--cwd <dir>]` 并发跑所有选中的评审者，产出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，stdout 每个评审者一行 `status=ok|empty|failed|timeout`。提示词模板是 `skills/execute-task/templates/cross-review-prompt.md`（沿用 `subagents/review-agent.md` 的评审标准与 `templates/review-report.md` 的报告结构）。
-- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件 `## Cross-Harness Review`；两个评审者意见一致本身不算证据。评审点收敛条件见 `## Review Convergence`：review-agent 本轮零 blocking，交叉评审的每条 finding 都有处置且没有被接受为 blocking，也没有待用户决定的问题。
+- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件 `## 跨 harness 交叉评审`；两个评审者意见一致本身不算证据。评审点收敛条件见 `## 评审收口`：review-agent 本轮零 blocking，交叉评审的每条 finding 都有处置且没有被接受为 blocking，也没有待用户决定的问题。
 - **可选、不阻塞**：没装其它 harness、被关闭、失败或超时，都只记录然后继续用 review-agent 单独评审。
-- **评审收口（review convergence）**：每条 finding 分 `blocking` / `non-blocking:normal` / `non-blocking:contrived` 三级，以设计文档 `## Scope Boundary` 声明的输入域与威胁模型为判据；评审点在 review-agent 本轮零 blocking（被拒或降级的 blocking 要由下一轮评审确认）、交叉评审无被接受的 blocking、无待用户决定项时收口，contrived 按类记入 `<task-dir>/residual-risks.md` 留给后续补强任务，同类第二个变体要求类级修复，第 3 轮起每 3 轮做一次收敛检查并告知用户。详见 `skills/execute-task/SKILL.md` `## Review Convergence`。
+- **评审收口（review convergence）**：每条 finding 分 `blocking` / `non-blocking:normal` / `non-blocking:contrived` 三级，以设计文档 `## 范围边界` 声明的输入域与威胁模型为判据；评审点在 review-agent 本轮零 blocking（被拒或降级的 blocking 要由下一轮评审确认）、交叉评审无被接受的 blocking、无待用户决定项时收口，contrived 按类记入 `<task-dir>/residual-risks.md` 留给后续补强任务，同类第二个变体要求类级修复，第 3 轮起每 3 轮做一次收敛检查并告知用户。详见 `skills/execute-task/SKILL.md` `## 评审收口`。
 - **隔离**：Codex 用 `-s read-only`；Claude 用 `--permission-mode dontAsk` + 只读工具白名单（含只读 git）并禁用编辑工具；子会话清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，不关的话子会话的 hook 会冒充本任务的主 agent）；默认零 MCP（沿用 `orch-worker-mcp-args.sh` 的覆盖参数；万一 Codex 仍因这些覆盖加载配置失败，会退回继承一次，并在 `.meta` 记 `mcp=inherit-fallback`）。交叉评审者不注入变异、不复跑测试——那仍是 review-agent 的义务。
 
 | 环境变量 | 作用 |

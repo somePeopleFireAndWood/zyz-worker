@@ -70,5 +70,5 @@ cooldown="${ZYZ_POST_RESULT_COOLDOWN_SEC:-60}"
 zyz_cooldown_ok "$root/runtime/nag/postflush.last" "$cooldown" || exit 0
 
 mins=$((age / 60))
-zyz_emit_context "PostToolUse" "[zyz-worker watchdog] A subagent result just arrived but the overall status file (${status_file}) was last written ${mins} minute(s) ago. Per the workflow, persist this result — progress, decisions, blockers, next step, SubTask flags — into the status file (and the SubTask-status file if one exists) BEFORE dispatching further work."
+zyz_emit_context "PostToolUse" "[zyz-worker watchdog] 刚收到一个 subagent 结果，但总状态文件（${status_file}）上次写入已是 ${mins} 分钟前。按工作流要求，必须在派发后续工作之前，先把这个结果——进度、决策、阻塞项、下一步、SubTask 标记——写入状态文件（如果有 SubTask 状态文件，也一并写入）。"
 exit 0

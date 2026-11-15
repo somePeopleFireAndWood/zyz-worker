@@ -282,10 +282,10 @@ run_T1() {
         # Require the word "required" somewhere in the file (comment block
         # or inline annotation), AND either "absolute" or a literal "~/"
         # token nearby — both signal the absolute-path contract.
-        if grep -qF "required" "$REPO_ROOT/$mlte" \
+        if grep -qF "必填" "$REPO_ROOT/$mlte" \
             && { grep -qF "absolute" "$REPO_ROOT/$mlte" \
                 || grep -qF "~/" "$REPO_ROOT/$mlte"; }; then
-            pass "T1' $mlte mentions source-repo 'required' + 'absolute' (or '~/')"
+            pass "T1' $mlte mentions source-repo '必填' + 'absolute' (or '~/')"
         else
             fail "T1' $mlte does NOT document source-repo as required+absolute (need both 'required' and one of 'absolute'/'~/')"
         fi
@@ -508,14 +508,14 @@ run_T3() {
 
     # SKILL.md
     local skill="skills/orchestration-scheduling-task/SKILL.md"
-    check_grep_fixed "$skill" "'Orchestrated Mode'"       "Orchestrated Mode"
+    check_grep_fixed "$skill" "'编排模式'"       "编排模式"
     check_grep_fixed "$skill" "'ZYZ_WORKER_STATUS_FILE'"  "ZYZ_WORKER_STATUS_FILE"
     check_grep_fixed "$skill" "'flock'"                   "flock"
     check_grep_fixed "$skill" "'task/<task-id>'"          "task/<task-id>"
 
     # main-agent.md
     local main="skills/orchestration-scheduling-task/prompts/main-agent.md"
-    check_grep_fixed "$main" "'Cadence Policy'" "Cadence Policy"
+    check_grep_fixed "$main" "'## 节奏策略'" "## 节奏策略"
     check_grep_fixed "$main" "'/loop'"          "/loop"
     check_grep_fixed "$main" "'ScheduleWakeup'" "ScheduleWakeup"
 
@@ -525,7 +525,7 @@ run_T3() {
     # as positive literal anchors.  These sit beside the existing /loop +
     # ScheduleWakeup anchors above; all of those are kept unchanged.
     check_grep_fixed "$main" "ZYZ_ORCH_ONCE opt-out env var" "ZYZ_ORCH_ONCE"
-    check_grep_fixed "$main" "auto-timer mode anchor"        "auto-timer"
+    check_grep_fixed "$main" "auto-timer mode anchor (自动定时模式)"        "自动定时模式"
 
     # 7 cadence anchor strings
     local anchor
@@ -543,7 +543,7 @@ run_T3() {
 
     # execute-task SKILL.md
     local etsk="skills/execute-task/SKILL.md"
-    check_grep "$etsk" "'## Orchestrated Mode' heading" '^## Orchestrated Mode([[:space:]]|$)'
+    check_grep "$etsk" "'## 编排模式' heading" '^## 编排模式([[:space:]]|$)'
 
     # ---- absorbing-state contract: done is absorbing, awaiting-confirmation
     #      is reversible (0.6.5 confirmation/done state-model fix, design F5) ---
@@ -565,17 +565,17 @@ run_T3() {
     #
     # (1) The non-reversible phase is `done` (NOT awaiting-confirmation).
     check_grep "$etsk" "absorbing rule: the non-reversible phase is \`done\`" \
-        'non-reversible phase is `done`'
+        '\*\*唯一\*\*不可逆的阶段是 `done`'
     # (2) `done` is tied to the word "absorbing" (the new roll-back-rule heading
     #     reads "phase may roll back, except \`done\` which is absorbing").
     check_grep_fixed "$etsk" "absorbing rule: \`done\` is the absorbing terminal" \
-        'except `done` which is absorbing'
+        '但 `done` 是吸收态'
     # (3) `awaiting-confirmation` is explicitly REVERSIBLE.  ERE: from the
     #     awaiting-confirmation token to "remains reversible" within one
     #     sentence (no intervening period), so a future edit that re-froze
     #     awaiting-confirmation as absorbing would no longer match.
     check_grep "$etsk" "absorbing rule: \`awaiting-confirmation\` remains reversible" \
-        'awaiting-confirmation[^.]*remains reversible'
+        '`awaiting-confirmation` 表示[^。]*它仍然是可逆的'
 
     # ---- delivery test-gate (registration-style hard gate) --------------
     # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/design-test-gate.md
@@ -586,7 +586,7 @@ run_T3() {
     # (RC3) — it is unique to the §4 gate sentence, so deleting the gate
     # turns this check red.
     check_grep_fixed "$etsk" "§4 delivery test-gate anchor 'every required category'" \
-        "every required category"
+        "每一个必需的类别"
 
     # ---- task-status template per-category Final Aggregate Testing -------
     # Per design-test-gate.md §模板结构化: `## Final Aggregate Testing` in the
@@ -598,13 +598,13 @@ run_T3() {
     check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category E2E line" \
         "- E2E:"
     check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category Regression line" \
-        "- Regression:"
+        "- 回归测试:"
 
     # Each of the 6 agent files: heading + 'wait-state'
     local af
     for af in "${AGENT_FILES[@]}"; do
         check_grep "$af" "'## Orchestrated Mode Hook' heading" \
-            '^## Orchestrated Mode Hook([[:space:]]|$)'
+            '^## 编排模式钩子([[:space:]]|$)'
         check_grep_fixed "$af" "'wait-state' field mention" "wait-state"
     done
 
@@ -653,7 +653,7 @@ run_T3() {
     #     "absorbed as a subset").  `short-circuit` is the stable anchor phrase.
     #     ($main = orch prompts/main-agent.md, defined above in this function.)
     check_grep_fixed "$main" "T3''' gate approved short-circuit documented" \
-        "short-circuit"
+        "短路"
 
     # (5a) RC7 backtick-quoted token anchors in the master-entry template.  The
     #      backticks are part of the matched needle/pattern, so the match can
@@ -679,7 +679,7 @@ run_T3() {
     #      specifically asserts the new completed-state wording landed.
     #      ($skill = orch SKILL.md, defined above in this function.)
     check_grep_fixed "$skill" "T3''' SKILL.md completed-state 'decoupled' anchor" \
-        "decoupled"
+        "已解耦"
 
     # ---- T3'''' (0.6.5 confirmation/done state-model fix) ----------------
     # The 0.6.5 fix re-introduces worker phase `done` as the sole absorbing
@@ -767,7 +767,7 @@ run_T3() {
     #              old poll step read only claude-started/needs-* fields, never
     #              driver-intent, so this is non-vacuous).
     check_grep "$main" "B6 main-agent.md gate relay idempotency 'at most once' (any case)" \
-        '[Aa][Tt] [Mm][Oo][Ss][Tt] [Oo][Nn][Cc][Ee]'
+        '至多一次'
     check_grep_fixed "$main" "B6 main-agent.md gate reads monitor.md 'driver-intent' for relay de-dup" \
         "driver-intent"
 
@@ -4601,10 +4601,10 @@ run_T7() {
     # CLAUDE.md must contain the workflow heading (or equivalent).  Design
     # §测试计划 T7: "CLAUDE.md 含 ## Orchestration Scheduling Task Workflow
     # 或等价标题".
-    if grep -F "Orchestration Scheduling Task Workflow" "$REPO_ROOT/CLAUDE.md" >/dev/null 2>&1; then
-        pass "T7 CLAUDE.md contains '## Orchestration Scheduling Task Workflow'"
+    if grep -F "## 编排调度任务工作流" "$REPO_ROOT/CLAUDE.md" >/dev/null 2>&1; then
+        pass "T7 CLAUDE.md contains '## 编排调度任务工作流'"
     else
-        fail "T7 CLAUDE.md missing 'Orchestration Scheduling Task Workflow' heading"
+        fail "T7 CLAUDE.md missing '## 编排调度任务工作流' heading"
     fi
 
     # docs/conventions/project-structure.md must mention scripts/orch-*.sh
@@ -4657,7 +4657,7 @@ run_T7() {
     # (A) SKILL.md load-bearing strings.
     local skill_md="skills/orchestration-scheduling-task/SKILL.md"
     check_grep "$skill_md" "T7'' SKILL.md '## Architecture' 3-layer section heading" \
-        '^## Architecture'
+        '^## 架构（三层）'
     check_grep_fixed "$skill_md" "T7'' SKILL.md references 'orch-driver-agent' (L2 driver)" \
         "orch-driver-agent"
     check_grep_fixed "$skill_md" "T7'' SKILL.md mentions 'monitor' (driver-state / File Protocols row)" \
@@ -4668,9 +4668,9 @@ run_T7() {
     check_grep_fixed "$skill_md" "T7'' SKILL.md default '-1' unlimited semantics" \
         "-1"
     check_grep_fixed "$skill_md" "T7'' SKILL.md 'unlimited' wording for the -1 default" \
-        "unlimited"
+        "不设上限"
     check_grep_fixed "$skill_md" "T7'' SKILL.md resource caveat (per-worker = full claude process)" \
-        "Resource caveat"
+        "资源提醒"
     # notify structured signature (future-webhook extension point).
     check_grep_fixed "$skill_md" "T7'' SKILL.md notify signature '(task-id, window, reason'" \
         "(task-id, window, reason"
@@ -4688,7 +4688,7 @@ run_T7() {
     check_grep "$main_md" "T7'' main-agent.md '### notify' step heading" \
         '^### notify([[:space:]]|$)'
     check_grep_fixed "$main_md" "T7'' main-agent.md 'default -1' parallel-cap default" \
-        "default -1"
+        "默认 -1"
     # main-agent.md must NOT carry the removed auto-start env var, nor the stale
     # "let the user attach to manually start claude" dispatch instruction
     # (Finding 8: L2 starts claude now; ST-E deleted both).  We forbid the
@@ -4800,7 +4800,7 @@ run_T9() {
     # assert the two are byte-identical.  Anchoring on "**Send the command.**"
     # (rather than the namespaced token, which also appears on the intervene
     # re-send line) guarantees exactly one line is extracted per file.
-    local send_anchor='**Send the command.**'
+    local send_anchor='**发送命令。**'
     if [ ! -f "$REPO_ROOT/$drv_agent" ] || [ ! -f "$REPO_ROOT/$drv_sub" ]; then
         fail "T9 mirror send-line byte-equality (one or both driver files missing: $drv_agent / $drv_sub)"
     else

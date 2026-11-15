@@ -1,5 +1,5 @@
 {
-  "description": "zyz-worker watchdog: deterministic liveness heartbeats, status-freshness reminders, dispatch-side scope guard, shared-worktree checkout guard, subagent exit gate, main-agent stop gate, and IM stop-notifier for the execute-task workflow. All hooks fail open and no-op unless a .zyz-worker/current-task pointer resolves. Set ZYZ_HOOKS_DISABLE=1 to disable (ZYZ_SCOPE_GUARD_DISABLE=1 for the scope guard alone; ZYZ_CHECKOUT_GUARD_DISABLE=1 for the checkout guard alone; ZYZ_NOTIFY_DISABLE=1 for the IM notifier alone).",
+  "description": "zyz-worker watchdog：为 execute-task 工作流提供确定性的存活心跳、状态新鲜度提醒、派发侧范围守卫、共享 worktree 的 checkout 守卫、subagent 退出门、主 agent 停止门以及 IM 停止通知。所有 hook 都 fail open，且只有在 .zyz-worker/current-task 指针能解析时才生效。设置 ZYZ_HOOKS_DISABLE=1 可整体关闭（ZYZ_SCOPE_GUARD_DISABLE=1 只关范围守卫；ZYZ_CHECKOUT_GUARD_DISABLE=1 只关 checkout 守卫；ZYZ_NOTIFY_DISABLE=1 只关 IM 通知）。",
   "hooks": {
     "UserPromptSubmit": [
       {

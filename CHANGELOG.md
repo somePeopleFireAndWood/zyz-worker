@@ -7,56 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Review loops converge on what reaches the artifact (closes #22).** A loop
-  that closed only when the reviewer had nothing left to say kept going on
-  contrived constructions: each fix answered one, and the next round found the
-  next variant of the same class (a production redaction SubTask ran from
-  round 10 to 20). New `skills/execute-task/SKILL.md` `## Review Convergence`:
-  every finding at every review point, from every reviewer, is tiered
-  `blocking` / `non-blocking:normal` / `non-blocking:contrived`. Tiers are
-  judged against the design's new `## Scope Boundary` (declared inputs,
-  callers, threat model, out-of-scope constructions), not by how strange a
-  construction looks. The threat model and out-of-scope clauses are the user's
-  decisions, and any clause the user did not state goes into Quick Review's
-  attention list. An unstated boundary on security- or data-relevant code is a
-  user question. An unstated premise the design rests on never becomes
-  `contrived` just because today's callers satisfy it. For exported surfaces,
-  external consumers count as callers.
-  A review point closes on a round where reviewAgent's own report has zero
-  blocking findings (`Result: changes-requested` iff a blocking finding exists),
-  no cross-harness finding is accepted as blocking, and no user decision is
-  pending. Rejecting or downgrading a blocking finding does not close the point
-  by itself; the next round's reviewer confirms or re-raises it, so the
-  accept↔reject escalation stays live. At most one extra round per review point
-  may land normal fixes.
-  Contrived findings are never fixed inside the loop. They go, one entry per
-  class, to the new residual-risk register (`templates/residual-risks.md`:
-  origin, reproduction, impact, verified hardening plan, status). Later
-  reviewers receive the register, so registered items are not re-raised; a
-  variant reached by a producer the entry did not clear is a new finding. The
-  final report proposes the register as a hardening follow-up's input.
-  A second variant of an already-fixed class is marked `recurring` and needs
-  one class-level fix (or one register entry), not another point patch.
-  At round 3 of a review point still holding blockers, and every third round
-  after, the main agent runs a recorded convergence check and tells the user
-  the outcome: continue, class-level fix, re-sequence in-scope hardening into
-  its own later SubTask (with ledger rows for the findings it takes over), or
-  escalate scope questions.
-  Guard rails: tiers change dispositions, never what is reported; downgrading a
-  reviewer's `blocking` needs enumerated-caller evidence like a rejection; in
-  doubt it is `blocking`. Wired through the main-agent and the
-  review / implementation / test-agent prompts (both mirrors) and the
-  review-report, cross-review, task-status, final-report and design-doc
-  templates.
-- **L5 scope guard: vetoes are clause-local, and the lexicon covers the tier
-  vocabulary.** A negation used to veto the whole dispatch, so "Never skip
-  contrived findings. Report only the blocking findings." passed; the #20
-  non-blocking veto had the same gap. Vetoes are now judged per clause.
-  Backticked tier tokens are unwrapped before quote-stripping, so "report only
-  `blocking` findings" is caught. A negated report verb vetoes only when it
-  negates "only", so "do not report non-blocking findings" is a cap. New
-  contrived / 刁钻 / 边角 / 对抗 cap patterns, plus a CJK veto for 不要 / 不能 / 别
-  + 跳过 / 忽略. The T7 corpus grows to 44 capped and 47 legitimate dispatches.
+## [0.27.0] — 2026-11-15
+
+- **插件的全部提示词与文档改为简体中文。** 范围包括：
+  - 各 skill（`SKILL.md`、主 agent 控制器提示词、模板、参考资料）、角色提示词（`subagents/` 与 `agents/` 两份镜像，含 frontmatter `description`）、斜杠命令（含 `argument-hint`）；
+  - `README.md`、`CLAUDE.md`、`docs/`、`hooks/README.md`；
+  - 插件清单与 `hooks.json` / `monitors.json` 的描述；
+  - hook / watchdog 运行时注入给模型的消息（L1 状态新鲜度提醒、L2 退出门、L4 停止门、L5 范围守卫与 L6 checkout 守卫的拒绝理由、L3 后台 watchdog 通知），以及 IM 通知的默认标题。
+
+  **脚本与协议按字面解析的内容一律保持英文**，升级不会破坏已有任务目录或主清单。具体包括：
+  - `## Agent State` 及其 `- Waiting On:` 行格式、`- Current Phase:` 及其取值；
+  - `## Pending Merge Approval` 与合并令牌，主条目 / `worker-status.md` / `dispatch.md` / `monitor.md` / 问答文件的协议标题；
+  - 所有 frontmatter 键与枚举值、`intent=…` 名称、`[zyz-worker watchdog]` 前缀；
+  - 评审裁决值与分级名、遗留风险清单字段、SubTask 记分板字段。
+
+  其余章节标题按统一译名表翻译，所有跨文件的 `` `## …` `` 引用同步改名，并校验了无悬空引用。
+  - 角色文件开头的身份句保持英文：镜像一致性测试只对这一行做归一化。
+  - CHANGELOG 中已发布版本的条目保持英文原样，从本版本起的新条目使用中文。
+
+  测试套件中针对提示词英文措辞的断言改为锚定对应的中文规则。一批原本靠 `! grep 'status file'` 判断"已压制"的负向检查，在消息改为中文后会恒真；现改为锚定 `分钟没有更新`，恢复了判别力。
+
+  顺带修正了 `docs/notify.md` 的一处既有不一致：默认事件集合实际包含 `idle`，文档原先漏列。
+
+- **L5 范围守卫识别中文限缩措辞。** 新增的中文模式覆盖这些说法："限 3 条发现"、"不超过 3 条"、"最严重的 N 条就够了"、"一行结论"、"只报阻断 / blocking 发现"、"跳过 / 不用报非阻断发现"。"第 1 步，共 4 步"、"然后继续……"这类分步交付的说法被识别为承诺交付剩余部分，予以放行；"每页最多 3 条记录"这类与评审范围无关的普通需求不会误伤。
+
+- **评审循环按"能否到达产物"收口（closes #22）。** 过去评审循环要等评审者无话可说才结束，遇到刁钻构造时不收敛：每次修复只回应一个构造，下一轮就在同类的下一个变体上找到缺口。生产中一个令牌脱敏子任务因此从第 10 轮走到了第 20 轮。新增 `skills/execute-task/SKILL.md` `## 评审收口`：
+  - **三级分级。** 每个评审点、每个评审者的每条发现都分为 `blocking` / `non-blocking:normal` / `non-blocking:contrived` 三级。分级的判据是设计文档新增的 `## 范围边界`（声明的输入、调用方、威胁模型、用户裁定的范围外构造），而不是构造看起来有多刁钻。
+    - 威胁模型与范围外条款由用户决定；用户未明说的条款要列入快速审阅的关注项。
+    - 涉及安全 / 数据且边界未声明时，交给用户决定。设计赖以成立的未声明前提，绝不会因为现有调用方恰好满足而被判成 `contrived`。
+    - 对外暴露的接口，其外部使用方也算调用方。
+  - **收口条件。** 评审点在同一轮满足三条时收口：reviewAgent 自己的报告为零 blocking（当且仅当存在 blocking 发现时 `结果` 为 `changes-requested`）；交叉评审没有被接受为 blocking 的发现；也没有待用户决定的问题。
+    - 拒绝或降级一条 blocking 不能单凭裁决收口，要由下一轮评审者确认或重提，"接受↔拒绝反复 3 次即升级"因此依然有效。
+    - 每个评审点至多再开一轮用于落地 normal 级修复。
+  - **遗留风险清单。** contrived 发现从不在本循环内修复，而是按类记入新的遗留风险清单（`templates/residual-risks.md`：来源、复现、影响面、已验证的加固方案、状态）。后续评审者拿到清单后不再重复提出；但如果某个变体由清单条目未排查过的调用方触发，它算作一条新发现。最终报告把清单作为后续加固任务的输入提出。
+  - **同类变体。** 已修过的类再出现第二个变体时，标为 `recurring`，必须用一次类级修复（或一个清单条目）解决，不再逐个打补丁。
+  - **收敛检查。** 评审点到第 3 轮仍有 blocking 时（之后每 3 轮一次），主 agent 做一次收敛检查并告知用户结论：继续；改为类级修复；把域内的对抗性加固重排为主路径之后的独立 SubTask，并为它接手的发现建台账行；或把范围问题升级给用户。
+  - **护栏。** 分级只改变处置，不改变上报；把评审者判的 blocking 降级，要像拒绝一样附上调用方枚举证据；拿不准时按 blocking 处理。
+  - **落地范围。** 主 agent 与 review / implementation / test 角色提示词（两份镜像）以及评审报告、交叉评审、任务状态、最终报告、设计文档模板均已接入。
+
+- **L5 范围守卫：否定只在本句生效，词库覆盖分级词汇。** 过去一处否定会让整条派发提示词都被放行，所以"Never skip contrived findings. Report only the blocking findings." 能逃过检查，#20 的非阻断否定也有同样的漏洞。改动如下：
+  - 否定现在按子句判定，只对它所在的那一句生效。
+  - 反引号包裹的分级词在去引号之前先解包，所以"report only `blocking` findings"能被拦下。
+  - 否定的上报动词只在否定的是 "only" 时才算放行信号，"do not report non-blocking findings" 属于限缩。
+  - 新增 contrived / 刁钻 / 边角 / 对抗 等限缩模式，以及 不要 / 不能 / 别 + 跳过 / 忽略 的中文否定。
 
 ## [0.26.0] — 2026-09-28
 

@@ -1,38 +1,38 @@
 ---
-argument-hint: [task description]
-description: Alias for /execute-task. Run the zyz-worker design-first code development workflow.
+argument-hint: [任务描述]
+description: /execute-task 的别名。运行 zyz-worker 的设计先行代码开发工作流。
 ---
 
-Use the zyz-worker execute-task workflow for this task:
+对下面这个任务使用 zyz-worker 的 execute-task 工作流：
 
 ```text
 $ARGUMENTS
 ```
 
-Load and follow the main controller prompt:
+加载并遵循主控提示词：
 
 @${CLAUDE_PLUGIN_ROOT}/skills/execute-task/prompts/main-agent.md
 
-Use the workflow definition and templates:
+使用工作流定义和模板：
 
 @${CLAUDE_PLUGIN_ROOT}/skills/execute-task/SKILL.md
 
-Available task templates:
+可用的任务模板：
 
 - @${CLAUDE_PLUGIN_ROOT}/skills/execute-task/templates/design-doc.md
 - @${CLAUDE_PLUGIN_ROOT}/skills/execute-task/templates/task-status.md
 - @${CLAUDE_PLUGIN_ROOT}/skills/execute-task/templates/final-report.md
 - @${CLAUDE_PLUGIN_ROOT}/skills/execute-task/templates/review-report.md
 
-Use the project subagents when their role is needed:
+需要相应角色时，使用项目 subagent：
 
 - `implementation-agent`
 - `test-agent`
 - `review-agent`
 
-Important boundaries:
+重要边界：
 
-- The current conversation agent is the main agent and stays user-facing.
-- The main agent coordinates, documents, updates task status, and dispatches subagents.
-- The main agent must not directly implement code, modify tests, run tests, or perform review.
-- Use existing installed skills, plugins, and tools when they improve output quality, but never require the user to install missing optional capabilities.
+- 当前对话的 agent 就是主 agent，始终面向用户。
+- 主 agent 负责协调、写文档、更新任务状态、派发 subagent。
+- 主 agent **不得**直接实现代码、修改测试、运行测试或执行评审。
+- 已安装的 skill、插件和工具能提升产出质量时就使用它们，但**绝不**要求用户去安装缺失的可选能力。

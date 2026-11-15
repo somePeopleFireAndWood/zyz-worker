@@ -113,12 +113,12 @@ if [ -n "$stale_roles" ]; then
             && printf '%s\n' "$running_roles" | grep -qxF "$(zyz_role_of "$role_type")" 2>/dev/null; then
             continue
         fi
-        detail="${detail}${key} (${role_type}, ${stale_kind}, silent $((age / 60)) min); "
+        detail="${detail}${key}（${role_type}，${stale_kind}，已静默 $((age / 60)) 分钟）；"
     done <<EOF
 $stale_roles
 EOF
     if [ -n "$detail" ]; then
-        reason="Dispatched role(s) look dead or stuck with no clean finish: ${detail}They may have been killed by an API error without SubagentStop. Verify platform status, then use the supported runtime protocol: create an exact probe and investigate its ACK; after confirmed death run agent-runtime-state.sh finalize <task-dir> <agent-id> <role> <reason> [replacement-id]. Never delete or fabricate runtime markers by hand."
+        reason="已派发的角色看起来已经死亡或卡住，且没有正常结束：${detail}它们可能已被 API 错误杀掉，而 SubagentStop 没有触发。先核实平台状态，再走受支持的 runtime 协议：创建一个精确的 probe 并调查它的 ACK；确认死亡后运行 agent-runtime-state.sh finalize <task-dir> <agent-id> <role> <reason> [replacement-id]。绝不手工删除或伪造 runtime 标记。"
     fi
 fi
 
@@ -131,7 +131,7 @@ fi
 if [ "$status_age" -gt "$status_stale_sec" ] && ! zyz_status_waiting "$status_file" \
     && ! zyz_main_state_suppresses "$root"; then
     [ -n "$reason" ] && reason="${reason} "
-    reason="${reason}The overall status file (${status_file}) is $((status_age / 60)) minutes stale for an active phase (${phase}). Persist current progress, active roles, blockers, and the next step into it before idling."
+    reason="${reason}总状态文件（${status_file}）在活跃阶段（${phase}）已有 $((status_age / 60)) 分钟没有更新。停下空闲之前，先把当前进度、活跃角色、阻塞项和下一步写进去。"
 fi
 
 # Terminal-but-unharvested detection (L4 primary): a role reached a terminal
@@ -165,13 +165,13 @@ if [ -n "$unharvested_roles" ]; then
     udetail=""
     while IFS="$(printf '\t')" read -r key role; do
         [ -n "$key" ] || continue
-        udetail="${udetail}${role} (${key}, its result SubTask file under ${root}/subtasks/ and its durable log); "
+        udetail="${udetail}${role}（${key}；它在 ${root}/subtasks/ 下的结果 SubTask 文件及其持久日志）；"
     done <<EOF
 $unharvested_roles
 EOF
     if [ -n "$udetail" ]; then
         [ -n "$reason" ] && reason="${reason} "
-        reason="${reason}Completed role(s) look unharvested — they reached a terminal state (DONE/FINALIZED) but the main agent has been idle since, so the completion may not have been processed (a dropped completion notification): ${udetail}Read each named result now, record it in ${status_file}, then continue — that clears this block."
+        reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就读取上面列出的每个结果，记录到 ${status_file}，然后继续——这样即可解除本次阻断。"
     fi
 fi
 

@@ -193,8 +193,8 @@ Review 循环：
 4. 设计文档初稿完成后，主agent 启动独立 reviewAgent 审查设计文档。
 5. reviewAgent 按设计文档审查标准检查是否存在错误、模糊、遗漏、冲突或不完备。
 6. 主agent 自行决定接受或拒绝 reviewAgent 的每条建议（默认不询问用户）。
-7. 接受时主agent 更新设计文档（**直接编辑或删除错误的原文，不追加解释性批注**——见「设计文档的修改形态」）；拒绝时主agent 在设计文档旁的独立 review-history 文件（`<设计文档basename>.review-history.md`，每个设计文档一个）与 task status 的 `## Design Review > Rejected Suggestions` 记录拒绝原因。review history 不作为设计文档的章节：它仅对设计阶段的 review 循环与人工审核有意义，设计文档本身保持为干净的终态规格。
-8. 仅当 reviewAgent 的建议会改动 Goals 或 Acceptance Criteria 时，主agent 才回到用户征求决策。
+7. 接受时主agent 更新设计文档（**直接编辑或删除错误的原文，不追加解释性批注**——见「设计文档的修改形态」）；拒绝时主agent 在设计文档旁的独立 review-history 文件（`<设计文档basename>.review-history.md`，每个设计文档一个）与任务状态文件的 `## 设计评审 > 被拒绝的建议` 记录拒绝原因。review history 不作为设计文档的章节：它仅对设计阶段的 review 循环与人工审核有意义，设计文档本身保持为干净的终态规格。
+8. 仅当 reviewAgent 的建议会改动目标或验收标准时，主agent 才回到用户征求决策。
 9. reviewAgent 基于修改后的文档和拒绝原因执行新的 review。
 10. 当 reviewAgent 判断无需修改时，设计 review 循环结束。
 11. 主agent 提醒用户进行人工审查。
@@ -210,7 +210,7 @@ implementation 环节由主agent 调度 implementationAgent、testAgent、review
 - testAgent 根据设计文档开发测试代码。
 - implementationAgent 与 testAgent 可以并行工作。
 - 如果 implementationAgent 在开发中发现设计文档遗漏的重要测试点，应通知主agent。
-- 主agent 将设计文档 `## Testing Plan` 更新为新的终态，并在该设计文档的 review-history 文件与 task status 中追加 "discovered during implementation" 条目，并通知 testAgent 补充测试代码；仅当新测试点暗示 Goals 或 Acceptance Criteria 变更时，才重新触发设计评审或回到用户。
+- 主agent 将设计文档 `## 测试计划` 更新为新的终态，并在该设计文档的 review-history 文件与任务状态文件中追加「实现中发现」条目，并通知 testAgent 补充测试代码；仅当新测试点暗示目标或验收标准变更时，才重新触发设计评审或回到用户。
 
 #### 测试执行
 
@@ -307,64 +307,64 @@ implementation 环节可能执行很长时间，且中途可能不稳定。
 建议结构：
 
 ```markdown
-# Task Status
+# 任务状态
 
-## Metadata
+## 元数据
 
-- Task ID:
-- Task Name:
-- Design Document:
+- 任务 ID:
+- 任务名称:
+- 设计文档:
 - Current Phase:
-- Created At:
-- Updated At:
+- 创建时间:
+- 更新时间:
 
-## Progress
+## 进度
 
-- Completed:
-- In Progress:
-- Pending:
-- Blocked:
+- 已完成:
+- 进行中:
+- 待处理:
+- 阻塞:
 
-## User Decisions
+## 用户决策
 
-- Decision:
-- Reason:
+- 决策:
+- 理由:
 
 ## Agent State
 
-- Main Agent:
+- 主 agent:
 - implementationAgent:
 - testAgent:
 - reviewAgent:
 
-## Design Review
+## 设计评审
 
-- Latest Review Result:
-- Open Issues:
-- Rejected Suggestions:
+- 最近一次评审结果:
+- 未解决问题:
+- 被拒绝的建议:
 
-## Implementation
+## 实现
 
-- Implementation Status:
-- Important Notes:
-- Discovered Test Points:
+- 实现状态:
+- 重要说明:
+- 新发现的测试点:
 
-## Testing
+## 测试
 
-- Test Command:
-- Test Environment:
-- Latest Result:
-- Failing Cases:
+- 测试命令:
+- 测试环境:
+- 最新结果:
+- 失败用例:
 
-## Implementation Review
+## 实现评审
 
-- Latest Review Result:
-- Required Changes:
-- Rejected Suggestions:
+- 最近一次评审结果:
+- 必须修改项:
+- 被拒绝的建议:
 
-## Next Actions
+## 下一步行动
 
-- Next:
+- 下一步:
 ```
 
 ## 设计文档建议结构
@@ -380,35 +380,35 @@ implementation 环节可能执行很长时间，且中途可能不稳定。
 建议结构：
 
 ```markdown
-# <Task Name> Design
+# <任务名称> 设计
 
-## Background
+## 背景
 
-## Goals
+## 目标
 
-## Non-Goals
+## 非目标
 
-## User Requirements
+## 用户需求
 
-## Current State
+## 现状
 
-## Proposed Design
+## 方案设计
 
-## Implementation Plan
+## 实施计划
 
-## Important Details
+## 重要细节
 
-## Files To Change
+## 改动文件
 
-## Testing Plan
+## 测试计划
 
-## Acceptance Criteria
+## 验收标准
 
-## Risks
+## 风险
 
-## Open Questions
+## 待解问题
 
-## User Decisions
+## 用户决策
 ```
 
 review history 不是设计文档的章节。它保存在设计文档旁的独立文件（每个设计文档一个）：
@@ -472,7 +472,7 @@ reviewAgent 对应的口径：设计阶段的 finding 若唯一后果是「将�
 设计环节：
 
 - 如果需求、约束或验收标准不清楚，主agent 可以向用户提问。
-- 设计文档 review 中的修改建议由主agent 自行决定接受或拒绝；只在涉及 Goals / Acceptance Criteria 时才回到用户。
+- 设计文档 review 中的修改建议由主agent 自行决定接受或拒绝；只在涉及目标 / 验收标准时才回到用户。
 
 implementation 环节：
 

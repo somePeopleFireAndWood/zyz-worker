@@ -95,14 +95,14 @@ esac
 
 command -v git >/dev/null 2>&1 || exit 0
 
-SAFE_RECIPE="Safe alternatives: (1) to revert a THROWAWAY mutation, take a copy BEFORE mutating (cp <file> <file>.zyz-mut-bak), then restore with mv and verify with git diff/cmp; (2) to only READ the committed version, use git show HEAD:<file> — it does not touch the working tree; (3) for a temporary set-aside, git diff > /tmp/<name>.patch then git apply -R. If this deny is a false positive, set ZYZ_CHECKOUT_GUARD_DISABLE=1 for the single command and turn it back off."
+SAFE_RECIPE="安全的替代做法：(1) 要撤销一次临时变异，必须在变异之前先备份一份（cp <file> <file>.zyz-mut-bak），恢复时用 mv 移回，再用 git diff/cmp 核对；(2) 如果只是想查看已提交的版本，用 git show HEAD:<file>——它不会动工作区；(3) 需要临时搁置改动时，先 git diff > /tmp/<name>.patch，之后再 git apply -R。如果这次拒绝是误报，只对这一条命令设置 ZYZ_CHECKOUT_GUARD_DISABLE=1，用完立即关掉。"
 
 # ---- git stash state-moving forms -------------------------------------------
 # Normalize whitespace, then look for `git stash <sub>` where sub moves state.
 # `git stash list|show` are read-only and pass.
 if printf '%s' "$cmd" | grep -qE '(^|[;&|[:space:]])git[[:space:]]+stash([[:space:]]+(push|save|pop|apply|drop|clear)|[[:space:]]*($|[;&|]))' 2>/dev/null; then
     if ! printf '%s' "$cmd" | grep -qE 'git[[:space:]]+stash[[:space:]]+(list|show)' 2>/dev/null; then
-        zyz_emit_deny "PreToolUse" "[zyz-worker watchdog] git stash moves shared working-tree state and is banned on a shared worktree (another agent's stash may exist, and a pop can land on the wrong state — an uncommitted-work loss here is unrecoverable from git). ${SAFE_RECIPE}"
+        zyz_emit_deny "PreToolUse" "[zyz-worker watchdog] git stash 会移动共享的工作区状态，在共享 worktree 上禁止使用（可能存在另一个 agent 的 stash，pop 也可能落到错误的状态上——在这里丢失未提交的工作，git 无法恢复）。${SAFE_RECIPE}"
         exit 0
     fi
 fi
@@ -130,7 +130,7 @@ if [ -n "$_args" ]; then
         [ -n "$tok" ] || continue
         if [ "$tok" = "." ] || [ "$tok" = ":/" ]; then
             if [ -n "$(git -C "$base" status --porcelain 2>/dev/null | grep -E '^.M|^M' 2>/dev/null)" ]; then
-                _deny_target="$tok (tree-wide, with uncommitted modifications present)"
+                _deny_target="${tok}（全树范围，且当前存在未提交的改动）"
                 break
             fi
             continue
@@ -150,7 +150,7 @@ if [ -n "$_args" ]; then
 fi
 
 if [ -n "$_deny_target" ]; then
-    zyz_emit_deny "PreToolUse" "[zyz-worker watchdog] This git checkout/restore would reset '${_deny_target}' to HEAD, and that file has UNCOMMITTED changes in the shared worktree — possibly another agent's in-flight work. Never-committed content is in NO git recovery mechanism (no reflog, no stash, no fsck); a real incident lost ~5000 chars of security-guard code this way while the build stayed green. ${SAFE_RECIPE}"
+    zyz_emit_deny "PreToolUse" "[zyz-worker watchdog] 这条 git checkout/restore 会把 '${_deny_target}' 重置到 HEAD，而该文件在共享 worktree 中有未提交的改动——可能是另一个 agent 正在进行的工作。从未提交过的内容不在任何 git 恢复机制里（没有 reflog、没有 stash、没有 fsck）；一次真实事故就这样丢掉了约 5000 个字符的安全守卫代码，而构建始终是绿的。${SAFE_RECIPE}"
     exit 0
 fi
 

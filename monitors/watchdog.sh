@@ -135,7 +135,7 @@ while :; do
     root="$(zyz_task_root "$BASE")"
     if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then
         UNARMED_REPORTED="true"
-        printf '[zyz-worker watchdog] NOT ARMED: no task pointer resolved from %s (tried that dir'"'"'s .zyz-worker/current-task and $ZYZ_TASK_DIR; the resolver deliberately does NOT search sibling worktrees — a task found there may belong to a concurrent session). The watchdog layer is inert for this session — dead subagents will NOT be reported and the idle gate will NOT hold. If an execute-task run is active, write the pointer under the session cwd, or make its contents an ABSOLUTE path to the task dir. This is reported once per miss, not per tick.\n' "$BASE"
+        printf '[zyz-worker watchdog] 未启用：无法从 %s 解析到任务指针（已尝试该目录下的 .zyz-worker/current-task 和 $ZYZ_TASK_DIR；解析器有意不搜索同级 worktree——在那里找到的任务可能属于另一个并发会话）。本会话的 watchdog 层处于失效状态——死掉的 subagent 不会被报告，空闲门也不会拦住停止。如果有正在运行的 execute-task，请在会话 cwd 下写入指针，或者把指针内容改为任务目录的绝对路径。每次未命中只报告一次，不会每轮扫描都报一次。\n' "$BASE"
     fi
     if [ -n "$root" ]; then
         UNARMED_REPORTED="false"
@@ -194,28 +194,28 @@ except Exception:pass
                 case "$event_kind" in
                     stale)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] role %s (%s) has been silent for %s min with no clean finish — verify platform state, send an exact reconnect probe, and after confirmed death use agent-runtime-state.sh finalize before re-dispatch.\n' "$key" "$role_line" "$((age / 60))"
-                        notify_stuck "$root" "role $role_line silent $((age / 60)) min with no clean finish" subagent
+                        printf '[zyz-worker watchdog] 角色 %s（%s）已静默 %s 分钟且没有正常结束——请核实平台状态，发送一个精确的重连 probe，确认死亡后先用 agent-runtime-state.sh finalize 收尾，再重新派发。\n' "$key" "$role_line" "$((age / 60))"
+                        notify_stuck "$root" "角色 ${role_line} 已静默 $((age / 60)) 分钟，且没有正常结束" subagent
                         ;;
                     tracking)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-tracking-$key-$detail.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] role %s (%s) has fixed-pack tracking state %s — reconcile the exact persisted event when available; do not treat an unverifiable instance as healthy quiet.\n' "$key" "$role_line" "$detail"
-                        notify_stuck "$root" "role $role_line has unreconciled tracking state ($detail)" subagent
+                        printf '[zyz-worker watchdog] 角色 %s（%s）的 fixed-pack 跟踪状态为 %s——有可用的确切持久化事件时就据此对账；不要把无法核实的实例当作健康的安静状态。\n' "$key" "$role_line" "$detail"
+                        notify_stuck "$root" "角色 ${role_line} 的跟踪状态尚未对账（${detail}）" subagent
                         ;;
                     probe)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-probe-$key-$detail.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] reconnect probe %s for role instance %s is overdue without an explicit matching ACK; heartbeat alone is not an ACK. Query platform running/inflight state now and follow the bounded recovery protocol.\n' "$detail" "$key"
-                        notify_stuck "$root" "reconnect probe for role $role_line is overdue without ACK" subagent
+                        printf '[zyz-worker watchdog] 重连 probe %s（角色实例 %s）已逾期，且没有收到明确匹配的 ACK；单有心跳不算 ACK。现在就查询平台的 running/inflight 状态，并按有界恢复协议处理。\n' "$detail" "$key"
+                        notify_stuck "$root" "角色 ${role_line} 的重连 probe 已逾期，且没有 ACK" subagent
                         ;;
                     no-output)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-no-output-$key.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] role instance %s has reached the no-output threshold and its fixed LIVE_INVENTORY baseline still matches the current descriptor-bounded physical tree; the lane may be lost.\n' "$key"
-                        notify_stuck "$root" "role $role_line reached the no-output threshold; the lane may be lost" subagent
+                        printf '[zyz-worker watchdog] 角色实例 %s 已达到无输出阈值，而它固定的 LIVE_INVENTORY 基线仍与当前受描述符约束的物理树一致；这个并行通道（lane）可能已经丢失。\n' "$key"
+                        notify_stuck "$root" "角色 ${role_line} 已达到无输出阈值；这个 lane 可能已经丢失" subagent
                         ;;
                     unharvested)
                         zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] role %s (%s) completed (DONE/FINALIZED) but appears UNPROCESSED — the main agent has been idle since it finished, so its completion may not have been delivered (backup signal on the watchdog path). Read its result SubTask file under %s/subtasks/ and its durable log, record it in %s, then continue.\n' "$key" "$role_line" "$root" "$status_file"
-                        notify_stuck "$root" "role $role_line finished but its result is unprocessed" subagent
+                        printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。读取 %s/subtasks/ 下它的结果 SubTask 文件及其持久日志，记录到 %s，然后继续。\n' "$key" "$role_line" "$root" "$status_file"
+                        notify_stuck "$root" "角色 ${role_line} 已结束，但其结果尚未处理" subagent
                         ;;
                 esac
             done <<EOF
@@ -231,9 +231,9 @@ EOF
                 age=$(( $(zyz_now) - mtime ))
                 if [ "$age" -gt "$STATUS_STALE" ] && [ "$suppress" = 0 ] && ! zyz_status_waiting "$status_file"; then
                     if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
-                        printf '[zyz-worker watchdog] status file %s is %s min stale during active phase %s — persist current progress, active roles, blockers, and next step into it now.\n' \
+                        printf '[zyz-worker watchdog] 状态文件 %s 已有 %s 分钟没有更新，当前处于活跃阶段 %s——现在就把当前进度、活跃角色、阻塞项和下一步写进去。\n' \
                             "$status_file" "$((age / 60))" "$phase"
-                        notify_stuck "$root" "status file $((age / 60)) min stale during active phase $phase" main
+                        notify_stuck "$root" "状态文件已有 $((age / 60)) 分钟没有更新，当前处于活跃阶段 ${phase}" main
                     fi
                 fi
             fi

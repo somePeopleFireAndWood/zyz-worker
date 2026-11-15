@@ -1,216 +1,216 @@
-# Task Status
+# 任务状态
 
-This is the single mandatory overall task status file. Each SubTask may optionally keep its own SubTask-status file; this overall file must always exist and stay current.
+这是唯一一份必需的整体任务状态文件。每个 SubTask 可以选择保留自己的 SubTask 状态文件；但这份整体文件必须始终存在，并保持最新。
 
-## Metadata
+## 元数据
 
-- Task ID:
-- Task Name:
-- Design Document:
+- 任务 ID:
+- 任务名称:
+- 设计文档:
 - Current Phase:
-- Created At:
-- Updated At:
+- 创建时间:
+- 更新时间:
 
-## Total Goal
+## 总目标
 
-(Record the user's full, final target verbatim or as a faithful summary. The overall task must end fully meeting this. Do not narrow, defer, or replace any part of it with a placeholder at the overall-task level.)
+（原样记录用户完整的最终目标，或者写一份忠实的摘要。整体任务结束时必须完全达成它。在整体任务层面，不得收窄、推迟其中任何部分，也不得用占位代替。）
 
-## Progress
+## 进度
 
-- Completed:
-- In Progress:
-- Pending:
-- Blocked:
+- 已完成:
+- 进行中:
+- 待处理:
+- 阻塞:
 
-## User Decisions
+## 用户决策
 
-- Decision:
-- Reason:
+- 决策:
+- 理由:
 
-Design-change requests (one row per proposal; every change to a module / flow / interface / data structure / architecture needs the user's PRIOR agreement — see SKILL.md `## User Design Authority`):
+设计变更请求（每个提议一行；对模块 / 流程 / 接口 / 数据结构 / 架构的任何改动，都需要**事先**取得用户同意——见 SKILL.md `## 用户设计主导权`）：
 
-- when | proposed by (main/implementation/test/review) | what it would change | why the current design does not work | options offered | user's answer (agreed / declined) | outcome (design updated + re-dispatched / design stands as written)
+- 时间 | 提出方（main/implementation/test/review） | 会改变什么 | 为什么现有设计行不通 | 给出的选项 | 用户的回答（同意 / 拒绝） | 结果（设计已更新 + 已重新派发 / 设计按原样保留）
 
 ## Agent State
 
-- Main Agent:
+- 主 agent:
 - implementationAgent:
 - testAgent:
 - reviewAgent:
 
-<!-- Optional bounded standalone wait rows go here, one per instance. Never
-pre-create an empty row. Strict form:
+<!-- 可选的、有时限的独立等待行放在这里，每个实例一行。绝不
+预先创建空行。严格格式：
 - Waiting On: instance-key=<key>; since-epoch=<unix>; next-check-epoch=<unix>; reason=<single-line UTF-8 reason>
-Delete a row when the result arrives or before an expiry review. Waiting On
-suppresses only main status freshness, never role/probe/no-output/result-flush. -->
+结果到达时，或在一次到期复核之前，删除该行。Waiting On
+只抑制主状态新鲜度检查，绝不抑制角色 / 探针 / 无输出 / 结果刷新检查。 -->
 
-## Optional Capabilities Used
+## 使用的可选能力
 
-- Capability:
-- Used For:
+- 能力:
+- 用途:
 
-## Design Review
+## 设计评审
 
-- Latest Review Result:
-- Open Issues:
-- Rejected Suggestions:
-- Non-Blocking Findings Recorded To Review History: (design-phase findings whose only consequence was that a future editor of the design document might be misled — recorded in `<design-doc-basename>.review-history.md` instead of edited into the design body; these do not hold back `no-changes-needed`)
-- Design Approval Record: (before entering implementation, record ONE of: (a) the explicit user approval — what the user said + when/where; or (b) the verbatim explicit prior skip instruction authorizing skipping THIS design→implementation gate. Empty means NOT approved — do not enter implementation. A material change to the approved approach re-arms the gate and requires a fresh entry here.)
+- 最近一次评审结果:
+- 未解决问题:
+- 被拒绝的建议:
+- 记入评审历史的非阻断发现: （设计阶段中、唯一后果是设计文档将来的编辑者可能被误导的那些发现——记入 `<design-doc-basename>.review-history.md`，而不是改进设计正文；它们不妨碍 `no-changes-needed`）
+- 设计批准记录: （进入实现之前，记录以下**之一**：(a) 用户的明确批准——用户说了什么 + 何时 / 何处；或 (b) 授权跳过**本次**设计→实现审批闸门的、事先明确的跳过指令原文。为空即表示**未**批准——不得进入实现。对已批准方案的实质性改动会重新启用该闸门，需要在这里重新记录一条。）
 
 ## SubTasks
 
-(Fill only when the main agent splits the task into SubTasks. Leave empty otherwise.)
+（只有主 agent 把任务拆分为 SubTask 时才填写。否则留空。）
 
-Each SubTask may optionally have its own SubTask-status file tracking its implementation, test, review, and auto-fix progress. Record that file's path in the SubTask's `Notes` when one exists. Update this scoreboard whenever a SubTask completes — do not leave progress only in the conversation.
+每个 SubTask 可以选择拥有自己的 SubTask 状态文件，跟踪它的实现、测试、评审和自动修复进度。存在这样的文件时，把它的路径记在该 SubTask 的 `备注` 中。每当一个 SubTask 完成，就更新这张记分板——不要只把进度留在对话里。
 
-Per-SubTask scoreboard:
+逐 SubTask 记分板：
 
 - SubTask ID:
-- Summary:
-- Coded: (true once implementation is complete)
-- Tested: (true once this SubTask's tests pass AND every mechanism claimed as covered has a recorded killed mutation — green alone is "ran", not "tested")
-- Mutations: (per manifest entry: mechanism → mutation → KILLED/SURVIVED; restore verified byte-identical)
-- Reviewed: (true once this SubTask's review point has closed — reviewAgent reports zero blocking findings, every cross-harness finding has a disposition with none accepted as blocking, no user decision is pending — and every non-blocking finding is landed or recorded; rejected findings are allowed if their reasons are recorded)
-- Frozen At: (workspace-freeze timestamp + frozen file set, recorded before review was dispatched — makes `Reviewed: true` traceable to the exact tree it reviewed)
-- Committed: (commit sha for this SubTask's autonomous commit, or the failure reason if the commit/push failed — failure is non-blocking. For a multi-repo SubTask that touched more than one worktree, record one `<repo>:<sha>` per line, one line per repo committed. When parallel SubTasks shared assembly files and were committed as one compilable unit, record `shared:<sha> (STx+STy+…)`.)
-- SubTask Status File: (path if this SubTask keeps its own status file; optional)
-- Rejected Suggestions: (list each rejection with reason, one per line)
-- Notes:
+- 摘要:
+- Coded: （实现完成后为 true）
+- Tested: （本 SubTask 的测试通过，**并且**每个声称已覆盖的机制都有一条已记录的被杀死变异之后，才为 true——仅仅变绿只算"跑过"，不算"测过"）
+- Mutations: （按清单条目：机制 → 变异 → KILLED/SURVIVED；已验证恢复后逐字节一致）
+- Reviewed: （本 SubTask 的评审点已关闭之后为 true——reviewAgent 报告零个阻断发现，每个跨 harness 发现都已有处置且没有一个被作为阻断接受，没有待处理的用户决策——并且每个非阻断发现都已落地或已记录；被拒绝的发现只要记录了理由就允许存在）
+- Frozen At: （派发评审之前记录的工作区冻结时间戳 + 冻结文件集——让 `Reviewed: true` 能追溯到它所评审的那棵确切的树）
+- Committed: （本 SubTask 自主提交的 commit sha；如果 commit/push 失败，则记失败原因——失败不阻断。对于触及多个 worktree 的多仓库 SubTask，每行记一个 `<repo>:<sha>`，每个提交过的仓库一行。如果并行的 SubTask 共享装配文件、作为一个可编译单元一起提交，记为 `shared:<sha> (STx+STy+…)`。）
+- SubTask 状态文件: （如果本 SubTask 保留了自己的状态文件，写路径；可选）
+- 被拒绝的建议: （逐条列出每次拒绝及理由，每行一条）
+- 备注:
 
-Shared-file hotspots: (declared at dispatch time when parallel SubTasks append to the same assembly files — file → lanes → per-lane insertion region; empty when none)
+共享文件热点: （当并行的 SubTask 会往同一批装配文件里追加内容时，在派发时声明——文件 → 并行通道 → 各通道的插入区域；没有则为空）
 
-## Parallel Resource Leases
+## 并行资源租约
 
-(Mandatory before dispatching ≥2 concurrent lanes that run tests. One row per lane. A DB collision fails loudly; a port collision silently tests someone else's server — hence the full port group including metrics/pprof.)
+（在派发 ≥2 个会运行测试的并发通道之前**必填**。每个通道一行。数据库冲突会大声报错；端口冲突却会悄无声息地测到别人的服务——所以要分配完整的端口组，包括 metrics/pprof。）
 
-- agent/lane | ports (HTTP/gRPC/metrics/pprof) | test-db | owns-generated-artifacts (exactly one lane per batch owns rebuilding shared bundles/dist)
+- agent/通道 | 端口（HTTP/gRPC/metrics/pprof） | 测试数据库 | 负责生成产物（每一批中恰好有一个通道负责重建共享的 bundle/dist）
 
-## Implementation
+## 实现
 
-- Implementation Status:
-- Important Notes:
-- Discovered Test Points:
+- 实现状态:
+- 重要说明:
+- 新发现的测试点:
 
-## Testing
+## 测试
 
-- Test Command: (full command incl. parallelism/serialization flags)
-- Test Environment: (test DB + port set — the coordinates that make a "green" re-checkable)
-- Process/Source Freshness: (started-at of the process under test vs newest source mtime)
-- Latest Result: (with executed case/package count vs baseline)
-- Attribution: (for any failure: mine / tooling / concurrent-edit / real-regression + the evidence)
-- Failing Cases:
+- 测试命令: （完整命令，包括并行 / 串行相关的参数）
+- 测试环境: （测试数据库 + 端口组——让一次"变绿"可以被复核的坐标）
+- 进程 / 源码新鲜度: （被测进程的启动时间 vs 最新源文件的 mtime）
+- 最新结果: （附实际执行的用例数 / 包数 vs 基线）
+- 归因: （对任何失败：我方 / 工具 / 并发编辑 / 真实回归 + 证据）
+- 失败用例:
 
-## Implementation Review
+## 实现评审
 
-(Per-finding ledger — "adjudicated", "dispatched", and "landed" must be distinguishable; an accepted finding with `dispatched-to` and `landed` both empty is NOT dispatched, and must be dispatched before requesting any re-review. Reporting a finding as landed when it never was is worse than not fixing it: the next round stops checking.)
+（逐发现台账——"已裁决"、"已派发"和"已落地"必须能区分开；一个被接受的发现，如果 `dispatched-to` 和 `landed` 都为空，就**没有**派发，必须在请求任何复审之前完成派发。把一个从未落地的发现报告为已落地，比不修还糟：下一轮就不再检查它了。）
 
-- Latest Review Result:
-- Findings ledger: (one row per finding: finding | verdict(accept/reject) + evidence | dispatched-to + when | landed(commit/file) | verified-by)
-- Required Changes:
-- Rejected Suggestions:
+- 最近一次评审结果:
+- 发现台账: （每个发现一行：发现 | 裁决（accept/reject）+ 证据 | dispatched-to + 时间 | landed（commit/文件） | 核实人）
+- 必须修改项:
+- 被拒绝的建议:
 
-## Cross-Harness Review
+## 跨 harness 交叉评审
 
-(Read-only review sessions run in every OTHER installed agent harness alongside reviewAgent, at every review point — see SKILL.md `## Cross-Harness Review`. Advisory: verify each finding independently before accepting; reject freely with a concrete reason. Optional: a none / failed / timeout outcome is recorded here and never blocks.)
+（在每个评审点，与 reviewAgent 并行，在**其他每一个**已安装的 agent harness 中运行只读评审会话——见 SKILL.md `## 跨 harness 交叉评审`。仅供参考：接受之前要独立核实每个发现；可以附具体理由自由拒绝。可选：none / failed / timeout 的结果记录在这里，绝不阻断。）
 
-- Review Points: (one row per review point: label | kind (design / implementation:<SubTask> / aggregate) | harness | status (ok / empty / failed / timeout / none / disabled) | tree-stable | report path)
-- Findings: (one row per cross-harness finding: label#N | verified-by + evidence (file:line + what was actually there) | disposition (accepted → finding-ledger row / merged into reviewAgent finding N / rejected: <reason> / escalated-to-user))
+- 评审点: （每个评审点一行：标签 | 类型（design / implementation:<SubTask> / aggregate） | harness | 状态（ok / empty / failed / timeout / none / disabled） | tree-stable | 报告路径）
+- 发现: （每个跨 harness 发现一行：标签#N | 核实人 + 证据（file:line + 那里实际是什么） | 处置（accepted → 发现台账行 / merged into reviewAgent finding N / rejected: <reason> / escalated-to-user））
 
-## Review Convergence
+## 评审收口
 
-(Rounds per review point and the convergence checks — see SKILL.md `## Review Convergence`. A review point closes on a round in which reviewAgent reports zero blocking findings, no cross-harness finding is accepted as blocking or left undispositioned, and no user decision is pending. Non-blocking findings never hold it open.)
+（每个评审点的轮数和收口检查——见 SKILL.md `## 评审收口`。一个评审点在满足以下条件的一轮关闭：reviewAgent 报告零个阻断发现，没有跨 harness 发现被作为阻断接受或尚未处置，并且没有待处理的用户决策。非阻断发现永远不会让它保持打开。）
 
-- Review Points: (one row per review point: label | rounds so far | blocking count per round, e.g. `5→3→2` | recurring classes (class-level fix landed / registered as RR-n) | closed at round N)
-- Convergence Checks: (one row per check — at round 3 of a review point still holding blocking findings, and every third round after: review point | round | outcome (continue / class-level fix / re-sequence hardening / escalate) | evidence | when the user was told)
-- Residual-Risk Register: (path to `<task-dir>/residual-risks.md` and its entry count by tier, or `none`)
+- 评审点: （每个评审点一行：标签 | 目前的轮数 | 每轮的阻断数，例如 `5→3→2` | 反复出现的类（已落地类级修复 / 已登记为 RR-n） | 在第 N 轮关闭）
+- 收口检查: （每次检查一行——某个评审点在第 3 轮仍有阻断发现时检查一次，此后每隔三轮检查一次：评审点 | 轮次 | 结果（continue / class-level fix / re-sequence hardening / escalate） | 证据 | 何时告知了用户）
+- 遗留风险清单: （`<task-dir>/residual-risks.md` 的路径，以及按级别统计的条目数；或 `none`）
 
-## PR Review
+## PR 评审
 
-(External pull-request review feedback — comments, "changes requested", inline threads, or automated review findings posted on an actual PR. Do NOT blindly accept: process each finding one at a time, independently verify whether the problem objectively exists, then record it here. Every item must end as accepted-and-fixed or explicitly-rejected-with-a-posted-reason — never silently ignored.)
+（外部的 pull request 评审反馈——在真实 PR 上发布的评论、"changes requested"、行内讨论串或自动化评审发现。**不要**盲目接受：一次处理一个发现，独立核实问题是否客观存在，然后记录在这里。每一项最终都必须是"已接受并修复"或"已明确拒绝并发布了理由"——绝不能悄悄忽略。）
 
-- PR Reference: (URL or number)
-- Accepted Findings: (one per line — the finding + how you verified it objectively exists + what changed and where + the acknowledgement posted/thread resolved)
-- Rejected Findings: (one per line — the finding + the concrete evidence it does not hold + the PR comment posted declining it)
-- Escalated To User: (findings that would change Goals/Acceptance Criteria, or that looped accept↔reject 3+ times)
+- PR 引用: （URL 或编号）
+- 已接受的发现: （每行一条——发现 + 你如何核实它客观存在 + 改了什么、改在哪里 + 已发布的回应 / 已关闭的讨论串）
+- 已拒绝的发现: （每行一条——发现 + 证明它站不住的具体证据 + 已发布的拒绝该改动的 PR 评论）
+- 已升级给用户: （会改变目标 / 验收标准的发现，或在接受↔拒绝之间反复 3 次以上的发现）
 
-## Final Aggregate Testing
+## 最终汇总测试
 
-(Filled at §3.C after all SubTasks or the single no-split iteration complete. Each required category must be registered before delivery — see §4 delivery gate. The category list derives from the design `## Testing Plan` — the lines below are the standing examples, NOT a closed enumeration; add one line per user-named category (frontend tests, per-SDK e2e, …) rather than squeezing it into the nearest slot, and note each layer's structural coverage ceiling in one phrase.)
+（在所有 SubTask 或不拆分时的单次迭代完成后，于 §3.C 填写。每个必需类别都必须在交付前登记——见 §4 交付闸门。类别清单来自设计的 `## 测试计划`——下面几行是常设示例，**不是**封闭的枚举；每个用户点名的类别（前端测试、按 SDK 划分的 e2e……）各加一行，而不是塞进最接近的栏位，并用一个短语注明每一层在结构上的覆盖上限。）
 
-- Unit: (ran: <result> | skipped: <reason>)
+- 单元测试: (ran: <result> | skipped: <reason>)
 - E2E: (ran: <result> | skipped: <reason>)
-- Regression: (ran: <result> | skipped: <reason>)
-- Pressure: (ran: <result> | skipped: <reason> | n/a: no perf/capacity risk)
-- <design-Testing-Plan category>: (one line per additional category the design names)
-- Mutation Evidence: (per category with coverage claims: killed/survived tally, or `none: <reason>`)
-- Test Command(s): (with coordinates: DB / ports / process-vs-source freshness)
-- Failing Cases:
+- 回归测试: (ran: <result> | skipped: <reason>)
+- 压力测试: (ran: <result> | skipped: <reason> | n/a: no perf/capacity risk)
+- <设计测试计划中的类别>: （设计点名的每个额外类别各一行）
+- 变异证据: （每个带覆盖声明的类别：killed/survived 计数，或 `none: <reason>`）
+- 测试命令: （附坐标：数据库 / 端口 / 进程与源码的新鲜度）
+- 失败用例:
 
-## Final Aggregate Review
+## 最终汇总评审
 
-(Filled at §3.C after aggregate testing converges. Coverage dimensions are registered the same way test categories are: each is `covered` or `not-covered: <reason>`. An unregistered dimension means the review is not closed, whatever the verdict says — a review that only reported its worst few findings must not pass as complete.)
+（汇总测试收敛后，于 §3.C 填写。覆盖维度的登记方式与测试类别相同：每个都是 `covered` 或 `not-covered: <reason>`。只要有一个维度未登记，评审就没有结束，不管结论怎么写——一次只报告了最严重的几个发现的评审，不能被当作完整评审放行。）
 
-- Coverage — Design Conformance: (covered | not-covered: <reason>)
-- Coverage — Correctness: (covered | not-covered: <reason>)
-- Coverage — Test Quality: (covered | not-covered: <reason>)
-- Coverage — Regression Risk: (covered | not-covered: <reason>)
-- Coverage — Risk-Specific: (one line per dimension the design `## Risks` calls out, each covered | not-covered: <reason>; or `n/a: no such risk recorded`)
-- Outstanding Staged Installments: (none | list each promised-but-not-yet-received installment from `## Restart And Recovery Notes` — an outstanding installment counts as uncovered, not complete)
-- Reviewer Verdict:
-- Cross-SubTask Findings:
-- Required Changes:
-- Rejected Suggestions:
+- 覆盖 — 设计一致性: (covered | not-covered: <reason>)
+- 覆盖 — 正确性: (covered | not-covered: <reason>)
+- 覆盖 — 测试质量: (covered | not-covered: <reason>)
+- 覆盖 — 回归风险: (covered | not-covered: <reason>)
+- 覆盖 — 风险专项: （设计 `## 风险` 点名的每个维度各一行，每行为 covered | not-covered: <reason>；或 `n/a: no such risk recorded`）
+- 未收齐的分步交付: （none | 逐条列出 `## 重启与恢复记录` 中已承诺但尚未收到的每一期——未收齐的一期算作未覆盖，而不是已完成）
+- 评审者结论:
+- 跨 SubTask 发现:
+- 必须修改项:
+- 被拒绝的建议:
 
-## Restart And Recovery Notes
+## 重启与恢复记录
 
-(Append-only EVENT LIST — one row per timeout/interruption/restart, never a single-slot form; long multi-lane runs hit many. Restarts are continuations: inventory what the interrupted role already left on disk BEFORE re-dispatching, and assume an interrupted run left dirty data that needs cleaning — stale fixture rows reproduce stably and masquerade as regressions.)
+（只追加的**事件列表**——每次超时 / 中断 / 重启各一行，绝不是只有一个栏位的表单；长时间的多通道运行会遇到很多次。重启是延续：在重新派发**之前**，先盘点被中断的角色已经在磁盘上留下了什么，并默认被中断的运行留下了需要清理的脏数据——残留的 fixture 行会稳定复现，伪装成回归。）
 
-- when | role | reason | artifacts already on disk (from `git status` + lease table) | resume-point | cleanup done
+- 时间 | 角色 | 原因 | 已在磁盘上的产物（来自 `git status` + 租约表） | 恢复点 | 已清理
 
-## Status Freshness
+## 状态新鲜度
 
-- Updated At: (ISO timestamp of the last write to THIS file — a transition is not complete until this advances)
-- Reconciled From Code At: (when a resuming session last cross-checked this file against `git log` / `subtasks/*.md` / the authenticated fixed-pack observer; empty = never)
-- Fields Reconstructed From Code: (which entries below were rebuilt from commits/transcripts rather than recorded live — a later reader must know which parts were never written by the actor that did the work)
-- Known Divergences: (any place this file still disagrees with the git history or a SubTask file, and which one is authoritative)
+- 更新时间: （最后一次写入**本**文件的 ISO 时间戳——这个值没有前进，状态转换就没有完成）
+- 按代码核对时间: （恢复中的会话最后一次把本文件与 `git log` / `subtasks/*.md` / 经认证的固定包观察器交叉核对的时间；为空 = 从未核对）
+- 由代码重建的字段: （下面哪些条目是从提交 / 会话记录中重建的，而不是实时记录的——后来的读者必须知道哪些部分从来不是由实际干活的那个执行者写下的）
+- 已知分歧: （本文件仍与 git 历史或某个 SubTask 文件不一致的任何地方，以及以哪一方为准）
 
-## Pre-Delivery Checklist
+## 交付前检查清单
 
-(Answer EVERY item before §4 delivery, with evidence; an unanswered item blocks delivery like an unregistered test category. "The rest are fine" is prohibited. (∥) = only when ≥2 lanes ran concurrently. This is a VERIFICATION pass — the rules live in the role prompts: testAgent `## Assertion Shape Rules`, reviewAgent `## No-Op Assertion Checklist`, implementationAgent `## Verdict Hygiene` and `## Test Failure Handling`.)
+（在 §4 交付之前回答**每一**项，并附证据；有一项未回答就会像有一个测试类别未登记一样阻断交付。禁止写"其余都没问题"。(∥) = 仅当 ≥2 个通道并发运行时适用。这是一次**核验**——规则本身写在各角色提示词里：testAgent `## 断言形态规则`、reviewAgent `## 空转断言清单`、implementationAgent `## 结论卫生` 和 `## 测试失败处理`。）
 
-A. Test effectiveness
-1. Every mechanism claimed covered has a killed mutation on record? Cross-check the per-SubTask `Mutations:` rows against `## Final Aggregate Testing > Mutation Evidence`.
-2. Every mutation had positive evidence it REACHED the code under test, and every SURVIVED one had the five causes ruled out (lucky input / redundant arm / assertion unrelated / mutation missed / fixture gives both sides the same value)?
-3. Assertion shapes audited against testAgent's rules?
-4. "What these tests do NOT prove" written down, with the mechanism-level reason and the layer that could prove it?
+A. 测试有效性
+1. 每个声称已覆盖的机制，是否都记录了一条被杀死的变异？把各 SubTask 的 `Mutations:` 行与 `## 最终汇总测试 > 变异证据` 交叉核对。
+2. 每个变异是否都有正面证据表明它**确实到达**了被测代码？每个 SURVIVED 的变异是否都排除了五种原因（输入碰巧 / 冗余分支 / 断言无关 / 变异没打中 / fixture 让两边取到同一个值）？
+3. 断言形态是否已按 testAgent 的规则审计过？
+4. 是否写下了"这些测试**不能**证明什么"，并附上机制层面的原因，以及哪一层能够证明它？
 
-B. Verdict hygiene
-5. Every verdict meets implementationAgent's `## Verdict Hygiene` rules?
-6. Every `ran:` result reports executed case/package count vs baseline?
+B. 结论卫生
+5. 每个结论是否都符合 implementationAgent 的 `## 结论卫生` 规则？
+6. 每个 `ran:` 结果是否都报告了实际执行的用例数 / 包数 vs 基线？
 
-C. Environment and coordinates
-7. Every "green" carries all four coordinates (recorded in `## Testing` and per-category in `## Final Aggregate Testing`)?
-8. (∥) Each lane held its `## Parallel Resource Leases` row and confirmed it talked to its own instance?
-9. Long-lived processes started AFTER the newest source file; restarts did kill-group → port-vacant poll → health check?
-10. State changed via a non-production write path had the paired production invalidation performed?
-11. (∥) Full-suite greens carry before-and-after compile-cleanliness checks?
-12. Interrupted runs' dirty data cleaned before rerun (`## Restart And Recovery Notes > cleanup done`)?
-13. Does this file agree with `git log` and every SubTask status file? `## Status Freshness` records the cross-check and marks reconstructed fields.
-14. Was the watchdog confirmed ARMED? If not, say so — an unarmed layer reported nothing, so no conclusion here rests on it.
+C. 环境与坐标
+7. 每一次"变绿"是否都带齐了四个坐标（记录在 `## 测试` 中，并按类别记录在 `## 最终汇总测试` 中）？
+8. (∥) 每个通道是否都持有自己在 `## 并行资源租约` 中的那一行，并确认了它连的是自己的实例？
+9. 长期运行的进程是否都在最新源文件之后才启动？重启是否按 杀进程组 → 轮询端口空闲 → 健康检查 进行？
+10. 通过非生产写入路径改动的状态，是否执行了与之配对的生产侧失效操作？
+11. (∥) 全量套件的变绿结果是否都带有前后两次的编译干净检查？
+12. 被中断运行留下的脏数据，是否在重跑前已清理（`## 重启与恢复记录` 的「已清理」列）？
+13. 本文件是否与 `git log` 以及每个 SubTask 状态文件一致？`## 状态新鲜度` 记录了交叉核对，并标出了重建的字段。
+14. 是否确认 watchdog 已**启用**？如果没有，直说——未启用的层什么都不会报告，所以这里没有任何结论可以依赖它。
 
-D. Attribution and collaboration
-15. Every failure attributed in implementationAgent's four-step order, evidence in `## Testing > Attribution`; rerun used only to prove flakiness, never innocence?
-16. Any "their package is broken" report carries the mtime observation or the owner's confirmation?
-17. After a second failed hypothesis-fix on one failure, switched to printing intermediates inside the failing artifact?
-18. `## Implementation Review` ledger scanned: no accepted finding with an empty `dispatched-to`?
-19. (∥) Every review ran against a frozen workspace (`Frozen At`), mtimes/hashes matching before and after?
+D. 归因与协作
+15. 每个失败是否都按 implementationAgent 的四步顺序归因，证据记在 `## 测试 > 归因` 中？重跑是否只用来证明测试不稳定，而从未用来证明清白？
+16. 任何"他们的包坏了"的报告，是否都附有 mtime 观察结果或所有者的确认？
+17. 对同一个失败，第二次"假设-修复"失败之后，是否改为在失败的产物内部打印中间值？
+18. 是否扫过 `## 实现评审` 台账：没有任何已接受的发现 `dispatched-to` 为空？
+19. (∥) 每次评审是否都在冻结的工作区上进行（`Frozen At`），前后的 mtime / 哈希一致？
 
-E. Scope and self-disclosure
-20. Every rule established this round swept across ALL same-shaped sites, with an enumerated per-site verdict list?
-21. Any comments claiming coverage or invariants updated to match what the code now does?
-22. The final report's `## Weakest Link` (in `final-report.md`) filled in?
-23. Every blocking finding moved into a hardening SubTask landed (ledger `landed` filled)? Every recurring class in `## Review Convergence` answered by a class-level fix or a single register entry? every residual-risk register entry has all fields; the final report's `## Known Risks` / `## Follow-Up` point at the register?
+E. 范围与自我披露
+20. 本轮确立的每条规则，是否都扫过了**所有**同形态的位置，并附上逐位置的结论列表？
+21. 任何声称覆盖或不变量的注释，是否都已更新为与代码现在的行为一致？
+22. 最终报告的 `## 最薄弱环节`（在 `final-report.md` 中）是否已填写？
+23. 每个被移入加固 SubTask 的阻断发现是否都已落地（台账 `landed` 已填写）？`## 评审收口` 中每个反复出现的类，是否都由一个类级修复或单独一条清单记录来回应？遗留风险清单的每条记录是否字段齐全？最终报告的 `## 已知风险` / `## 后续工作` 是否指向了该清单？
 
-## Next Actions
+## 下一步行动
 
-- Next:
+- 下一步:

@@ -1,278 +1,270 @@
 ---
 name: orchestration-scheduling-task
-description: Use when the user wants to drive a master task list — analyze dependencies, dispatch parallel tmux/git-worktree workers running execute-task, aggregate state, gate merges on user approval. Polls automatically by default (in-session self-scheduling); can also be wrapped with /loop, or set to a single-shot via opt-out.
+description: 当用户想驱动一份主任务清单（master task list）时使用——分析依赖、派发并行运行 execute-task 的 tmux/git-worktree worker、汇总状态，并以用户批准作为合并闸门。默认自动轮询（会话内自调度）；也可以用 /loop 包裹，或通过退出开关改为单次执行。
 ---
 
-# Orchestration Scheduling Task
+# 编排调度任务
 
-Use this skill to drive a master list of development tasks. The orchestrator scans the list, analyzes dependencies, dispatches isolated workers (each in its own tmux session + git worktree(s), each running the `execute-task` skill), aggregates worker state through files, and gates merges on explicit user approval. A worker gets one worktree per repo it touches, all inside a single tmux session and one selected agent runtime (`claude` or `codex`).
+用本 skill 驱动一份开发任务主清单。编排器（orchestrator）扫描清单、分析依赖、派发相互隔离的 worker（每个 worker 有自己的 tmux session 和 git worktree，各自运行 `execute-task` skill），通过文件汇总 worker 状态，并以用户的明确批准作为合并的闸门。一个 worker 为它涉及的每个仓库各分配一个 worktree，所有 worktree 都在同一个 tmux session 内，由同一个选定的 agent 运行时（`claude` 或 `codex`）管理。
 
-The orchestrator does **not** execute tasks itself. It schedules, dispatches, polls, and reports. Each task is executed by a separate Claude Code or Codex process inside a dedicated tmux session. Claude invokes `/zyz-worker:execute-task`; Codex follows the installed Skill or the absolute `skills/execute-task/SKILL.md` fallback supplied by the runtime adapter.
+编排器**不**亲自执行任务。它只负责调度、派发、轮询和汇报。每个任务都由一个独立的 Claude Code 或 Codex 进程在专属的 tmux session 中执行。Claude 调用 `/zyz-worker:execute-task`；Codex 遵循已安装的 Skill，或运行时适配器提供的绝对路径 `skills/execute-task/SKILL.md` 兜底。
 
-Runtime selection is `ZYZ_AGENT_RUNTIME=claude|codex|auto` (default `auto`). Agent environments auto-detect from `CODEX_THREAD_ID`/`CODEX_CI` or Claude variables; a non-agent shell defaults to Claude for backwards compatibility. A task entry may set `agent-runtime: claude|codex`. Generic dispatch fields (`agent-runtime`, `agent-pid`, `agent-session-id`, `worker-runtime-args`, `reuse-agent-effective`) are authoritative; legacy Claude-named aliases remain readable and writable for existing task data.
+运行时由 `ZYZ_AGENT_RUNTIME=claude|codex|auto` 选择（默认 `auto`）。在 agent 环境中，根据 `CODEX_THREAD_ID`/`CODEX_CI` 或 Claude 相关变量自动检测；非 agent 的 shell 为了向后兼容默认选 Claude。任务条目可以设置 `agent-runtime: claude|codex`。通用的派发字段（`agent-runtime`、`agent-pid`、`agent-session-id`、`worker-runtime-args`、`reuse-agent-effective`）是权威字段；旧的以 Claude 命名的别名仍可读写，以兼容已有的任务数据。
 
-This skill builds on top of the zyz-worker convention that long-running task state lives in files, not in conversation context. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md). All cross-process communication between orchestrator and worker happens through files in the master list directory; nothing is exchanged in memory.
+本 skill 建立在 zyz-worker 的一条约定之上：长期运行的任务状态存放在文件里，而不是对话上下文里。参见 [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md)。编排器与 worker 之间的所有跨进程通信都通过主清单目录中的文件进行；不在内存中交换任何东西。
 
-## When to use this skill
+## 何时使用本 skill
 
-Load this skill when the user wants any of the following:
+用户有以下任一需求时加载本 skill：
 
-- Drive a multi-task development backlog with parallel execution.
-- Watch a directory of task definitions and react to user edits as the source of truth.
-- Dispatch `execute-task` workers into isolated tmux sessions and git worktrees (one worktree per repo the task touches).
-- Aggregate worker progress (phase, wait-state, heartbeat) into a single summary.
-- Gate merges and worktree cleanup on explicit user approval.
+- 以并行执行的方式推进一份多任务的开发待办清单。
+- 监视一个任务定义目录，并把用户的编辑当作事实来源（source of truth）做出响应。
+- 把 `execute-task` worker 派发到相互隔离的 tmux session 和 git worktree 中（任务涉及的每个仓库各一个 worktree）。
+- 把 worker 的进度（phase、wait-state、心跳）汇总成一份摘要。
+- 以用户的明确批准作为合并与 worktree 清理的闸门。
 
-If the user only wants to run a single confirmed task, use the `execute-task` skill directly. If the user wants to schedule many tasks against a single master list, this skill is the entry point.
+如果用户只想运行单个已确认的任务，直接使用 `execute-task` skill。如果用户想针对同一份主清单调度许多任务，本 skill 就是入口。
 
-## Architecture (3-layer)
+## 架构（三层）
 
-Orchestration is a **3-layer call hierarchy**. The split exists because interactively driving a worker's tmux pane (start `claude`, clear the startup confirmation pages, rescue a stuck worker) is token-heavy and noisy; pushing N parallel workers' pane driving into one context would pollute it and depress real parallelism. So that heavy work is isolated per worker, while cheap read-only polling stays inline.
+编排是一个**三层调用结构**。之所以这样拆分，是因为交互式地驱动 worker 的 tmux pane（启动 `claude`、点掉启动确认页、救援卡住的 worker）消耗大量 token 且噪声很多；把 N 个并行 worker 的 pane 驱动工作塞进同一个上下文，会污染上下文并压低实际的并行度。所以这项重活按 worker 隔离，而廉价的只读轮询则保留在主流程内联执行。
 
-- **L1 — orchestration main agent** (user-facing; single; holds the `<list-dir>` flock). Orchestrates everything: scan, analyze dependencies, plan dispatch, gate merges, notify. Keeps a cheap **inline read-only poll** (`orch-check-worker.sh` — files + `pgrep`, never `capture-pane` / `send-keys`) for each worker's overall-state projection. **Never touches a pane.** Only the one heavy job — interactively driving a pane — is delegated, on demand, to L2.
-- **L2 — per-worker `orch-driver-agent` subagent** (short-lived; dispatched on demand, NOT every tick). Does the heavy pane work for exactly one worker: start `claude` in bypass mode, clear the trust-folder and bypass-risk confirmation pages, run `/execute-task`, or intervene when that one worker is stuck. It is the **only** layer that touches a pane interactively (`send-keys` / `capture-pane`). It observes overall state only (`worker-status.md` / `dispatch.md` upward projections), **never reads task internals**, writes **only** `monitor.md`, and returns one line to L1 before exiting.
-- **L3 — the tmux window + independent `claude` process running `/execute-task`** (the execution layer). It has its own main agent plus `implementation` / `test` / `review` subagents and runs design → implementation → testing → review → delivery inside its own git worktree(s) (one per repo the task touches). It is **invisible to L1/L2** and driven (not nested) by L2 through `tmux send-keys`.
+- **L1 —— 编排主 agent**（面向用户；唯一；持有 `<list-dir>` 的 flock）。统筹一切：扫描、分析依赖、规划派发、合并闸门、通知。为每个 worker 的整体状态投影保留一个廉价的**内联只读轮询**（`orch-check-worker.sh` —— 只读文件 + `pgrep`，绝不 `capture-pane` / `send-keys`）。**绝不碰 pane。** 只有一项重活——交互式驱动 pane——按需委派给 L2。
+- **L2 —— 每个 worker 一个的 `orch-driver-agent` subagent**（短生命周期；按需派发，**不是**每个 tick 都派发）。只为一个 worker 做 pane 重活：以 bypass 模式启动 `claude`、点掉信任文件夹（trust-folder）和 bypass 风险两个确认页、运行 `/execute-task`，或在该 worker 卡住时介入。它是**唯一**会交互式触碰 pane 的一层（`send-keys` / `capture-pane`）。它只观察整体状态（`worker-status.md` / `dispatch.md` 这些向上投影），**绝不读取任务内部细节**，**只**写 `monitor.md`，退出前向 L1 返回一行结果。
+- **L3 —— 运行 `/execute-task` 的 tmux window + 独立 `claude` 进程**（执行层）。它有自己的主 agent 以及 `implementation` / `test` / `review` 三个 subagent，在自己的 git worktree（任务涉及的每个仓库各一个）中依次完成设计 → 实现 → 测试 → 评审 → 交付。它**对 L1/L2 不可见**，由 L2 通过 `tmux send-keys` 驱动（而不是嵌套调用）。
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ L1  orchestration main agent  (user-facing · single · holds list-dir flock) │
-│                                                                              │
-│  does:      scan → analyze(deps) → plan(dispatch) →                          │
-│             poll(inline orch-check-worker.sh, read-only · no pane) →         │
-│             dispatch L2 on first-launch / stuck → project → gate →           │
-│             notify → report                                                  │
-│  can see:   master entries, worker-status.md(projection), dispatch.md,       │
-│             heartbeat, monitor.md, the one-line summary L2 returns           │
-│  touch pane? NO — L1 calls read-only scripts, never send-keys / capture-pane │
-│  cannot touch: L3 internals (design / subtask / impl / test / review /       │
-│                question.md body)                                             │
-│  with user: orchestration-level interaction + notify "task X needs you in    │
-│             window Y" (never relays the Q&A content)                         │
-└───────────────┬──────────────────────────────────────────────────────────────┘
-                │ on demand (NOT every tick): first launch OR stuck intervention,
-                │ dispatch a short-lived driver subagent
-                │ pass: task-id + list-dir + pane info (self-contained prompt); get back: one line
-                │ multiple workers' L2 dispatched in one batch (single message, multiple Agent calls)
+│ L1  编排主 agent（面向用户 · 唯一 · 持有 list-dir flock）                  │
+│                                                                            │
+│  做什么：  扫描 → 分析(依赖) → 规划(派发) →                                │
+│            轮询(内联 orch-check-worker.sh，只读 · 不碰 pane) →             │
+│            首次启动 / 卡住时派发 L2 → 投影 → 闸门 →                        │
+│            notify → 汇报                                                   │
+│  能看到：  主条目、worker-status.md(投影)、dispatch.md、                   │
+│            heartbeat、monitor.md、L2 返回的一行摘要                        │
+│  碰 pane？ 不碰。L1 只调用只读脚本，绝不 send-keys / capture-pane          │
+│  不能碰：  L3 内部细节（设计 / subtask / 实现 / 测试 / 评审 /              │
+│            question.md 正文）                                              │
+│  与用户：  编排层面的交互 + 通知"任务 X 在 window Y 需要你"                │
+│            （绝不转述问答内容）                                            │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                │ 按需（不是每个 tick）：首次启动或卡住需要介入时，
+                │ 派发一个短生命周期的 driver subagent
+                │ 传入：task-id + list-dir + pane 信息（自包含的提示词）；取回：一行结果
+                │ 多个 worker 的 L2 一次性批量派发（单条消息，多个 Agent 调用）
         ┌───────┴───────┬───────────────┬───────────────┐
         ▼               ▼               ▼               ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐  ...(one per worker, on demand)
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐  ...（每个 worker 一个，按需）
 │ L2  driver    │ │ L2  driver    │ │ L2  driver    │
 │ subagent      │ │ subagent      │ │ subagent      │
 │ (worker A)    │ │ (worker B)    │ │ (worker C)    │
-│ short-lived · │ │               │ │               │
-│ on-demand     │ │               │ │               │
-│ (heavy work   │ │               │ │               │
-│  only):       │ │               │ │               │
-│ · first-disp: │ │               │ │               │
-│   idempotent  │ │               │ │               │
-│   pre-launch  │ │               │ │               │
-│   check →     │ │               │ │               │
+│ 短生命周期 ·  │ │               │ │               │
+│ 按需派发      │ │               │ │               │
+│ （只做重活）：│ │               │ │               │
+│ · first-disp：│ │               │ │               │
+│   幂等的启动前│ │               │ │               │
+│   检查 →      │ │               │ │               │
 │   send-keys   │ │               │ │               │
-│   start claude│ │               │ │               │
-│   (bypass; in │ │               │ │               │
-│   recorded    │ │               │ │               │
-│   pane, no    │ │               │ │               │
-│   reparent) + │ │               │ │               │
-│   clear conf. │ │               │ │               │
-│   pages +     │ │               │ │               │
+│   启动 claude │ │               │ │               │
+│   （bypass；在│ │               │ │               │
+│   记录在案的  │ │               │ │               │
+│   pane 中，不 │ │               │ │               │
+│   换父进程）+ │ │               │ │               │
+│   点掉确认页 +│ │               │ │               │
 │   /execute-   │ │               │ │               │
 │   task        │ │               │ │               │
-│ · intervene:  │ │               │ │               │
-│   conservative│ │               │ │               │
+│ · intervene： │ │               │ │               │
+│   保守地      │ │               │ │               │
 │   send-keys   │ │               │ │               │
-│   rescue      │ │               │ │               │
-│ · relay-conf: │ │               │ │               │
-│   send-keys a │ │               │ │               │
-│   user        │ │               │ │               │
-│   confirmation│ │               │ │               │
-│   into pane   │ │               │ │               │
-│ · set needs-  │ │               │ │               │
-│   user (only  │ │               │ │               │
+│   救援        │ │               │ │               │
+│ · relay-conf：│ │               │ │               │
+│   把用户确认  │ │               │ │               │
+│   send-keys   │ │               │ │               │
+│   进 pane     │ │               │ │               │
+│ · 设置 needs- │ │               │ │               │
+│   user（仅限  │ │               │ │               │
 │   waiting-    │ │               │ │               │
-│   user)       │ │               │ │               │
-│ · write       │ │               │ │               │
+│   user）      │ │               │ │               │
+│ · 写          │ │               │ │               │
 │   monitor.md  │ │               │ │               │
-│ · return one  │ │               │ │               │
-│   line        │ │               │ │               │
-│ can see:      │ │               │ │               │
+│ · 返回一行    │ │               │ │               │
+│ 能看到：      │ │               │ │               │
 │ worker-status/│ │               │ │               │
 │ dispatch      │ │               │ │               │
-│ (projection), │ │               │ │               │
-│ a pane glance │ │               │ │               │
-│ does NOT write│ │               │ │               │
-│ worker-status,│ │               │ │               │
-│ does NOT read │ │               │ │               │
-│ L3 internals  │ │               │ │               │
+│ （投影），    │ │               │ │               │
+│ 瞄一眼 pane   │ │               │ │               │
+│ 不写 worker-  │ │               │ │               │
+│ status，不读  │ │               │ │               │
+│ L3 内部细节   │ │               │ │               │
 └───────┬───────┘ └───────┬───────┘ └───────┬───────┘
-        │ tmux send-keys / capture-pane (out-of-process driving, NOT agent nesting)
+        │ tmux send-keys / capture-pane（进程外驱动，不是 agent 嵌套）
         ▼               ▼               ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
 │ L3  tmux win  │ │ L3  tmux win  │ │ L3  tmux win  │
 │ zyz-task-A    │ │ zyz-task-B    │ │ zyz-task-C    │
 │               │ │               │ │               │
-│ independent   │ │ independent   │ │ independent   │
-│ claude proc   │ │ claude proc   │ │ claude proc   │
-│ (bypass)      │ │               │ │               │
-│ runs          │ │               │ │               │
+│ 独立的        │ │ 独立的        │ │ 独立的        │
+│ claude 进程   │ │ claude 进程   │ │ claude 进程   │
+│ （bypass）    │ │               │ │               │
+│ 运行          │ │               │ │               │
 │ /execute-task │ │               │ │               │
 │               │ │               │ │               │
 │ execute-task  │ │               │ │               │
-│ has its own:  │ │               │ │               │
-│  · main agent │ │               │ │               │
+│ 有自己的：    │ │               │ │               │
+│  · 主 agent   │ │               │ │               │
 │  · impl-agent │ │               │ │               │
 │  · test-agent │ │               │ │               │
 │  · review-agt │ │               │ │               │
 │               │ │               │ │               │
-│ works in its  │ │               │ │               │
-│ own           │ │               │ │               │
-│ worktree(s) · │ │               │ │               │
-│ invisible to  │ │               │ │               │
-│ upper layers  │ │               │ │               │
+│ 在自己的      │ │               │ │               │
+│ worktree 中   │ │               │ │               │
+│ 工作 ·        │ │               │ │               │
+│ 对上层不可见  │ │               │ │               │
 └───────┬───────┘ └───────────────┘ └───────────────┘
-        │ when execute-task needs a user decision
+        │ execute-task 需要用户决策时
         ▼
 ┌───────────────────────────────────────────────────────────┐
-│ user  ── attach to tmux window ──> talks to L3's claude    │
-│         directly                                           │
-│                                                            │
-│  L1 only notifies "window Y needs you"; it never relays    │
-│  the Q&A content. After attaching, the user interacts with │
-│  L3 directly; the Q&A never passes through L1/L2.          │
+│ 用户  ── attach 到 tmux window ──> 与 L3 的 claude        │
+│       直接对话                                            │
+│                                                           │
+│ L1 只通知"window Y 需要你"；它绝不转述问答内容。          │
+│ attach 之后，用户直接与 L3 交互；问答绝不经过 L1/L2。     │
 └───────────────────────────────────────────────────────────┘
 
-Communication media (all via files + return value; no cross-agent memory sharing;
-the user attaches to a pane directly):
-  L1 ←→ files(<list-dir>/...) ←→ L2   [L2 writes state files, L1 reads]
-  L1 ←  return value(one line) ←  L2   [L2 returns on exit]
-  L2 ←→ tmux(send-keys/capture) ←→ L3  [out-of-process driving]
-  L3 ←→ files(in its worktree(s) + worker-status.md)  [L3's own execution state]
-  user ←→ tmux attach ←→ L3            [Q&A, never through L1/L2]
+通信媒介（全部经由文件 + 返回值；不跨 agent 共享内存；
+用户直接 attach 到 pane）：
+  L1 ←→ 文件(<list-dir>/...) ←→ L2                 [L2 写状态文件，L1 读]
+  L1 ←  返回值(一行) ←  L2                         [L2 退出时返回]
+  L2 ←→ tmux(send-keys/capture) ←→ L3              [进程外驱动]
+  L3 ←→ 文件(它的 worktree 中 + worker-status.md)  [L3 自己的执行状态]
+  用户 ←→ tmux attach ←→ L3                        [问答，绝不经过 L1/L2]
 ```
 
-### Responsibility boundary table
+### 职责边界表
 
-| Layer | Can see | Cannot touch | Can write | With user |
+| 层 | 能看到 | 不能碰 | 能写 | 与用户的关系 |
 |---|---|---|---|---|
-| **L1 main agent** | master entries, `worker-status.md` (projection), `dispatch.md`, `heartbeat`, `monitor.md`, L2's one-line summary | L3 internals (design / subtask / impl / test / review), L3↔user Q&A body, a worker's raw pane content | master entries, `SUMMARY.md`, notifications | orchestration-level interaction + notify "window Y needs you" (never relays content) |
-| **L2 driver subagent** | the one worker it drives: its `worker-status.md`, `dispatch.md` (upward projection), and a `capture-pane` glance when needed | that worker's L3 internals (design / subtask / impl / test / review / `question.md` body), other workers, master-entry decisions | that worker's `monitor.md` (and `send-keys` into the recorded pane to intervene) | not user-facing; only records a "needs-user" marker into `monitor.md` |
-| **L3 execute-task** | everything in its own worktree(s), its own `worker-status.md` | other workers' worktrees, the master list, the existence of L1/L2 | `worker-status.md`, `question.md`, code/docs in any of its own worktrees | direct Q&A with the user when attached |
-| **user** | everything (may attach to any window) | — | master entries, answers (typed directly into the pane) | orchestration-level + attach into a window for direct Q&A with L3 |
+| **L1 主 agent** | 主条目、`worker-status.md`（投影）、`dispatch.md`、`heartbeat`、`monitor.md`、L2 返回的一行摘要 | L3 内部细节（设计 / subtask / 实现 / 测试 / 评审）、L3 与用户问答的正文、worker pane 的原始内容 | 主条目、`SUMMARY.md`、通知 | 编排层面的交互 + 通知"window Y 需要你"（绝不转述内容） |
+| **L2 driver subagent** | 它所驱动的那一个 worker：该 worker 的 `worker-status.md`、`dispatch.md`（向上投影），以及必要时用 `capture-pane` 瞄一眼 | 该 worker 的 L3 内部细节（设计 / subtask / 实现 / 测试 / 评审 / `question.md` 正文）、其他 worker、主条目层面的决策 | 该 worker 的 `monitor.md`（以及为介入而向记录在案的 pane `send-keys`） | 不面向用户；只在 `monitor.md` 里记一个"needs-user"标记 |
+| **L3 execute-task** | 自己 worktree 里的一切、自己的 `worker-status.md` | 其他 worker 的 worktree、主清单、L1/L2 的存在本身 | `worker-status.md`、`question.md`、自己任一 worktree 里的代码/文档 | 用户 attach 进来时与用户直接问答 |
+| **用户** | 一切（可以 attach 任何 window） | — | 主条目、回答（直接在 pane 里输入） | 编排层面交互 + attach 进某个 window 与 L3 直接问答 |
 
-### Key invariants
+### 关键不变量
 
-- **Only L2 touches a pane interactively** (`send-keys` / `capture-pane`). L1 may call the read-only `orch-check-worker.sh` for a projection but never touches a pane; L3 is driven, not a peer.
-- **`worker-status.md` and `dispatch.md` are L3's upward projection** of overall state, not "internals" — L1 and L2 may both read them (they are the authoritative overall-state source).
-- **"Internal" means** L3's design doc, subtask status, implementation / test / review files, and the **body** of `question.md`. L1 and L2 never read these.
-- **L1/L2 never relay Q&A.** The execute-task phase confirmations and blocking decisions stay between L3 and the user. L1 only notifies "task X needs you in window Y"; the user attaches and answers L3 directly. The Q&A never passes through L1/L2.
-- **notify keys off the live poll wait-state, never off `monitor.md`.** L1 never writes `monitor.md`; a stale `needs-user=true` left there by an earlier L2 is harmless scratch state (re-derived from a fresh poll the next time an L2 is actually dispatched).
-- **Worktree isolation is between workers, not within one.** Workers never touch each other's worktrees (spawn enforces this by requiring every task's worktree paths to be pairwise disjoint); within a single worker, that worker has full write access to all of its own worktrees (one per repo it touches).
+- **只有 L2 会交互式触碰 pane**（`send-keys` / `capture-pane`）。L1 可以调用只读的 `orch-check-worker.sh` 获取投影，但绝不碰 pane；L3 是被驱动的一方，不是对等方。
+- **`worker-status.md` 和 `dispatch.md` 是 L3 对整体状态的向上投影**，不属于"内部细节"——L1 和 L2 都可以读（它们是整体状态的权威来源）。
+- **"内部细节"指的是** L3 的设计文档、subtask 状态、实现 / 测试 / 评审文件，以及 `question.md` 的**正文**。L1 和 L2 绝不读取这些。
+- **L1/L2 绝不转述问答。** execute-task 各阶段的确认和阻塞性决策只在 L3 与用户之间进行。L1 只通知"任务 X 在 window Y 需要你"；用户 attach 进去直接回答 L3。问答绝不经过 L1/L2。
+- **notify 以实时轮询得到的 wait-state 为依据，绝不以 `monitor.md` 为依据。** L1 绝不写 `monitor.md`；早先某个 L2 留下的过期 `needs-user=true` 只是无害的草稿状态（下次真正派发 L2 时会从新的轮询结果重新推导）。
+- **worktree 隔离发生在 worker 之间，而不是 worker 内部。** worker 之间绝不碰彼此的 worktree（spawn 要求所有任务的 worktree 路径两两不相交，以此强制执行）；在单个 worker 内部，该 worker 对自己的所有 worktree（涉及的每个仓库各一个）拥有完全写权限。
 
-## Main Agent Loading
+## 主 agent 加载
 
-When this skill is used, the current user-facing conversation agent is the orchestrator (main agent). First load and follow the full controller prompt from:
+使用本 skill 时，当前面向用户的对话 agent 就是编排器（主 agent）。首先加载并遵循下面这份完整的控制器提示词：
 
 ```text
 prompts/main-agent.md
 ```
 
-That file is not a subagent. It defines how the current conversation agent coordinates the orchestration loop and talks with the user.
+该文件不是 subagent。它定义当前对话 agent 如何协调编排循环、如何与用户沟通。
 
-## Prompt Files
+## 提示词文件
 
-Load these files when needed:
+按需加载以下文件：
 
-- Main agent controller prompt: `prompts/main-agent.md` (load first when the skill starts).
+- 主 agent 控制器提示词：`prompts/main-agent.md`（skill 启动时首先加载）。
 
-The orchestration-scheduling-task skill has no main-agent subagent, but it does own one project-level subagent: the **L2 driver**, `agents/orch-driver-agent.md` (mirrored in `subagents/orch-driver-agent.md`, the same dual layout as the execute-task subagents). L1 dispatches it on demand to drive one worker's pane (see Architecture above). The orchestrator also dispatches `execute-task` workers, which in turn use the project subagents `implementation-agent`, `test-agent`, `review-agent`.
+orchestration-scheduling-task skill 没有主 agent subagent，但它确实拥有一个项目级 subagent：**L2 driver**，即 `agents/orch-driver-agent.md`（镜像在 `subagents/orch-driver-agent.md`，与 execute-task 的 subagent 采用相同的双份布局）。L1 按需派发它去驱动某一个 worker 的 pane（见上文架构（三层）一节）。编排器还会派发 `execute-task` worker，这些 worker 又会使用项目 subagent `implementation-agent`、`test-agent`、`review-agent`。
 
-Use these templates when creating master-list artifacts:
+创建主清单相关文件时使用这些模板：
 
-- Master list task entry: `templates/master-list-task-entry.md`
-- Worker status: `templates/worker-status.md`
-- Driver state (L2-owned): `templates/monitor.md`
-- Async question/answer: `templates/question-answer.md`
+- 主清单任务条目：`templates/master-list-task-entry.md`
+- Worker 状态：`templates/worker-status.md`
+- Driver 状态（归 L2 所有）：`templates/monitor.md`
+- 异步问答：`templates/question-answer.md`
 
-## Core Rules
+## 核心规则
 
-- **Long-running state lives in files.** The master list directory `<list-dir>` is the single source of truth. Conversation context never replaces a file. Every orchestrator decision must be derivable from disk content; if a fact is not on disk, it does not exist. See [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md).
-- **The orchestrator is cwd-independent; each task carries its own `source-repo`.** The orchestrator may be started from `~/` or any directory (not necessarily a git repo). Each master entry's `source-repo:` frontmatter field is mandatory and points at the absolute path of that task's *primary* project git work tree; all git operations for that repo are scoped to `git -C "$SOURCE_REPO"`. A task that spans several repos lists the rest with numbered keys (`source-repo-2:`, `source-repo-3:`, …); spawn builds one worktree per repo (sibling directories) inside the task's single tmux session. One master list can therefore dispatch workers across multiple repos, and a single worker can itself manage multiple repos.
-- **Only one orchestrator at a time per master list.** The orchestrator acquires `<list-dir>/.orchestrator.lock` via `flock` at startup. Starting a second orchestrator against the same list fails. The lock guards orchestrator-vs-orchestrator concurrency; user edits to master entries are guarded procedurally (user must `Ctrl-C` the orchestrator first — see below).
-- **Master entries are co-written with the user.** The orchestrator writes via `tmpfile + rename`. **Before the user edits a master entry in an external editor, the user must `Ctrl-C` the orchestrator** so the flock releases. Restart the orchestrator once the edit is saved.
-- **Each worker writes only its own runtime files.** A worker writes `worker-status.md`, `question.md`, and uses `heartbeat` via the daemon. The orchestrator reads but never writes a worker's runtime files (except for archival during cleanup). The orchestrator writes the master entry; the worker never writes the master entry.
-- **Heuristic analysis is always tentative.** Dependency, project, merge-with suggestions written by the orchestrator carry `deps-tentative: true` in the master entry frontmatter until the user flips it to `false`.
-- **No automatic state change, merge, or cleanup.** Any delivery action requires the matching explicit user token in `## Pending Merge Approval`; the orchestrator never initiates them autonomously. Tokens: `confirmed` (relay the user's confirmation to the worker so it writes `phase=done`, which the orchestrator then mirrors to `state: completed`; no direct state write, no merge/cleanup), `merge` / `merge: <base>` (merge to base + push, no state change), legacy `approved` (merge + completed + cleanup, atomic — short-circuits any coexisting tokens this tick), `cleanup-approved` (worktree cleanup), `rejected: <reason>` (send back to blocked). Stale-worker cleanup still requires `cleanup-approved`. For a multi-repo task, merge and cleanup act **per repo** over the worker's worktree set (repo set sourced from the task's `dispatch.md`): merge is not cross-repo atomic, it fails fast on the first repo that cannot merge, and a re-run is idempotent (repos already merged are skipped).
-- **`task-id` is whitelisted.** Helper scripts reject any `task-id` that does not match `^[a-zA-Z0-9_-]+$`. The `tmux` session, git branch(es), worktree path(s), and runtime dir all embed the literal `task-id`.
-- **Worker tmux session name is fixed-prefix `zyz-task-<task-id>`.** Default git branch is `task/<task-id>`. Default merge base is `main`; override via master entry frontmatter `base:` field.
-- **Heartbeat thresholds default to 300 s** (fresh / suspect / stale tiers per §A.6 of the design spec). When the worker reports `wait-state=waiting-user`, the threshold widens to 900 s. Do not drop below 120 s except on a strictly local (non-network) filesystem.
-- **Orchestrated Mode handshake with `execute-task`.** The orchestrator exports `ZYZ_WORKER_STATUS_FILE`, `ZYZ_TASK_ID`, `ZYZ_QUESTION_FILE`, `ZYZ_ANSWER_FILE`, `ZYZ_HEARTBEAT_FILE` into the worker's tmux session. The worker's `execute-task` skill detects `ZYZ_WORKER_STATUS_FILE` and writes phase/wait-state to it. The orchestrator only sees what the worker flushes; in-context memory does not count.
-- **Container reuse is user-declared and old-task-must-be-completed.** A new task may reuse a *completed* task's leftover tmux session and/or git worktree(s) by declaring `reuse-from: <old-task-id>` + `reuse-scope: worktree|tmux|both` + `reuse-claude: true|false` in its OWN master-entry frontmatter. Reuse hands over the old task's **whole worktree set** (all repos), not a single worktree — partial reuse of one repo out of a set is not supported. The dispatch path then calls `scripts/orch-reuse-worker.sh` (not `orch-spawn-worker.sh`). Reuse only *associates* the container — it never advances or rewrites the old task, which stays `completed`. The `reuse-from` target must be in the SAME `<list-dir>` and already `completed`; otherwise reuse is refused and the new task is not dispatched. See `## Container Reuse` below.
+- **长期运行状态存放在文件里。** 主清单目录 `<list-dir>` 是唯一的事实来源。对话上下文绝不能替代文件。编排器的每一个决策都必须能从磁盘内容推导出来；一个事实如果不在磁盘上，就等于不存在。参见 [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md)。
+- **编排器与 cwd 无关；每个任务自带 `source-repo`。** 编排器可以从 `~/` 或任何目录启动（不一定是 git 仓库）。每个主条目的 `source-repo:` frontmatter 字段是必填的，指向该任务*主*（primary）项目 git 工作树的绝对路径；该仓库的所有 git 操作都限定在 `git -C "$SOURCE_REPO"` 范围内。跨多个仓库的任务用编号键（`source-repo-2:`、`source-repo-3:`、…）列出其余仓库；spawn 会在该任务唯一的 tmux session 内为每个仓库各建一个 worktree（兄弟目录布局）。因此一份主清单可以跨多个仓库派发 worker，单个 worker 自身也可以管理多个仓库。
+- **每份主清单同一时间只能有一个编排器。** 编排器启动时通过 `flock` 获取 `<list-dir>/.orchestrator.lock`。针对同一份清单启动第二个编排器会失败。这把锁防的是编排器与编排器之间的并发；用户对主条目的编辑则靠流程约束来保护（用户必须先 `Ctrl-C` 停掉编排器——见下文）。
+- **主条目由用户与编排器共同编写。** 编排器通过 `tmpfile + rename` 写入。**用户在外部编辑器中编辑主条目之前，必须先 `Ctrl-C` 停掉编排器**，让 flock 释放。编辑保存后再重启编排器。
+- **每个 worker 只写自己的运行时文件。** worker 写 `worker-status.md`、`question.md`，并通过守护进程更新 `heartbeat`。编排器只读、绝不写 worker 的运行时文件（清理时的归档除外）。编排器写主条目；worker 绝不写主条目。
+- **启发式分析永远是暂定的。** 编排器写下的依赖、项目、merge-with 建议，在主条目 frontmatter 中带有 `deps-tentative: true`，直到用户把它改成 `false`。
+- **不自动改状态、不自动合并、不自动清理。** 任何交付动作都需要 `## Pending Merge Approval` 中有对应的、明确的用户令牌；编排器绝不自主发起这些动作。令牌：`confirmed`（把用户的确认转交给 worker，由 worker 写入 `phase=done`，编排器随后把它镜像为 `state: completed`；不直接写状态，不合并/清理）、`merge` / `merge: <base>`（合并到 base 并 push，不改状态）、旧版 `approved`（合并 + completed + 清理，原子执行——会短路掉本 tick 同时存在的其他令牌）、`cleanup-approved`（清理 worktree）、`rejected: <reason>`（退回 blocked）。清理 stale worker 仍然需要 `cleanup-approved`。对于多仓库任务，合并和清理会针对 worker 的 worktree 集合**逐仓库**执行（仓库集合取自该任务的 `dispatch.md`）：合并不是跨仓库原子的，遇到第一个无法合并的仓库即快速失败，重新运行是幂等的（已合并的仓库会被跳过）。
+- **`task-id` 采用白名单。** 辅助脚本拒绝任何不匹配 `^[a-zA-Z0-9_-]+$` 的 `task-id`。`tmux` session、git 分支、worktree 路径和运行时目录都会嵌入字面的 `task-id`。
+- **worker 的 tmux session 名使用固定前缀 `zyz-task-<task-id>`。** 默认 git 分支是 `task/<task-id>`。默认合并 base 是 `main`；可通过主条目 frontmatter 的 `base:` 字段覆盖。
+- **心跳阈值默认为 300 秒**（按设计规格 §A.6 分为 fresh / suspect / stale 三档）。当 worker 报告 `wait-state=waiting-user` 时，阈值放宽到 900 秒。除非是严格的本地（非网络）文件系统，否则不要低于 120 秒。
+- **与 `execute-task` 的编排模式握手。** 编排器把 `ZYZ_WORKER_STATUS_FILE`、`ZYZ_TASK_ID`、`ZYZ_QUESTION_FILE`、`ZYZ_ANSWER_FILE`、`ZYZ_HEARTBEAT_FILE` 导出到 worker 的 tmux session 中。worker 的 `execute-task` skill 检测到 `ZYZ_WORKER_STATUS_FILE` 后，会把 phase/wait-state 写进该文件。编排器只能看到 worker 刷写出来的内容；上下文里的记忆不算数。
+- **容器复用由用户声明，且旧任务必须已完成。** 新任务可以在它**自己的**主条目 frontmatter 中声明 `reuse-from: <old-task-id>` + `reuse-scope: worktree|tmux|both` + `reuse-claude: true|false`，从而复用一个*已完成*任务遗留的 tmux session 和/或 git worktree。复用会移交旧任务的**整个 worktree 集合**（所有仓库），而不是单个 worktree——不支持只复用集合中某一个仓库的部分复用。此时派发路径调用 `scripts/orch-reuse-worker.sh`（而不是 `orch-spawn-worker.sh`）。复用只是*关联*容器——它绝不推进或改写旧任务，旧任务保持 `completed`。`reuse-from` 指向的目标必须在**同一个** `<list-dir>` 中且已经 `completed`；否则拒绝复用，新任务也不会被派发。参见下文 `## 容器复用`。
 
-## Workflow
+## 工作流
 
-The orchestrator runs a loop. Each tick (manual invocation, auto-timer self-schedule, or `/loop` wakeup) performs:
+编排器运行一个循环。每个 tick（手动调用、自动定时模式下的自调度，或 `/loop` 唤醒）执行：
 
-1. **scan** — `scripts/orch-scan-tasks.sh <list-dir>` lists every task entry, its declared `state`, and (for in-progress/paused tasks) the worker-reported phase + wait-state. Missing or illegal `state` values are treated as `not-analyzed`.
-2. **analyze** — For `not-analyzed` tasks, run dependency / project / merge-with analysis. Write tentative results into the master entry `## Orchestrator Analysis` section. **If `## Description` is empty, leave `state: not-analyzed` and write `needs Description` into the analysis section; do not dispatch.**
-3. **plan** — Decide which `ready` tasks to dispatch this tick. The parallel cap is `ZYZ_MAX_PARALLEL_WORKERS` (**default `-1` = unlimited**; set a positive integer to cap — at `-1` no cap is applied and every `ready` task is dispatchable). Move `blocked` tasks whose dependencies are now met to `ready`. **Resource caveat:** each worker = 1 tmux session + n git worktrees (one per repo; n=1 for single-repo tasks) + 1 full `claude` process (running the entire `execute-task` workflow including its own subagents) — far heavier than execute-task's prompt-only subagents. With no cap, watch API quota / memory / disk; set a positive cap to limit. **Disk I/O caveat:** each worker gets Go build-opt env injected by default (`GOTMPDIR` on a tmpfs RAM disk + `GOFLAGS=-p`); **total compile parallelism = workers × p**, so control disk pressure by lowering `p` (`ZYZ_GO_BUILD_P`, default 4), not by reducing worker count (see README *Go 构建 I/O 优化注入* and `ZYZ_GO_BUILD_OPT` / `ZYZ_GO_TMPFS_DIR`).
-4. **dispatch** — For each task selected to dispatch, the orchestrator works in two stages. First call `scripts/orch-spawn-worker.sh <task-id> <list-dir>` to build the **container only**: one worktree per repo the task declares (single tmux session regardless of repo count), the tmux session, in-pane heartbeat daemon, and `dispatch.md` Phase-1 fields (including the numbered `worktree-N` / `source-repo-N` / `branch-N` / `base-N` field group for a multi-repo task). Spawn **never** starts `claude` (there is no `--auto-start`). Then **dispatch an L2 `orch-driver-agent` subagent with `intent=first-dispatch`** to do the heavy pane work — start `claude` in bypass mode, clear the confirmation pages, readiness-probe, and run `/execute-task`. When several new workers are dispatched at once, their L2 drivers are launched in one batch (single message, multiple `Agent` calls).
-5. **poll** — For each `in-progress` or `paused` task, the orchestrator **inline** calls `scripts/orch-check-worker.sh <task-id> <list-dir>` (read-only: files + `pgrep`, never touches a pane) and projects worker state into the master entry. This inline poll runs for **every** active worker every tick (including throttled ones) and is the sole detection point for "user answered, worker left `waiting-user`". L1 dispatches an L2 driver with `intent=intervene` **only** for a worker the poll shows stuck/abnormal (session dead but should be alive, heartbeat stale while `phase-since` is unchanged for several ticks, Unknown-command signs); healthy workers get **no** L2. On `heartbeat-status=fresh`, update `last-seen`. On stale, write the stale summary into `## Notes` and shorten the cadence; do not silently change the master entry `state`.
-6. **handle errors** — If a worker reports `phase=error`, set the master entry `state: blocked`, copy the worker's `## Last Output Summary` into the master entry `## Notes`, and shorten cadence.
-7. **gate** — For tasks whose `## Pending Merge Approval` section contains `approved`, call `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`. For a multi-repo task it merges and cleans up each repo in the worker's worktree set (repo set read from `dispatch.md`); the merge is fail-fast and a re-run is idempotent (already-merged repos are skipped).
-8. **report** — Write a short summary to the conversation window and (re)write `<list-dir>/SUMMARY.md` listing all tasks and their current view.
+1. **扫描** —— `scripts/orch-scan-tasks.sh <list-dir>` 列出每个任务条目、其声明的 `state`，以及（对于 in-progress/paused 任务）worker 报告的 phase + wait-state。缺失或非法的 `state` 值按 `not-analyzed` 处理。
+2. **分析** —— 对 `not-analyzed` 任务做依赖 / 项目 / merge-with 分析。把暂定结果写进主条目的 `## Orchestrator Analysis` 一节。**如果 `## Description` 为空，保持 `state: not-analyzed`，并在分析一节写入 `needs Description`；不要派发。**
+3. **规划** —— 决定本 tick 派发哪些 `ready` 任务。并行上限是 `ZYZ_MAX_PARALLEL_WORKERS`（**默认 `-1` = 不设上限**；设为正整数即可限流——为 `-1` 时不施加上限，每个 `ready` 任务都可派发）。把依赖已满足的 `blocked` 任务移到 `ready`。**资源提醒：** 每个 worker = 1 个 tmux session + n 个 git worktree（每个仓库一个；单仓库任务 n=1）+ 1 个完整的 `claude` 进程（运行整个 `execute-task` 工作流，包括它自己的 subagent）——远比 execute-task 那些纯提示词的 subagent 重。不设上限时，要留意 API 配额 / 内存 / 磁盘；需要限制就设一个正数上限。**磁盘 I/O 提醒：** 每个 worker 默认被注入 Go 构建优化环境变量（`GOTMPDIR` 放在 tmpfs 内存盘上 + `GOFLAGS=-p`）；**总编译并行度 = worker 数 × p**，因此控制磁盘压力应调低 `p`（`ZYZ_GO_BUILD_P`，默认 4），而不是减少 worker 数（参见 README *Go 构建 I/O 优化注入* 一节以及 `ZYZ_GO_BUILD_OPT` / `ZYZ_GO_TMPFS_DIR`）。
+4. **派发** —— 对每个选中派发的任务，编排器分两个阶段工作。先调用 `scripts/orch-spawn-worker.sh <task-id> <list-dir>`，**只搭建容器**：为任务声明的每个仓库各建一个 worktree（无论仓库多少，都只有一个 tmux session）、tmux session、pane 内的心跳守护进程，以及 `dispatch.md` 的 Phase-1 字段（多仓库任务还包括编号的 `worktree-N` / `source-repo-N` / `branch-N` / `base-N` 字段组）。spawn **绝不**启动 `claude`（不存在 `--auto-start`）。然后**派发一个 `intent=first-dispatch` 的 L2 `orch-driver-agent` subagent** 去做 pane 重活——以 bypass 模式启动 `claude`、点掉确认页、做就绪探测、运行 `/execute-task`。同时派发多个新 worker 时，它们的 L2 driver 一次性批量启动（单条消息，多个 `Agent` 调用）。
+5. **轮询** —— 对每个 `in-progress` 或 `paused` 任务，编排器**内联**调用 `scripts/orch-check-worker.sh <task-id> <list-dir>`（只读：文件 + `pgrep`，绝不碰 pane），并把 worker 状态投影到主条目。这个内联轮询每个 tick 都会对**每一个**活跃 worker 运行（包括被限流的），也是检测"用户已回答、worker 已离开 `waiting-user`"的唯一位置。L1 **只**对轮询显示卡住/异常的 worker（session 已死但本应存活、心跳过期且 `phase-since` 连续数个 tick 不变、出现 Unknown command 迹象）派发 `intent=intervene` 的 L2 driver；健康的 worker **不**派 L2。`heartbeat-status=fresh` 时更新 `last-seen`。过期（stale）时，把 stale 摘要写进 `## Notes` 并缩短轮询间隔；不要悄悄改动主条目的 `state`。
+6. **处理错误** —— 如果 worker 报告 `phase=error`，把主条目设为 `state: blocked`，把 worker 的 `## Last Output Summary` 复制进主条目的 `## Notes`，并缩短轮询间隔。
+7. **闸门** —— 对于 `## Pending Merge Approval` 一节含有 `approved` 的任务，调用 `scripts/orch-merge-and-cleanup.sh <task-id> <list-dir> <base-branch>`。对于多仓库任务，它会对 worker worktree 集合中的每个仓库分别合并和清理（仓库集合从 `dispatch.md` 读取）；合并是快速失败的，重新运行是幂等的（已合并的仓库会被跳过）。
+8. **汇报** —— 在对话窗口写一段简短摘要，并（重新）写入 `<list-dir>/SUMMARY.md`，列出所有任务及其当前视图。
 
-For full workflow detail, decision branches, failure modes, and cadence policy, load `prompts/main-agent.md`.
+完整的工作流细节、决策分支、失败模式和轮询节奏策略，请加载 `prompts/main-agent.md`。
 
-## File Protocols
+## 文件协议
 
-The orchestrator and workers communicate through a small set of files in `<list-dir>`. Path summary:
+编排器与 worker 通过 `<list-dir>` 中的一小组文件通信。路径汇总：
 
-| File | Path | Writer | Reader |
+| 文件 | 路径 | 写入方 | 读取方 |
 |---|---|---|---|
-| master entry | `<list-dir>/tasks/<task-id>.md` | orchestrator + user | orchestrator + user |
-| worker status | `<list-dir>/runtime/<task-id>/worker-status.md` | worker (execute-task) | orchestrator |
-| monitor | `<list-dir>/runtime/<task-id>/monitor.md` | L2 orch-driver-agent | orchestrator (L1) |
-| dispatch | `<list-dir>/runtime/<task-id>/dispatch.md` | spawn (Phase-1) + check (Phase-2) | orchestrator + operator |
-| heartbeat | `<list-dir>/runtime/<task-id>/heartbeat` | in-pane heartbeat daemon | orchestrator |
-| question | `<list-dir>/runtime/<task-id>/question.md` | worker | user |
-| answer | `<list-dir>/runtime/<task-id>/answer.md` | user | worker |
-| lock | `<list-dir>/.orchestrator.lock` | orchestrator (flock) | orchestrator |
-| SUMMARY | `<list-dir>/SUMMARY.md` | orchestrator | user |
+| 主条目 | `<list-dir>/tasks/<task-id>.md` | 编排器 + 用户 | 编排器 + 用户 |
+| worker 状态 | `<list-dir>/runtime/<task-id>/worker-status.md` | worker（execute-task） | 编排器 |
+| monitor | `<list-dir>/runtime/<task-id>/monitor.md` | L2 orch-driver-agent | 编排器（L1） |
+| dispatch | `<list-dir>/runtime/<task-id>/dispatch.md` | spawn（Phase-1）+ check（Phase-2） | 编排器 + 运维人员 |
+| heartbeat | `<list-dir>/runtime/<task-id>/heartbeat` | pane 内的心跳守护进程 | 编排器 |
+| question | `<list-dir>/runtime/<task-id>/question.md` | worker | 用户 |
+| answer | `<list-dir>/runtime/<task-id>/answer.md` | 用户 | worker |
+| lock | `<list-dir>/.orchestrator.lock` | 编排器（flock） | 编排器 |
+| SUMMARY | `<list-dir>/SUMMARY.md` | 编排器 | 用户 |
 
-The lock guards only orchestrator-vs-orchestrator concurrency. User-vs-orchestrator concurrency is handled procedurally: the user must `Ctrl-C` the orchestrator before editing a master entry.
+这把锁只防编排器与编排器之间的并发。用户与编排器之间的并发靠流程约束处理：用户在编辑主条目之前，必须先 `Ctrl-C` 停掉编排器。
 
-### Master entry frontmatter (excerpt)
+### 主条目 frontmatter（节选）
 
 ```yaml
-task-id: <task-id>            # immutable
-project: <project name>       # user maintained; label only; default = basename primary source-repo when omitted
-source-repo: ~/workspace/<repo>  # required; primary repo; absolute path or ~/-prefixed; supports ~/ expansion
-source-repo-2: ~/workspace/<repo2>  # optional; additional repos for a multi-repo task; numbered from 2, must be contiguous
+task-id: <task-id>            # 不可变
+project: <project name>       # 用户维护；仅作标签；省略时默认 = basename(主 source-repo)
+source-repo: ~/workspace/<repo>  # 必填；主仓库；绝对路径或以 ~/ 开头；支持 ~/ 展开
+source-repo-2: ~/workspace/<repo2>  # 可选；多仓库任务的额外仓库；从 2 开始编号，必须连续
 state: not-analyzed           # not-analyzed | blocked | ready | in-progress | paused | awaiting-user-confirmation | completed
 priority: normal              # low | normal | high
-branch: task/<task-id>        # default; user can override
-branch-2: task/<task-id>      # optional per-repo branch; defaults to branch's resolved value
-base: main                    # merge base; user can override
-base-2: main                  # optional per-repo base; defaults to base's resolved value
-worktree: ~/.zyz-worker/worktrees/<project>/task/<task-id>          # primary worktree = pane cwd
-worktree-2: ~/.zyz-worker/worktrees/<project>/task/<task-id>/<repo2>  # optional; default sibling-directory layout per repo
-tmux-session: zyz-task-<task-id>   # task-level single value regardless of repo count
-reuse-from:                   # optional; a completed task-id in THIS list to reuse the container of
-reuse-scope: both             # worktree | tmux | both; required when reuse-from is set (default both)
-reuse-claude: true            # true (default) | false; only meaningful when reusing tmux
-blocked-by: []                # user maintained
-merged-with: []               # user maintained
-deps-tentative: true          # orchestrator clears to false only when user approves analysis
-last-seen: <iso>              # orchestrator-only
-heartbeat-stale-sec: 300      # optional override
+branch: task/<task-id>        # 默认值；用户可覆盖
+branch-2: task/<task-id>      # 可选，按仓库设置的分支；默认取 branch 解析后的值
+base: main                    # 合并 base；用户可覆盖
+base-2: main                  # 可选，按仓库设置的 base；默认取 base 解析后的值
+worktree: ~/.zyz-worker/worktrees/<project>/task/<task-id>          # 主 worktree = pane 的 cwd
+worktree-2: ~/.zyz-worker/worktrees/<project>/task/<task-id>/<repo2>  # 可选；默认按仓库采用兄弟目录布局
+tmux-session: zyz-task-<task-id>   # 任务级单一值，与仓库数量无关
+reuse-from:                   # 可选；本清单中某个已完成任务的 task-id，复用它的容器
+reuse-scope: both             # worktree | tmux | both；设置了 reuse-from 时必填（默认 both）
+reuse-claude: true            # true（默认）| false；只在复用 tmux 时有意义
+blocked-by: []                # 用户维护
+merged-with: []               # 用户维护
+deps-tentative: true          # 只有在用户批准分析后，编排器才把它清为 false
+last-seen: <iso>              # 仅由编排器写入
+heartbeat-stale-sec: 300      # 可选的覆盖值
 created-at: <date>
 updated-at: <date>
 ```
 
-The numbered keys (`source-repo-2:`, `branch-2:`, `base-2:`, `worktree-2:`, …) are optional and used only for multi-repo tasks; `source-repo-N` numbering starts at 2 and must be contiguous. A single-`source-repo:` entry is fully backward compatible — it parses, spawns, merges, and cleans up exactly as before. `branch-N` / `base-N` / `worktree-N` may each be omitted and default (per-repo branch/base inherit the primary's resolved value; `worktree-N` defaults to the sibling-directory layout). Worktree paths must not contain `:` (that character separates entries in the `ZYZ_WORKTREES` env and the reuse `worktrees:` line).
+编号键（`source-repo-2:`、`branch-2:`、`base-2:`、`worktree-2:`、…）是可选的，只用于多仓库任务；`source-repo-N` 从 2 开始编号，且必须连续。只有一个 `source-repo:` 的条目完全向后兼容——解析、spawn、合并、清理都与以前完全一样。`branch-N` / `base-N` / `worktree-N` 每一项都可以省略并取默认值（各仓库的 branch/base 继承主仓库解析后的值；`worktree-N` 默认采用兄弟目录布局）。worktree 路径不得包含 `:`（该字符在 `ZYZ_WORKTREES` 环境变量和复用时的 `worktrees:` 行中用作条目分隔符）。
 
-Legal user-written values for `state:` are `not-analyzed | blocked | ready | completed`. The orchestrator writes `in-progress | paused | awaiting-user-confirmation` on its own (`awaiting-user-confirmation` is orchestrator-projected from the worker's phase, never user-written).
+用户可写的 `state:` 合法值是 `not-analyzed | blocked | ready | completed`。`in-progress | paused | awaiting-user-confirmation` 由编排器自行写入（`awaiting-user-confirmation` 由编排器根据 worker 的 phase 投影得出，绝不由用户手写）。
 
-### Worker status frontmatter (excerpt)
+### Worker 状态 frontmatter（节选）
 
 ```yaml
 task-id: <task-id>
@@ -284,178 +276,178 @@ expected-resume-by: <iso; non-empty when wait-state != none>
 last-flush: <iso>
 ```
 
-The worker flushes status before any suspend, before dispatching a subagent, and on every phase transition. The orchestrator reads but never writes `worker-status.md`.
+worker 在任何挂起之前、派发 subagent 之前，以及每次 phase 切换时刷写状态。编排器只读、绝不写 `worker-status.md`。
 
-## State Machine
+## 状态机
 
-Seven explicit states + one orchestrator-derived state (`stale`):
+七个显式状态 + 一个由编排器推导出的状态（`stale`）：
 
-| State | Meaning | Set by |
+| 状态 | 含义 | 由谁设置 |
 |---|---|---|
-| `not-analyzed` | Task is new; orchestrator has not analyzed it yet. | template default / scan |
-| `blocked` | Dependencies unmet, or worker reported `phase=error`. | orchestrator |
-| `ready` | No blockers; dispatchable. | orchestrator |
-| `in-progress` | Worker dispatched; tmux session alive; heartbeat fresh; worker in a working phase (`design`..`delivery`) with `wait-state=none`. | orchestrator |
-| `paused` | Worker dispatched; `wait-state != none`. | orchestrator (projects worker's wait-state) |
-| `awaiting-user-confirmation` | Worker reached `phase=awaiting-confirmation` (self-declared finished, awaiting the user's confirmation). Distinct from `paused` (which is mid-task waiting on a Q&A/resource). | orchestrator (projects worker phase) |
-| `completed` | Delivery confirmed: the worker reached `phase=done` (user confirmed — worker-window direct, or via an L1-relayed confirmation) and the orchestrator mirrored it; OR the legacy `approved` token ran the atomic merge+complete+cleanup. Merge to base may or may not have happened (done is decoupled from merge). Terminal and immutable; post-delivery changes go through a NEW superseding task. | orchestrator |
-| `stale` (derived) | Heartbeat past stale threshold OR `phase-since` unchanged for 5 ticks. Master entry `state:` is **not** rewritten; stale is reported via the `## Notes` section and the `last-seen` field. | orchestrator |
+| `not-analyzed` | 新任务；编排器尚未分析。 | 模板默认值 / 扫描 |
+| `blocked` | 依赖未满足，或 worker 报告了 `phase=error`。 | 编排器 |
+| `ready` | 没有阻塞项；可以派发。 | 编排器 |
+| `in-progress` | worker 已派发；tmux session 存活；心跳新鲜；worker 处于工作阶段（`design`..`delivery`）且 `wait-state=none`。 | 编排器 |
+| `paused` | worker 已派发；`wait-state != none`。 | 编排器（投影 worker 的 wait-state） |
+| `awaiting-user-confirmation` | worker 到达 `phase=awaiting-confirmation`（自我声明已完成，等待用户确认）。与 `paused` 不同（`paused` 是任务中途在等问答/资源）。 | 编排器（投影 worker 的 phase） |
+| `completed` | 交付已确认：worker 到达 `phase=done`（用户已确认——直接在 worker window 中确认，或通过 L1 转交的确认），并由编排器镜像过来；或者旧版 `approved` 令牌执行了原子的合并+完成+清理。合并到 base 可能发生过，也可能没有（done 与合并已解耦）。终态且不可变；交付后的变更要通过一个**新的**、取而代之的任务进行。 | 编排器 |
+| `stale`（推导） | 心跳超过 stale 阈值，或 `phase-since` 连续 5 个 tick 不变。主条目的 `state:` **不**会被改写；stale 通过 `## Notes` 一节和 `last-seen` 字段报告。 | 编排器 |
 
-Transitions (informal):
+状态转换（非正式）：
 
-- `not-analyzed` → `ready` (analysis ok, no blockers) | `blocked` (analysis ok but deps unmet)
-- `blocked` → `ready` (deps met or error resolved)
-- `ready` → `in-progress` (orchestrator dispatches)
-- `in-progress` → `paused` (worker writes `wait-state != none`) | `awaiting-user-confirmation` (worker writes `phase=awaiting-confirmation`) | `blocked` (worker writes `phase=error`)
-- `paused` → `in-progress` (worker writes `wait-state=none`)
-- `awaiting-user-confirmation` → `in-progress` (worker rolls back, e.g. the user asked for changes) | `completed` (worker writes `phase=done` after the user confirms — directly in the worker window, or via the L1 `confirmed`→relay path — and the orchestrator mirrors `phase=done` into `completed`; OR the legacy `approved` atomic path)
+- `not-analyzed` → `ready`（分析通过，无阻塞项）| `blocked`（分析通过但依赖未满足）
+- `blocked` → `ready`（依赖已满足或错误已解决）
+- `ready` → `in-progress`（编排器派发）
+- `in-progress` → `paused`（worker 写入 `wait-state != none`）| `awaiting-user-confirmation`（worker 写入 `phase=awaiting-confirmation`）| `blocked`（worker 写入 `phase=error`）
+- `paused` → `in-progress`（worker 写入 `wait-state=none`）
+- `awaiting-user-confirmation` → `in-progress`（worker 回滚，例如用户要求修改）| `completed`（用户确认后 worker 写入 `phase=done`——直接在 worker window 中确认，或经由 L1 的 `confirmed`→转交路径——再由编排器把 `phase=done` 镜像为 `completed`；或者走旧版 `approved` 原子路径）
 
-A worker reaching `phase=awaiting-confirmation` projects to `state: awaiting-user-confirmation`. `completed` is reached only when the worker writes `phase=done` (after user confirmation) and the orchestrator mirrors it — or via the legacy `approved` atomic path; never directly from the `confirmed` token. `completed` is terminal and immutable; it is what the orchestrator reasons about when judging whether downstream tasks may start (see the Dependency Unlock guidance in `prompts/main-agent.md`). Post-delivery changes go through a NEW superseding task; never re-open or roll back `completed`.
+worker 到达 `phase=awaiting-confirmation` 时投影为 `state: awaiting-user-confirmation`。只有当 worker 写入 `phase=done`（在用户确认之后）并由编排器镜像时，才会到达 `completed`——或者经由旧版 `approved` 原子路径；绝不会由 `confirmed` 令牌直接到达。`completed` 是终态且不可变；编排器判断下游任务能否启动时，依据的就是它（参见 `prompts/main-agent.md` 中关于依赖解锁的指引）。交付后的变更要通过一个**新的**、取而代之的任务进行；绝不重新打开或回滚 `completed`。
 
-A **container-reuse** task (master entry `reuse-from` set) adds **no new state** — it walks the same seven states. The only difference is at dispatch: the orchestrator first does a reuse prerequisite check in **analyze** (old task in this list, `completed`, scope legal, old container still present), then in **dispatch** calls `orch-reuse-worker.sh` + dispatches an L2 `reuse-dispatch`. The old `reuse-from` task stays `completed` throughout (reuse never advances it). See `## Container Reuse`.
+**容器复用**任务（主条目设置了 `reuse-from`）**不新增任何状态**——它走的是同样的七个状态。唯一的区别在派发环节：编排器先在**分析**步骤中做复用前置检查（旧任务在本清单中、已 `completed`、scope 合法、旧容器仍然存在），然后在**派发**步骤中调用 `orch-reuse-worker.sh` 并派发一个 L2 `reuse-dispatch`。旧的 `reuse-from` 任务始终保持 `completed`（复用绝不推进它）。参见 `## 容器复用`。
 
-Full state machine and the phase mapping table for `execute-task` workflow positions live in the design spec (§A and §D.5 of `.zyz-worker/tasks/orchestration-scheduling-task/design-spec.md`).
+完整的状态机，以及 `execute-task` 工作流各位置对应的 phase 映射表，见设计规格（`.zyz-worker/tasks/orchestration-scheduling-task/design-spec.md` 的 §A 与 §D.5）。
 
-### PR flow (merge handled outside the orchestrator)
+### PR 流程（合并在编排器之外完成）
 
-Not every branch merges to `main`, and some require PR + human review. Native PR creation is out of scope. To finish a task via PR: let the worker reach `phase=awaiting-confirmation`, open and review/merge the PR yourself (outside zyz-worker) — one PR per repo for a multi-repo task, since each repo carries its own branch — then write `confirmed` (NOT `merge`) in `## Pending Merge Approval` so the orchestrator records `state: completed` without running any git merge. The orchestrator never opens or merges PRs.
+并非每个分支都合并到 `main`，有些还需要 PR + 人工评审。原生的 PR 创建不在范围内。要通过 PR 完成任务：让 worker 到达 `phase=awaiting-confirmation`，自己（在 zyz-worker 之外）开 PR、评审并合并——多仓库任务每个仓库一个 PR，因为每个仓库都有自己的分支——然后在 `## Pending Merge Approval` 中写入 `confirmed`（**不是** `merge`），这样编排器会记录 `state: completed`，而不执行任何 git 合并。编排器绝不开 PR，也绝不合并 PR。
 
-If PR review comes back with change requests, the worker main agent evaluates them rather than accepting blindly — it fixes valid findings and posts a reasoned rejection on the PR for invalid ones (see `skills/execute-task/prompts/main-agent.md` `## PR Review Handling`). A worker acting on PR feedback rolls its `phase` back from `awaiting-confirmation` into `implementation`/`testing`/`review` as needed; only write `confirmed` once you are satisfied with the resolved PR.
+如果 PR 评审返回了修改请求，worker 主 agent 会对其进行评估，而不是盲目接受——修复成立的发现，对不成立的发现在 PR 上发布有理有据的拒绝说明（参见 `skills/execute-task/prompts/main-agent.md` 的 `## PR 评审处理（外部评审反馈）`）。根据 PR 反馈采取行动的 worker 会按需把 `phase` 从 `awaiting-confirmation` 回滚到 `implementation`/`testing`/`review`；只有在你对处理后的 PR 满意时，才写入 `confirmed`。
 
-## Container Reuse
+## 容器复用
 
-A new task can reuse a **completed** task's leftover tmux session and/or git worktree(s) instead of building a fresh container. For a multi-repo old task, reuse takes over its **whole worktree set** (all repos) as a unit — reusing only one repo out of a set is not supported. This is opt-in and entirely user-declared in the new task's master-entry frontmatter:
+新任务可以复用一个**已完成**任务遗留的 tmux session 和/或 git worktree，而不必搭建全新的容器。如果旧任务是多仓库任务，复用会把它的**整个 worktree 集合**（所有仓库）作为一个整体接管——不支持只复用集合中的某一个仓库。这是可选功能，完全由用户在新任务的主条目 frontmatter 中声明：
 
 ```yaml
-reuse-from: <old-task-id>     # present => reuse; must be a completed task in THIS same list
-reuse-scope: both             # worktree | tmux | both (default both)
-reuse-claude: true            # true (default) | false; only meaningful when reusing tmux
+reuse-from: <old-task-id>     # 存在 => 复用；必须是本清单中的已完成任务
+reuse-scope: both             # worktree | tmux | both（默认 both）
+reuse-claude: true            # true（默认）| false；只在复用 tmux 时有意义
 ```
 
-When a selected-to-dispatch task has a non-empty `reuse-from`, the **dispatch** step calls `scripts/orch-reuse-worker.sh <new-id> <list-dir>` (instead of `orch-spawn-worker.sh`) and then dispatches an L2 driver with `intent=reuse-dispatch` (instead of `first-dispatch`). Everything else (poll / project / gate / report) is unchanged — the new task has its own `runtime/<new-id>/` and is observed exactly like any other worker.
+当选中派发的任务有非空的 `reuse-from` 时，**派发**步骤调用 `scripts/orch-reuse-worker.sh <new-id> <list-dir>`（而不是 `orch-spawn-worker.sh`），然后派发一个 `intent=reuse-dispatch`（而不是 `first-dispatch`）的 L2 driver。其余一切（轮询 / 投影 / 闸门 / 汇报）不变——新任务有自己的 `runtime/<new-id>/`，和其他 worker 一样被观察。
 
-### Scope → container action
+### scope → 容器动作
 
-| `reuse-scope` | worktree set | tmux session | heartbeat | claude |
+| `reuse-scope` | worktree 集合 | tmux session | 心跳 | claude |
 |---|---|---|---|---|
-| `worktree` | reuse old worktree set (same dirs/branches) | **new** `zyz-task-<new-id>` | in-pane daemon (same as spawn) | **new** claude (clean env; `first-dispatch`-style) — `reuse-claude` is **ignored** (`reuse-claude-effective=n/a`) |
-| `tmux` (`reuse-claude:true`, default) | **old** worktree set (the reused pane's cwd is immutable at the old primary worktree; the `worktree:` field is ignored) | reuse old session | **new window** in the reused session runs the daemon | **same** running claude (in-band runtime-config block) |
-| `tmux` (`reuse-claude:false`) | old worktree set (restart stays in the same pane) | reuse old session | new-window daemon | **restart** claude in the reused session (clean handshake) |
-| `both` (`reuse-claude:true`, default) | reuse old worktree set | reuse old session | new-window daemon | **same** running claude (in-band config block) |
-| `both` (`reuse-claude:false`) | reuse old worktree set | reuse old session | new-window daemon | **restart** claude |
+| `worktree` | 复用旧 worktree 集合（相同目录/分支） | **新的** `zyz-task-<new-id>` | pane 内守护进程（与 spawn 相同） | **新的** claude（干净环境；类似 `first-dispatch`）——`reuse-claude` 被**忽略**（`reuse-claude-effective=n/a`） |
+| `tmux`（`reuse-claude:true`，默认） | **旧的** worktree 集合（被复用 pane 的 cwd 固定在旧的主 worktree 上，不可改变；`worktree:` 字段被忽略） | 复用旧 session | 在被复用的 session 里开一个**新 window** 运行守护进程 | **同一个**正在运行的 claude（in-band 运行时配置块） |
+| `tmux`（`reuse-claude:false`） | 旧 worktree 集合（重启仍在同一个 pane 里） | 复用旧 session | 新 window 守护进程 | 在被复用的 session 里**重启** claude（干净的握手） |
+| `both`（`reuse-claude:true`，默认） | 复用旧 worktree 集合 | 复用旧 session | 新 window 守护进程 | **同一个**正在运行的 claude（in-band 配置块） |
+| `both`（`reuse-claude:false`） | 复用旧 worktree 集合 | 复用旧 session | 新 window 守护进程 | **重启** claude |
 
-### Same-claude reuse: in-band runtime-config block + new-window heartbeat
+### 同一 claude 复用：in-band 运行时配置块 + 新 window 心跳
 
-A still-running claude cannot see re-exported env (a Bash subprocess inherits the env claude started with, not later pane `export`s). So when `reuse-claude-effective=true`, the new task's runtime paths are handed to the live claude by the L2 `reuse-dispatch` driver **as an in-band runtime-config block** (a structured text message fenced by `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` carrying `task-id` / `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file`, plus an optional `worktrees:` line — colon-separated, primary first — for a multi-repo reuse task), sent into the pane alongside `/zyz-worker:execute-task <new-id>`. The execute-task contract (`skills/execute-task/SKILL.md ## Orchestrated Mode`) makes that block **override** the launch-time `ZYZ_*` env for the whole task lifecycle, **including the `task-id` and all task-id-derived paths** (the detailed `.zyz-worker/tasks/<task-id>/` status dir, commit/branch references).
+仍在运行的 claude 看不到重新导出的环境变量（Bash 子进程继承的是 claude 启动时的环境，而不是之后在 pane 里 `export` 的变量）。因此当 `reuse-claude-effective=true` 时，新任务的运行时路径由 L2 `reuse-dispatch` driver **以 in-band 运行时配置块的形式**交给正在运行的 claude（这是一段结构化文本消息，用 `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` 包围，携带 `task-id` / `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file`，多仓库复用任务还会带一行可选的 `worktrees:`——以冒号分隔，主仓库在前），与 `/zyz-worker:execute-task <new-id>` 一起发送进 pane。execute-task 的契约（`skills/execute-task/SKILL.md ## 编排模式`）规定，在整个任务生命周期内该配置块**覆盖**启动时的 `ZYZ_*` 环境变量，**包括 `task-id` 以及所有由 task-id 派生的路径**（详细的 `.zyz-worker/tasks/<task-id>/` 状态目录、commit/分支引用）。
 
-Because claude occupies the reused session's original window/pane, the new task's heartbeat daemon runs in a **new tmux window** opened in the reused session (it cannot start a shell daemon in claude's pane). The daemon points at the new task's heartbeat file and dies with the reused session (the `orch-heartbeat-daemon.sh` `tmux has-session` watchdog tracks the session name, so the new window is covered). A reuse worker also `touch`es the in-band `heartbeat-file` on every flush as a backup liveness signal.
+由于 claude 占着被复用 session 原来的 window/pane，新任务的心跳守护进程运行在被复用 session 中新开的一个 **tmux window** 里（无法在 claude 的 pane 里启动 shell 守护进程）。该守护进程指向新任务的心跳文件，并随被复用的 session 一起消亡（`orch-heartbeat-daemon.sh` 的 `tmux has-session` watchdog 跟踪的是 session 名，因此新 window 也在覆盖范围内）。复用 worker 还会在每次刷写时 `touch` 一下 in-band 配置块里的 `heartbeat-file`，作为备用的存活信号。
 
-### Reuse binding & recovery semantics
+### 复用绑定与恢复语义
 
-A same-claude reuse task shares the old task's claude process: its `dispatch.md` `claude-pid` equals the old task's (same process), and `claude-session-id` / `transcript-path` point at the **shared** session — this is expected, not a binding mix-up. Consequently a same-claude reuse task supports recovery **case 1 only (attach)**: `orch-check-worker.sh` writes an **attach-only** `## Recovery` body for it and deliberately omits the independent `claude --resume` command, because resuming the shared session-id from two `dispatch.md` files is a known footgun. `reuse-claude-effective=false` (restart) and `reuse-scope=worktree` (new session) tasks have their own independent claude session and recover exactly like a plain spawn (attach **and** `--resume`).
+同一 claude 复用的任务与旧任务共享 claude 进程：它的 `dispatch.md` 中 `claude-pid` 与旧任务相同（同一个进程），`claude-session-id` / `transcript-path` 指向**共享的** session——这是预期行为，不是绑定错乱。因此，同一 claude 复用的任务**只支持恢复情形 1（attach）**：`orch-check-worker.sh` 为它写入**只含 attach** 的 `## Recovery` 正文，并有意省略独立的 `claude --resume` 命令，因为从两个 `dispatch.md` 文件分别 resume 同一个共享 session-id 是已知的陷阱。`reuse-claude-effective=false`（重启）和 `reuse-scope=worktree`（新 session）的任务有各自独立的 claude session，恢复方式与普通 spawn 完全相同（attach **和** `--resume` 都可用）。
 
-### Cleanup of shared containers (read this before `cleanup-approved`)
+### 共享容器的清理（执行 `cleanup-approved` 之前请先读这一节）
 
-A reuse task **shares** its tmux session and/or worktree set with its `reuse-from` old task. Running cleanup on either will kill the shared session and remove the shared worktrees, affecting the other. The orchestrator does **not** do shared-container reference counting (a deliberate Non-Goal). Two safeguards apply: (1) cleanup still requires an explicit `cleanup-approved` token (never automatic), and (2) the orchestrator gate step appends a shared-container warning to the task's `## Notes` (naming the `reuse-from` old id + the shared session/worktrees) before honoring `cleanup-approved` for a `reuse-from` task. Ensure all sharers are completed before cleaning up.
+复用任务与其 `reuse-from` 旧任务**共享** tmux session 和/或 worktree 集合。对其中任何一个执行清理，都会杀掉共享的 session 并删除共享的 worktree，从而影响另一个。编排器**不**对共享容器做引用计数（这是有意设定的非目标）。有两道保护：(1) 清理仍然需要明确的 `cleanup-approved` 令牌（绝不自动执行）；(2) 对 `reuse-from` 任务兑现 `cleanup-approved` 之前，编排器的闸门步骤会在该任务的 `## Notes` 中追加一条共享容器警告（写明 `reuse-from` 旧 id 以及共享的 session/worktree）。清理之前，请确保所有共享方都已完成。
 
-## Long-Running State
+## 长期运行状态
 
-This skill enforces the zyz-worker [long-running-state convention](../../docs/conventions/long-running-state.md) end-to-end:
+本 skill 端到端地贯彻 zyz-worker 的[长期运行状态约定](../../docs/conventions/long-running-state.md)：
 
-- The master list directory **is** the state. The orchestrator must derive every decision from disk content.
-- The worker writes `worker-status.md` before any suspend.
-- The heartbeat daemon writes the `heartbeat` file every 30 s while alive (it dies with the tmux session — no manual `pkill` needed).
-- The orchestrator writes `SUMMARY.md` once per tick.
+- 主清单目录**就是**状态。编排器必须从磁盘内容推导出每一个决策。
+- worker 在任何挂起之前写 `worker-status.md`。
+- 心跳守护进程存活期间每 30 秒写一次 `heartbeat` 文件（它随 tmux session 一起消亡——不需要手动 `pkill`）。
+- 编排器每个 tick 写一次 `SUMMARY.md`。
 
-If the orchestrator's conversation context is dropped or compacted, restarting `/orchestrate-tasks <list-dir>` rebuilds full situational awareness from disk alone.
+如果编排器的对话上下文被丢弃或压缩，重新运行 `/orchestrate-tasks <list-dir>` 即可仅凭磁盘内容重建完整的态势感知。
 
-## Crash Recovery
+## 崩溃恢复
 
-Every worker writes a `dispatch.md` into its runtime directory at `<list-dir>/runtime/<task-id>/dispatch.md`. The file binds the worker's tmux session/pane to its claude session-id and transcript path, so you can recover after a tmux session, claude process, or orchestrator crash. The spawn helper writes the Phase-1 (deterministic, spawn-time) fields as the last preflight step; `orch-check-worker.sh` lazily fills the Phase-2 (claude-side) fields — `claude-pid`, `claude-session-id`, `transcript-path`, `first-seen-iso` — on subsequent polls, and regenerates the `## Recovery` body with concrete commands once all three of the first trio are populated.
+每个 worker 都会在自己的运行时目录 `<list-dir>/runtime/<task-id>/dispatch.md` 写一份 `dispatch.md`。该文件把 worker 的 tmux session/pane 与它的 claude session-id 和 transcript 路径绑定在一起，这样 tmux session、claude 进程或编排器崩溃后都能恢复。spawn 辅助脚本在预检的最后一步写入 Phase-1 字段（确定性的、spawn 时即可得到的字段）；`orch-check-worker.sh` 在后续轮询中惰性地填入 Phase-2 字段（claude 侧字段）——`claude-pid`、`claude-session-id`、`transcript-path`、`first-seen-iso`——并在前三项全部填好后，用具体命令重新生成 `## Recovery` 正文。
 
-Run `bash scripts/orch-check-worker.sh <task-id> <list-dir>` and read its stdout: it now emits a `dispatch-bound=true|false|<empty>` line (`true` = Phase-2 trio populated; `false` = dispatch.md present but trio incomplete; empty = dispatch.md absent) and a `session-alive=true|false` line (whether the tmux session still exists). It also emits `worker-status-malformed=true` — and only that form, never `=false` — when `worker-status.md` exists but lacks its `---` fence, meaning every parsed field reads empty and the reported `phase`/`wait-state` must not be trusted (see the poll step in `prompts/main-agent.md`). Together these two lines tell you which recovery case below applies. To pull a single field out of dispatch.md directly, use the same `awk` pattern the helpers use:
+运行 `bash scripts/orch-check-worker.sh <task-id> <list-dir>` 并阅读它的 stdout：它现在会输出一行 `dispatch-bound=true|false|<empty>`（`true` = Phase-2 三项已填好；`false` = dispatch.md 存在但三项不完整；空 = dispatch.md 不存在）和一行 `session-alive=true|false`（tmux session 是否仍然存在）。当 `worker-status.md` 存在但缺少 `---` 分隔符时，它还会输出 `worker-status-malformed=true`——只会有这一种形式，绝不会输出 `=false`——这意味着解析出的每个字段都是空的，报告的 `phase`/`wait-state` 不可信（参见 `prompts/main-agent.md` 中的轮询步骤）。这两行合起来就能告诉你适用下面哪种恢复情形。要直接从 dispatch.md 取出单个字段，使用与辅助脚本相同的 `awk` 写法：
 
 ```text
 awk -F': ' '/^<field>:/{sub(/^ +/,"",$2); print $2; exit}' <list-dir>/runtime/<task-id>/dispatch.md
 ```
 
-This simplified form assumes the spawn/check-written format (no inline `#` comments, no `: ` inside values); for general frontmatter parsing the helpers' `fm_field` is more robust.
+这个简化写法假定文件是 spawn/check 写出的格式（没有行内 `#` 注释，值里没有 `: `）；要解析一般的 frontmatter，辅助脚本里的 `fm_field` 更稳健。
 
-The four recovery cases:
+四种恢复情形：
 
-1. **tmux session still alive** (`tmux has-session -t <tmux-session>` exits 0; equivalently `session-alive=true`):
-   - Attach and resume work in the existing pane: `tmux attach -t <tmux-session>`.
+1. **tmux session 仍然存活**（`tmux has-session -t <tmux-session>` 退出码为 0；等价于 `session-alive=true`）：
+   - attach 进去，在现有 pane 中继续工作：`tmux attach -t <tmux-session>`。
 
-2. **tmux session dead but `transcript-path` populated** (`session-alive=false`, `dispatch-bound=true`):
-   - Read `dispatch.md ## Recovery` for the exact substituted commands.
-   - Run `cd <worktree> && claude --resume <claude-session-id> --plugin-dir <plugin-root>` (for a multi-repo task, `<worktree>` is the primary worktree = the pane cwd). Claude reads the JSONL at the recorded `transcript-path` and resumes the conversation. The `--plugin-dir` keeps `/execute-task` registered in the resumed session — **omitting it re-triggers the "Unknown command: /execute-task" failure**, because the resumed transcript restores the conversation but not the plugin registration.
+2. **tmux session 已死，但 `transcript-path` 已填写**（`session-alive=false`、`dispatch-bound=true`）：
+   - 阅读 `dispatch.md ## Recovery`，获取已替换好真实值的确切命令。
+   - 运行 `cd <worktree> && claude --resume <claude-session-id> --plugin-dir <plugin-root>`（对于多仓库任务，`<worktree>` 是主 worktree = pane 的 cwd）。Claude 会读取记录在 `transcript-path` 的 JSONL 并恢复对话。`--plugin-dir` 让 `/execute-task` 在恢复后的 session 中保持已注册——**省略它会再次触发 "Unknown command: /execute-task" 失败**，因为恢复的 transcript 只恢复对话，不恢复插件注册。
 
-3. **dispatch.md has Phase-1 fields but no Phase-2** (`dispatch-bound=false` — claude never bound; usually `/execute-task` was rejected at the slash-command layer, the spawn was killed before claude registered, or claude never made a first LLM round-trip):
-   - There is no useful claude state to resume. Treat it as a fresh task: clean up the worktree(s) with `scripts/orch-cleanup-worker.sh <task-id> <list-dir>` and re-dispatch from the master entry.
+3. **dispatch.md 有 Phase-1 字段但没有 Phase-2 字段**（`dispatch-bound=false`——claude 从未完成绑定；通常是 `/execute-task` 在斜杠命令层被拒绝、spawn 在 claude 注册前被杀掉，或者 claude 从未完成第一次 LLM 往返）：
+   - 没有可供恢复的有用 claude 状态。把它当作一个全新任务：用 `scripts/orch-cleanup-worker.sh <task-id> <list-dir>` 清理 worktree，然后从主条目重新派发。
 
-4. **dispatch.md missing entirely** (`dispatch-bound=` empty): two possible causes — (i) a pre-feature worker spawned before this change, or (ii) a spawn that crashed before reaching the dispatch.md write step. Use `session-alive` to disambiguate:
-   - `session-alive=true` → attach and continue per case 1. The worker may still be usable.
-   - `session-alive=false` → no recovery info was recorded; treat the runtime as unsalvageable. Clean up and re-dispatch from the master entry.
+4. **dispatch.md 完全不存在**（`dispatch-bound=` 为空）：有两种可能的原因——(i) 这是本功能引入之前 spawn 的旧 worker，或 (ii) spawn 在到达写 dispatch.md 这一步之前就崩溃了。用 `session-alive` 来区分：
+   - `session-alive=true` → 按情形 1 attach 并继续。这个 worker 可能仍然可用。
+   - `session-alive=false` → 没有记录任何恢复信息；视为运行时已无法挽救。清理后从主条目重新派发。
 
-   (If you need a timestamp of the most recent worker activity, read `worker-status.md` `last-flush`. The orchestrator reads but never writes `worker-status.md`.)
+   （如果需要 worker 最近一次活动的时间戳，读取 `worker-status.md` 的 `last-flush`。编排器只读、绝不写 `worker-status.md`。）
 
-### Crash semantics
+### 崩溃语义
 
-Map the observable state of a runtime directory to an interpretation as follows:
+按下表把运行时目录的可观察状态映射为相应的解读：
 
-| dispatch.md | Phase-2 state | session-alive | Interpretation |
+| dispatch.md | Phase-2 状态 | session-alive | 解读 |
 |---|---|---|---|
-| present | empty | alive | claude not yet started or not bound; the normal first-launch transient for an L2-driven worker before L2 has started `claude` (spawn never starts `claude` — there is no `--auto-start`) |
-| present | empty | dead | worker died before binding (claude never got far) |
-| present | partial | alive/dead | claude registered but no LLM round-trip yet (most likely `/execute-task` was rejected and the user never typed anything) |
-| present | full | alive/dead | normal bound worker; recover via case 1 (alive) or case 2 (dead) |
-| absent | n/a | alive | spawn crashed mid-preflight before the dispatch.md write (spawn writes only the INITIAL `worker-status.md` at its Step 6, so that file may still be present); attend manually |
-| absent | n/a | dead | pre-feature worker, no recovery info; treat per case 4 |
+| 存在 | 空 | 存活 | claude 尚未启动或尚未绑定；对于由 L2 驱动的 worker，这是 L2 启动 `claude` 之前正常的首次启动过渡态（spawn 绝不启动 `claude`——不存在 `--auto-start`） |
+| 存在 | 空 | 已死 | worker 在绑定前就死了（claude 没走多远） |
+| 存在 | 部分 | 存活/已死 | claude 已注册，但还没有 LLM 往返（最可能是 `/execute-task` 被拒绝，而用户之后什么也没输入） |
+| 存在 | 完整 | 存活/已死 | 正常绑定的 worker；按情形 1（存活）或情形 2（已死）恢复 |
+| 不存在 | n/a | 存活 | spawn 在预检中途、写 dispatch.md 之前崩溃（spawn 只在其 Step 6 写入**初始**的 `worker-status.md`，所以该文件可能仍然存在）；需人工处理 |
+| 不存在 | n/a | 已死 | 本功能之前的旧 worker，没有恢复信息；按情形 4 处理 |
 
-**Scope note**: Auto-detecting these states and auto-setting the master entry to `state: error` is OUT OF SCOPE for this feature. This section is documentation-only guidance for a human operator — the orchestrator poll loop does NOT automatically detect or act on these crash states.
+**范围说明**：自动检测这些状态并自动把主条目设为 `state: error`，**不在**本功能范围内。本节只是给人工运维者的文档性指引——编排器的轮询循环**不会**自动检测这些崩溃状态，也不会据此采取行动。
 
-### Reused-container recovery
+### 复用容器的恢复
 
-A container-reuse worker (its `dispatch.md` has a non-empty `reuse-from`) needs a recovery caveat depending on `reuse-claude-effective`:
+容器复用 worker（其 `dispatch.md` 中 `reuse-from` 非空）需要根据 `reuse-claude-effective` 注意不同的恢复事项：
 
-- **Same-claude reuse** (`reuse-claude-effective=true`, i.e. `reuse-scope=tmux`/`both` with `reuse-claude:true`): this task shares the old task's claude process and session. Its `claude-pid` equals the old task's, and `claude-session-id` / `transcript-path` point at the **shared** (old+new merged) session — expected, not a binding error. Recovery is **case 1 only**: `tmux attach -t <tmux-session>` (the reused session). **Do NOT run an independent `claude --resume` for this task** — resuming the shared session-id from two dispatch.md files is a footgun, and if the old task's runtime was already archived, `--resume` still resolves to the shared session. `orch-check-worker.sh` writes an attach-only `## Recovery` body for such a task and deliberately omits the `--resume` command; if you ever see a generated `--resume` line on a same-claude reuse task, ignore it and attach instead.
-- **Restart-claude reuse** (`reuse-claude-effective=false`) and **new-session reuse** (`reuse-scope=worktree`, `reuse-claude-effective=n/a`): these tasks have their **own independent** claude session and recover exactly like a plain spawn — both case 1 (attach) and case 2 (`claude --resume`) apply.
+- **同一 claude 复用**（`reuse-claude-effective=true`，即 `reuse-scope=tmux`/`both` 且 `reuse-claude:true`）：该任务与旧任务共享 claude 进程和 session。它的 `claude-pid` 与旧任务相同，`claude-session-id` / `transcript-path` 指向**共享的**（旧+新合并的）session——这是预期行为，不是绑定错误。恢复方式**只有情形 1**：`tmux attach -t <tmux-session>`（被复用的 session）。**不要为该任务单独运行 `claude --resume`**——从两个 dispatch.md 文件分别 resume 共享的 session-id 是陷阱；而且即使旧任务的运行时已经归档，`--resume` 解析到的仍是那个共享 session。`orch-check-worker.sh` 会为这类任务写入只含 attach 的 `## Recovery` 正文，并有意省略 `--resume` 命令；如果你在同一 claude 复用任务上看到了生成的 `--resume` 行，忽略它，改为 attach。
+- **重启 claude 的复用**（`reuse-claude-effective=false`）和**新 session 复用**（`reuse-scope=worktree`、`reuse-claude-effective=n/a`）：这些任务有各自**独立的** claude session，恢复方式与普通 spawn 完全相同——情形 1（attach）和情形 2（`claude --resume`）都适用。
 
-The `heartbeat-window-id` field in a reuse `dispatch.md` is diagnostics only (the same-session new-window heartbeat daemon's window id). Do not derive cleanup/kill logic from it — killing the session tears the daemon down via the watchdog.
+复用任务 `dispatch.md` 中的 `heartbeat-window-id` 字段仅用于诊断（它是同一 session 中新开 window 里那个心跳守护进程的 window id）。不要据此推导清理/kill 逻辑——杀掉 session 时，watchdog 会把守护进程一并拆掉。
 
-### How dispatch.md binding works (and why Phase-2 is lazy)
+### dispatch.md 绑定如何工作（以及 Phase-2 为何延迟绑定）
 
-Phase-2 binding is lazy because of *when* Claude Code persists its session files. On the verified host (Claude Code v2.1.152, macOS), Claude writes BOTH of these only after the session's first successful LLM round-trip — never at startup:
+Phase-2 之所以延迟绑定，是因为 Claude Code *何时*持久化它的 session 文件。在经过验证的主机上（Claude Code v2.1.152，macOS），Claude 只在 session 第一次成功完成 LLM 往返之后才写入以下两个文件——绝不在启动时写：
 
-- `~/.claude/sessions/<pid>.json` — the session pointer. Its filename `<pid>` equals the claude process PID, and it carries `{sessionId, cwd, ...}`. `orch-check-worker.sh` reads `sessionId` from it.
-- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — the full transcript. `encoded-cwd` is the (primary) worktree's PHYSICAL path (`pwd -P`, so symlinks like macOS `/var → /private/var` resolve) with both `/` and `.` replaced by `-`, then consecutive `-` squeezed into one. `orch-check-worker.sh` does NOT reconstruct this directory name to locate the transcript: it discovers the JSONL by session-id (a globally-unique UUID) via `find ~/.claude/projects -name "<sessionId>.jsonl"`, so discovery is robust to claude's exact path-encoding rule. The recorded `encoded-cwd` field is kept honest for diagnostics and the recovery command path, but binding does not depend on it.
+- `~/.claude/sessions/<pid>.json` —— session 指针。文件名中的 `<pid>` 等于 claude 进程的 PID，内容带有 `{sessionId, cwd, ...}`。`orch-check-worker.sh` 从中读取 `sessionId`。
+- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` —— 完整的 transcript。`encoded-cwd` 是（主）worktree 的**物理**路径（`pwd -P`，因此 macOS 的 `/var → /private/var` 这类符号链接会被解析），把其中的 `/` 和 `.` 都替换成 `-`，再把连续的 `-` 压缩成一个。`orch-check-worker.sh` **不会**通过重建这个目录名来定位 transcript：它用 session-id（全局唯一的 UUID）通过 `find ~/.claude/projects -name "<sessionId>.jsonl"` 发现 JSONL，因此发现过程不受 claude 具体路径编码规则的影响。记录下来的 `encoded-cwd` 字段会如实维护，用于诊断和恢复命令路径，但绑定并不依赖它。
 
-Consequences a recovery operator should understand:
+恢复运维者需要理解的后果：
 
-- A worker's claude process can EXIST (so `claude-pid` binds via `pgrep -P <shell-pid> -n -x claude`) for seconds-to-minutes before its `session-id` and `transcript-path` are discoverable on disk. This is the `present | partial` row above and the normal `dispatch-bound=false` transient — not an error.
-- `claude --resume <session-id>` only has a transcript to resume from once that first round-trip has happened. Before then there is genuinely nothing to recover (case 3).
-- The claude process is a DIRECT child of the pane shell, which is why `pgrep -P <shell-pid>` finds it. If a future Claude Code version changes when these files are flushed or how the process is parented, re-verify before relying on the timing.
+- worker 的 claude 进程可能已经**存在**（因此 `claude-pid` 可以通过 `pgrep -P <shell-pid> -n -x claude` 绑定），但要再过几秒到几分钟，它的 `session-id` 和 `transcript-path` 才能在磁盘上被发现。这就是上表中 `存在 | 部分` 那一行，也是正常的 `dispatch-bound=false` 过渡态——不是错误。
+- 只有在第一次往返发生之后，`claude --resume <session-id>` 才有 transcript 可以恢复。在此之前确实没有任何东西可恢复（情形 3）。
+- claude 进程是 pane shell 的**直接**子进程，这正是 `pgrep -P <shell-pid>` 能找到它的原因。如果未来的 Claude Code 版本改变了这些文件的刷写时机或进程的父子关系，在依赖这一时序之前要重新验证。
 
-## Optional Skills And Plugins
+## 可选技能与插件
 
-Before scanning, analyzing, dispatching, or summarizing, check whether the current agent already has relevant skills, plugins, or tools available:
+在扫描、分析、派发或汇总之前，先检查当前 agent 是否已经有相关的技能、插件或工具可用：
 
-- Use git-related skills (e.g., the `git-worktree` skill in this plugin) to derive default worktree paths (one per repo for a multi-repo task).
-- The orchestrator already auto-polls by default: each tick self-schedules the next via `ScheduleWakeup` with dynamic intervals (see the cadence policy in `prompts/main-agent.md`). Wrapping with the `/loop` slash command (Claude Code) is an optional explicit alternative; either way the same cadence policy drives the interval.
-- Use documentation, engineering workflow, or testing skills (`llmdoc`, `superpowers`, …) if available; record usage in the SUMMARY.
+- 使用 git 相关的技能（例如本插件中的 `git-worktree` skill）推导默认 worktree 路径（多仓库任务每个仓库一个）。
+- 编排器默认已经会自动轮询：每个 tick 通过 `ScheduleWakeup` 以动态间隔自调度下一个 tick（参见 `prompts/main-agent.md` 中的节奏策略）。用 `/loop` 斜杠命令（Claude Code）包裹是一个可选的显式替代方案；无论哪种方式，间隔都由同一套节奏策略决定。
+- 如果可用，使用文档、工程工作流或测试类技能（`llmdoc`、`superpowers`、…）；在 SUMMARY 中记录使用情况。
 
-Do not block, fail, or ask the user to install anything when these optional capabilities are unavailable.
+这些可选能力不可用时，不要阻塞、不要失败，也不要要求用户安装任何东西。
 
-## Maintenance Notes
+## 维护说明
 
-This skill is coupled to `execute-task`. If `execute-task` ever introduces a new phase, the orchestrated-mode contract here must be updated in lockstep:
+本 skill 与 `execute-task` 耦合。如果 `execute-task` 将来引入新的 phase，这里的编排模式契约必须同步更新：
 
-- The `phase:` enum in the worker status template must be extended.
-- The phase mapping table (design-spec §D.5) must be extended.
-- This SKILL.md and `prompts/main-agent.md` should mention the new phase explicitly.
+- worker 状态模板中的 `phase:` 枚举必须扩展。
+- phase 映射表（设计规格 §D.5）必须扩展。
+- 本 SKILL.md 和 `prompts/main-agent.md` 应当明确提到这个新 phase。
 
-If the `dispatch.md` schema changes, update these in lockstep: the `templates/dispatch.md` template, the Phase-1 write in `scripts/orch-spawn-worker.sh` **and** in `scripts/orch-reuse-worker.sh` (both writers emit the same field set — spawn writes the four reuse fields empty, reuse populates them; both snapshot `worker-mcp-args:` from `scripts/orch-worker-mcp-args.sh`; for a multi-repo task both also emit the numbered field group `worktree-N` / `source-repo-N` / `branch-N` / `base-N`, N from 2, as fully-resolved non-empty values), the Phase-2 lazy fill / field-preservation rewrite in `scripts/orch-check-worker.sh` (`rewrite_dispatch_atomic` reads back and re-emits the four reuse fields `reuse-from` / `reuse-scope` / `reuse-claude-effective` / `heartbeat-window-id`, the `worker-mcp-args` snapshot, **and** the numbered `worktree-N` / `source-repo-N` / `branch-N` / `base-N` group, else the first Phase-2 poll would drop them), the merge/cleanup/reuse scripts that read the numbered group from `dispatch.md` as the authoritative repo set, the `## Crash Recovery` section above (incl. the reused-container recovery subsection), and the T8 cases in `scripts/test-orchestration-helpers.sh` (which encode the field list and the recovery-command shape).
+如果 `dispatch.md` 的 schema 发生变化，以下各处要同步更新：`templates/dispatch.md` 模板；`scripts/orch-spawn-worker.sh` **以及** `scripts/orch-reuse-worker.sh` 中的 Phase-1 写入（两个写入方输出相同的字段集——spawn 把四个复用字段写成空值，reuse 填入它们；两者都从 `scripts/orch-worker-mcp-args.sh` 快照 `worker-mcp-args:`；对于多仓库任务，两者还都会输出编号字段组 `worktree-N` / `source-repo-N` / `branch-N` / `base-N`，N 从 2 开始，值都是完全解析后的非空值）；`scripts/orch-check-worker.sh` 中的 Phase-2 惰性填充 / 字段保留重写（`rewrite_dispatch_atomic` 会读回并重新输出四个复用字段 `reuse-from` / `reuse-scope` / `reuse-claude-effective` / `heartbeat-window-id`、`worker-mcp-args` 快照，**以及**编号的 `worktree-N` / `source-repo-N` / `branch-N` / `base-N` 字段组，否则第一次 Phase-2 轮询就会把它们丢掉）；从 `dispatch.md` 读取编号字段组作为权威仓库集合的 merge/cleanup/reuse 脚本；上文的 `## 崩溃恢复` 一节（包括复用容器恢复小节）；以及 `scripts/test-orchestration-helpers.sh` 中的 T8 用例（它们固化了字段列表和恢复命令的形态）。
 
-If the **3-layer architecture** changes (the L1/L2/L3 boundaries, the L2 driver's contract, or where pane driving lives), keep these in lockstep: the driver agent definition (`agents/orch-driver-agent.md` **and** its mirror `subagents/orch-driver-agent.md`), the `templates/monitor.md` driver-state template, the L1 loop in `prompts/main-agent.md`, the Architecture / File Protocols / crash-semantics sections in this SKILL.md, and the T-tests in `scripts/test-orchestration-helpers.sh`. In particular: spawn is container-only (it never starts `claude`; the L2 driver is the sole launcher), `monitor.md` is L2-owned / L1-read-only, and notify keys off the live poll wait-state. The L2 driver's `intent` enum has **four** values — `first-dispatch`, `intervene`, `relay-confirmation`, `reuse-dispatch` — dispatched from these L1 sites: **dispatch** (`intent=first-dispatch` for a plain spawn, OR `intent=reuse-dispatch` for a `reuse-from` task), **poll** (`intent=intervene`, only for a stuck worker), and **gate** (`intent=relay-confirmation`, to relay a user confirmation into the worker pane). If the L2 driver's contract or its `intent` enum changes, keep ALL of these in lockstep: every dispatch site, the `intent` enum (driver `## Inputs` line in BOTH `agents/` + `subagents/`, the driver `## intent=…` section headings in both, and `templates/monitor.md` `driver-intent`).
+如果**三层架构**发生变化（L1/L2/L3 的边界、L2 driver 的契约，或 pane 驱动所在的位置），以下各处要保持同步：driver agent 定义（`agents/orch-driver-agent.md` **及其**镜像 `subagents/orch-driver-agent.md`）、`templates/monitor.md` driver 状态模板、`prompts/main-agent.md` 中的 L1 循环、本 SKILL.md 中的架构（三层）/ 文件协议 / 崩溃语义各节，以及 `scripts/test-orchestration-helpers.sh` 中的 T 系列测试。特别是：spawn 只搭建容器（它绝不启动 `claude`；L2 driver 是唯一的启动者），`monitor.md` 归 L2 所有、L1 只读，notify 以实时轮询得到的 wait-state 为依据。L2 driver 的 `intent` 枚举有**四个**值——`first-dispatch`、`intervene`、`relay-confirmation`、`reuse-dispatch`——分别从以下 L1 位置派发：**派发**（普通 spawn 用 `intent=first-dispatch`，`reuse-from` 任务用 `intent=reuse-dispatch`）、**轮询**（`intent=intervene`，仅针对卡住的 worker），以及 **闸门**（`intent=relay-confirmation`，把用户确认转交进 worker pane）。如果 L2 driver 的契约或其 `intent` 枚举发生变化，以下**所有**位置都要保持同步：每一个派发位置；`intent` 枚举（`agents/` 和 `subagents/` **两份**中 driver 的 `## 输入` 一行、两份中 driver 的 `## intent=…` 各节标题，以及 `templates/monitor.md` 的 `driver-intent`）。
 
-The notify mechanism is deliberately a structured signature `(task-id, window, reason)` where `reason ∈ {needs-user, needs-attention, error}`. This version only prints to the conversation window and `SUMMARY.md`; that signature is the **future-webhook extension point** — a webhook / IM channel mounts there. There is intentionally no `orch-notify.sh` script (notify is L1's own conversation output); if a channel is added later, keep the signature fixed and wire the new channel behind it.
+notify 机制有意设计为结构化签名 `(task-id, window, reason)`，其中 `reason ∈ {needs-user, needs-attention, error}`。当前版本只输出到对话窗口和 `SUMMARY.md`；这个签名就是**未来接入 webhook 的扩展点**——webhook / IM 通道将挂在这里。有意不提供 `orch-notify.sh` 脚本（notify 是 L1 自己的对话输出）；以后如果增加通道，保持签名不变，把新通道接在它后面。

@@ -1,47 +1,47 @@
-# Long-Running State Convention
+# 长期运行状态约定
 
-Large implementation/test work writes a coherent skeleton before deep filling and keeps an incremental physical artifact inventory in its SubTask status. A strict `Waiting On` row is removed when a result arrives or before expiry review and never acts as a general watchdog mute. Confirmed dead roles are finalized through the supported helper rather than by deleting stale markers.
+大型实现/测试工作在深入填充之前，先写出一个连贯的骨架，并在其 SubTask 状态里维护一份增量的物理产物清单。严格格式的 `Waiting On` 行在结果到达时、或在过期复核之前删除，绝不充当通用的 watchdog 静音开关。已确认死亡的角色通过受支持的 helper 收尾，而不是靠删除过期的标记文件。
 
-## Purpose
+## 目的
 
-This document is a zyz-worker plugin-wide convention: **for any task that lasts longer than a single LLM conversation turn or a single tool-call round, the source of truth for progress is a file on disk, not the conversation context.**
+本文档是 zyz-worker 插件范围的约定：**任何持续时间超过单个 LLM 对话轮次或单轮工具调用的任务，其进度的事实源都是磁盘上的文件，而不是对话上下文。**
 
-The conversation context is for execution: reading inputs, deciding the next action, emitting tool calls, producing the next chunk of output. It is not long-term memory. Context windows get truncated, compacted, replaced when an agent restarts, or fully dropped when work hands off to another agent or another tmux pane. Anything that must survive those transitions has to live in a file.
+对话上下文用于执行：读取输入、决定下一步动作、发出工具调用、产出下一段输出。它不是长期记忆。上下文窗口会被截断、被压缩，会在 agent 重启时被替换，也会在工作交接给另一个 agent 或另一个 tmux pane 时被整个丢弃。凡是必须跨过这些转换而存活的东西，都必须放在文件里。
 
-## Core Rules
+## 核心规则
 
-- **Every long-running task writes state to a file.** A task that spans more than one LLM turn or more than one tool-call round must persist its current progress, decisions made, blockers encountered, and the explicit next step into a status file. Updates happen at every phase change, not only at the end.
-- **The conversation context executes; the file remembers.** Treat the active context as the CPU and the status file as the disk. Do not store long-term task knowledge only in the chat history.
-- **The status file must be self-contained.** A reader who only has the status file (no chat history, no scrollback) must be able to resume the task. If reading the file is not enough, the file is incomplete.
-- **Ownership is explicit.** Each status file names who writes it, who reads it, and whether concurrent writers are possible. The default is: the dispatching main agent owns the overall task status; each subagent reports back through that file or through a dedicated subtask status file the main agent specifies.
-- **Flush before any suspend, handoff, or context switch.** Before yielding to the user, switching roles, dispatching a subagent, pausing for an external resource, ending a turn that may not resume in the same context, or entering any other passive-wait state, write the latest state to disk first. Treat the file write as the commit point.
+- **每个长期运行的任务都把状态写进文件。** 跨越不止一个 LLM 轮次、或不止一轮工具调用的任务，必须把当前进度、已做的决策、遇到的阻塞以及明确的下一步持久化到状态文件中。每次阶段变化时都要更新，而不只是在结束时更新。
+- **对话上下文负责执行，文件负责记忆。** 把活跃上下文当作 CPU，把状态文件当作磁盘。不要只把长期的任务知识存放在聊天记录里。
+- **状态文件必须自包含。** 一个只拿到状态文件的读者（没有聊天记录、没有回滚缓冲）必须能够恢复任务。如果只读这个文件还不够，说明这个文件不完整。
+- **所有权是显式的。** 每个状态文件都要写明谁写它、谁读它，以及是否可能存在并发写者。默认情况是：负责派发的主 agent 拥有整体任务状态；每个 subagent 通过该文件，或通过主 agent 指定的专用 subtask 状态文件回报。
+- **在任何挂起、交接或上下文切换之前先刷盘。** 在把控制权交还给用户、切换角色、派发 subagent、因外部资源暂停、结束一个可能无法在同一上下文中恢复的轮次，或进入任何其他被动等待状态之前，先把最新状态写入磁盘。把这次文件写入视为提交点。
 
-## Recommended Location
+## 推荐位置
 
-For tasks executed under the `execute-task` skill, the default status file path is:
+对于在 `execute-task` skill 下执行的任务，默认状态文件路径为：
 
 ```text
 .zyz-worker/tasks/<task-id>/status.md
 ```
 
-The `execute-task` skill already follows this layout. When a subagent is dispatched, the dispatching agent provides the concrete status file path; subagents must not invent their own path.
+`execute-task` skill 已经遵循这一布局。派发 subagent 时，由负责派发的 agent 提供具体的状态文件路径；subagent 不得自行编造路径。
 
-## Relationship to Orchestration
+## 与编排的关系
 
-The `orchestration-scheduling-task` skill dispatches many `execute-task` workers (one per tmux pane) and aggregates their status. The orchestrator and each worker communicate exclusively through files defined by this convention — the file is the channel. This convention is therefore a hard prerequisite for the orchestration layer: if a worker's progress lives only in its own context window, the orchestrator cannot see it, recover from it, or restart it.
+`orchestration-scheduling-task` skill 会派发许多 `execute-task` worker（每个 tmux pane 一个）并汇总它们的状态。编排器与每个 worker 之间**只**通过本约定所定义的文件通信——文件就是信道。因此本约定是编排层的硬性前提：如果某个 worker 的进度只存在于它自己的上下文窗口里，编排器就既看不到它，也无法据此恢复或重启它。
 
-The concrete file-protocol for orchestrator↔worker (master entry, `worker-status.md`, `heartbeat`, `question.md`/`answer.md`) is documented in `skills/orchestration-scheduling-task/SKILL.md` and built directly on top of the rules above.
+编排器↔worker 的具体文件协议（主条目、`worker-status.md`、`heartbeat`、`question.md`/`answer.md`）记录在 `skills/orchestration-scheduling-task/SKILL.md` 中，直接建立在上述规则之上。
 
-## Anti-Pattern
+## 反模式
 
-> "The main agent remembers it is currently waiting on testAgent, so it will know to route the next reply correctly."
+> 「主 agent 记得自己正在等 testAgent，所以它知道该如何正确路由下一条回复。」
 
-This relies on conversation context as memory. The moment the context is compacted, the conversation is reopened, or the work moves to a different agent, the routing state is lost. The correct behavior is to record the current role and the awaited output in the status file before yielding.
+这是把对话上下文当作记忆来依赖。一旦上下文被压缩、对话被重新打开，或者工作转到另一个 agent 手里，路由状态就丢了。正确的做法是在交出控制权之前，把当前角色和正在等待的输出记录进状态文件。
 
-## See Also
+## 另见
 
-- `skills/execute-task/SKILL.md` — the execute-task workflow uses this convention end-to-end.
-- `skills/execute-task/prompts/main-agent.md` — the main-agent prompt enforces the convention.
-- `skills/orchestration-scheduling-task/SKILL.md` — the orchestration layer's file protocol (master entry, worker-status, heartbeat, question/answer) is built on top of this convention.
-- `subagents/*.md` and `agents/*.md` — subagent prompts include a short hard-constraint block referring back here, plus an `## Orchestrated Mode Hook` section for the orchestrator-facing snapshot.
-- `skills/git-worktree/SKILL.md` — a worktree (a task may have one per repo it touches) is execution isolation; the status file is still the source of truth.
+- `skills/execute-task/SKILL.md` —— execute-task 工作流端到端地使用本约定。
+- `skills/execute-task/prompts/main-agent.md` —— 主 agent 提示词强制执行本约定。
+- `skills/orchestration-scheduling-task/SKILL.md` —— 编排层的文件协议（主条目、worker-status、heartbeat、question/answer）建立在本约定之上。
+- `subagents/*.md` 与 `agents/*.md` —— subagent 提示词包含一段指回这里的简短硬约束块，以及一个面向编排器快照的 `## 编排模式钩子` 小节。
+- `skills/git-worktree/SKILL.md` —— worktree（一个任务可以为它涉及的每个仓库各建一个）只是执行隔离；状态文件仍然是事实源。

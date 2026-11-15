@@ -382,7 +382,7 @@ zyz_phase_active() {
     # gate block the main agent from idling at §2 step 8, the one gate the
     # workflow mandates waiting at indefinitely for human approval. The gate
     # would push for action exactly where the prompts promise silence. Both
-    # SKILL.md `## Watchdog Enforcement` and the main-agent prompt promise the
+    # SKILL.md `## Watchdog 强制层` and the main-agent prompt promise the
     # watchdog stays quiet during design.
     case "${1:-}" in
         *design*) return 1 ;;
@@ -628,8 +628,11 @@ leave (the |any )?(non.blocking:)?contrived[a-z ]{0,20} out
 (non.blocking:)?contrived( (issue|finding|one|item|case)s?)? (are|is) (not needed|unnecessary|not required) *$
 (report|list) only (the )?non.contrived|only (report|list) (the )?non.contrived
 (只要|只需|只给|仅给|仅需|只报|只写|只列|只看)[^。；,，]{0,12}(总?结论|结果|摘要|概要|几条|几个|几项|重点|关键|最严重|最重要)
-(只报|只写|只列|只看|只处理|仅报|仅看)[^。；,，]{0,6}阻塞
-(跳过|忽略|不用管|不必管|略过)[^。；,，]{0,6}非阻塞
+(只报|只写|只列|只看|只处理|仅报|仅看)[^。；,，]{0,6}(阻塞|阻断|blocking)
+(跳过|忽略|不用管|不必管|略过|不用报|不必报|不报)[^。；,，]{0,6}(非阻塞|非阻断|non.blocking)
+(限|限制在|不超过|至多|最多) ?[0-9一二三四五六七八九十]+ ?(条|项) ?(的)?(发现|问题|意见|finding)
+(限|限制在|不超过|至多|最多) ?[0-9一二三四五六七八九十]+ ?(条|项)(就行|即可|就好)?( *$|[,，])
+(最严重|最重要)的? ?[0-9n一二三四五六七八九十几]+ ?(条|个|项)[^。；,，]{0,4}(就够|即可|就行|足够|足矣)
 (跳过|忽略|不用管|不必管|略过|不用报|不必报|不报)[^。；,，]{0,6}(刁钻|边角)
 (刁钻|边角)[^。；,，]{0,6}(不用报|不必报|不报|不用管|不必管|跳过|忽略|略过)
 (跳过|忽略|略过|不用报|不必报|无需报|不报)[^。；,，]{0,6}(contrived|对抗)
@@ -637,7 +640,9 @@ leave (the |any )?(non.blocking:)?contrived[a-z ]{0,20} out
 (重点|关键|主要|重要)(问题|的?几条|的?几个)?(就行|即可|就好|足矣|即够)
 (挑|选|列|给)[^。；,，]{0,4}(最|前)?(重要|严重|关键)的?(几|[0-9一二三四五六七八九十]+)(条|个|项)
 最严重(的)?[0-9一二三四五六七八九十]+ ?(条|个|项)
+(只要|只给|只报|只列|只看)(前|头) ?[0-9一二三四五六七八九十几]+ ?(条|个|项)
 一句话(总?结论|说明|交代|交待|结果)
+一行(总?结论|说明|结果)
 (细节|其它|其他)[^。；,，]{0,4}(可以)?(省|省略|略过|忽略|不用|不必|不写)
 (实在不行|不行的话|至少|最少)[^。；,，]{0,10}(一句话|总?结论)
 (降级|放宽|放低)[^。；,，]{0,8}(要求|标准|目标)
@@ -659,7 +664,8 @@ zyz_scope_continuation() {
     printf '%s' "$p" | grep -qE 'register (every|all) (dimension|categor)' && return 0
     printf '%s' "$p" | grep -qE '(分步|逐步|分批|分几步|分维度|分\s*[0-9一二三四五六七八九十]+\s*步|后续(再|继续)?|再继续|随后(再)?(列|给|补)|之后(再|补)|剩(下|余)的?(部分|内容|发现)?(再|后续|随后|列|给))' && return 0
     printf '%s' "$p" | grep -qE '其余[^。；,，]{0,6}(随后|之后|后续|再|稍后|接着|接下来|另)(列|给|报|补|发|说)' && return 0
-    printf '%s' "$p" | grep -qE '第[0-9一二三四五六七八九十]+步' && return 0
+    printf '%s' "$p" | grep -qE '第 ?[0-9一二三四五六七八九十]+ ?步' && return 0
+    printf '%s' "$p" | grep -qE '然后(再)?继续|共 ?[0-9一二三四五六七八九十]+ ?步' && return 0
     return 1
 }
 

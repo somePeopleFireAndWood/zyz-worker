@@ -99,7 +99,7 @@ case "$msg_len" in
 esac
 if [ "$msg_len" -lt "$min_chars" ]; then
     role="$(zyz_role_of "${agent_type:-subagent}")"
-    zyz_emit_block "[zyz-worker watchdog] Your final message is too short for the main agent to persist into the task status file. Before finishing, emit a complete final report for your role (${role}): what you completed, what remains, blockers, decisions made, and the exact file paths you touched. If you already did the work, summarize it now — do not redo it."
+    zyz_emit_block "[zyz-worker watchdog] 你的最终消息太短，主 agent 无法据此写入任务状态文件。结束之前，请为你的角色（${role}）输出一份完整的最终报告：完成了什么、还剩什么、阻塞项、做出的决策，以及你改动过的确切文件路径。如果工作已经做完，现在就把它总结出来——不要重做。"
     exit 0
 fi
 

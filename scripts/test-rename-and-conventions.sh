@@ -448,24 +448,24 @@ run_T4() {
     )
     local f
     for f in "${pattern_a_files[@]}"; do
-        check_lrs_pattern_a "$f" "Long-Running State"
+        check_lrs_pattern_a "$f" "^## 长期运行状态$"
     done
 
     # Pattern A: git-worktree uses "## Long-Running Considerations"
     # (accept either label so a future rename to "State" still passes).
     check_lrs_pattern_a "skills/git-worktree/SKILL.md" \
-        "Long-Running State|Long-Running Considerations"
+        "^## 长期运行(状态|注意事项)$"
 
     # ---- Pattern B: bullet appended to existing list, no new heading ----
     # skills/execute-task/SKILL.md   — bullet under "## Core Rules"
     # Design §E4 wording starts with "Long-running tasks must persist".
     check_lrs_pattern_b "skills/execute-task/SKILL.md" \
-        "Long-running tasks must persist"
+        "长时间运行的任务必须把进度"
 
     # skills/execute-task/prompts/main-agent.md — bullet under "## Responsibilities"
     # Design §E4 wording starts with "Persist long-running task progress".
     check_lrs_pattern_b "skills/execute-task/prompts/main-agent.md" \
-        "Persist long-running task progress"
+        "把长期运行任务的进度"
 }
 
 # ---------------------------------------------------------------------------

@@ -1,26 +1,24 @@
 # zyz-worker 架构说明
 
-## Standalone role-runtime protocol
+## 独立模式角色运行时协议
 
-Each execute-task dispatch owns an immutable namespace made from a 32-byte
-display prefix and the complete raw-id SHA-256. State-changing operations use
-a preallocated regular lock carrier with cooperative `fcntl.flock`; natural
-DONE and adjudicated FINALIZED remain distinct logical records in a fixed audit
-pack and both are terminal-first for readers.
+每次 execute-task 派发都拥有一个不可变的命名空间，由 32 字节的显示前缀加上完整的
+raw-id SHA-256 构成。改变状态的操作使用一个预先分配的普通锁载体，配合协作式
+`fcntl.flock`；自然结束的 DONE 与经裁决的 FINALIZED 在固定 audit pack 中始终是两条
+不同的逻辑记录，对读者而言二者都按 terminal-first 读取。
 
-Reconnect observation separates weak heartbeat, explicit `probe1-*`
-challenge/ACK, fixed-table inflight calls, and host running/interrupt state.
-Physical no-output is orthogonal: implementation/test starts publish a baseline
-through fixed LIVE_INVENTORY authority while snapshot data remains
-catalog-owned; Git index/ref/commit changes are not output. Catalog cleanup and
-publication recovery advance only through bounded `gc-step` passes.
+重连观测把四类信号分开：弱心跳、显式的 `probe1-*` challenge/ACK、固定表中的
+inflight 调用，以及宿主的 running/interrupt 状态。物理意义上的「无输出」与之正交：
+implementation/test 启动时通过固定的 LIVE_INVENTORY 权威发布一份基线，而快照数据
+仍归 catalog 所有；Git 的 index/ref/commit 变化不算输出。catalog 清理与发布恢复只
+通过有界的 `gc-step` 轮次推进。
 
 **平台边界：** 固定 pack 层的 catalog genesis 依赖 per-vnode mount identity
 （Linux `statx(STATX_MNT_ID)`）。macOS 没有等价 API（FSID 无法区分同 FSID 的第二个
 mount 实例），因此 Darwin 上所有 tracked-state 操作 fail-closed 为
 `genesis-capability-unavailable`：L0 不写实例状态，L3/L4 没有角色观测，
 **死角色检测与「终态但未收割」检测在 macOS 上均不可用**（状态文件过期分支、L2 退出门与
-prompt 纪律仍然有效，全部保持 fail-open）。详见 hooks/README.md `## Degraded environments`。
+prompt 纪律仍然有效，全部保持 fail-open）。详见 hooks/README.md `## 降级环境`。
 
 本文讲整体架构与主体原理：插件由哪些部件组成、各自的职责边界、以及它们如何协作。不追求逐行细节——具体契约看各文件自身的 in-file contract 块与对应 SKILL.md。
 
@@ -83,9 +81,9 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
    ↓       → 跑测试 + 跑变异清单 → 失败**四步归因**（改动面因果 → 工具层 →
    ↓          他人在途/环境 → 才是真回归）→ 冻结工作区 → review → 循环
    ↓       可选拆 SubTask；按**依赖图**而非列表顺序调度；并行 ≥2 路先分资源租约
-§3.C 汇总  汇总测试（类别由设计 `## Testing Plan` 派生）+ 汇总评审（4 个覆盖维度）
+§3.C 汇总  汇总测试（类别由设计 `## 测试计划` 派生）+ 汇总评审（4 个覆盖维度）
    ↓
-§4 交付    核对 Total Goal → 校验注册完整 → 逐条答完交付前清单 →
+§4 交付    核对总目标 → 校验注册完整 → 逐条答完交付前清单 →
    ↓          提交推送 → 出最终报告
    ↓       → awaiting-confirmation，等用户确认才 done
 ```
@@ -94,7 +92,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 这些是插件多轮迭代中沉淀下来的、值得单独讲的原理：
 
-**a) 设计→实现闸门是硬等待，不是「问一下」。** 沉默、超时、用户不在，都只能继续等，绝不自行推进。唯一例外是用户事先明确说过「跳过审批」，且该原话被逐字记录进 `## Design Review > Design Approval Record`。这条针对的失效模式是：agent 把「用户没回」当成默许，然后一路跑到交付。
+**a) 设计→实现闸门是硬等待，不是「问一下」。** 沉默、超时、用户不在，都只能继续等，绝不自行推进。唯一例外是用户事先明确说过「跳过审批」，且该原话被逐字记录进 `## 设计评审 > 设计批准记录`。这条针对的失效模式是：agent 把「用户没回」当成默许，然后一路跑到交付。
 
 **a2) 用户的设计说了算，两个阶段都一样。** 设计阶段主控只做**整理**：把用户描述的流程与结构变成可照做的规格（排步骤、补字段/签名/路径/错误分支/测试点、点出缺口并追问），**不得自行引入用户没描述过的模块、分层、数据流或架构选择**——缺的是设计决策就去问，不能用「记录一条假设」代替。实现阶段则要求**严格照设计文档实现：不缺漏、不违背**（不换机制、不做「等价但更简单」的结构、不加设计没要求的模块或抽象、不重排流程）。任何角色（主控/implementation/test/review）想改模块、流程、接口、数据结构或架构，一律走同一条链：发现者报给主控 → 主控把**问题与选项**交给用户并等待 → 用户同意后才动，随后更新设计文档终态并重派。**先实现后报备是违规**，即使结果更好；「实现不了就静默跳过」是其中最坏的一种，因为它看起来像已完成。这条**优先于**「默认不问用户」——后者只管已批准设计**之内**的评审取舍与失败归因，从不授权改设计本身。review-agent 的 design-conformance 维度因此是**双向逐元素**核对（该有的没少、不该有的没多），任一方向都是阻塞项。
 
@@ -110,7 +108,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 **f) 设计文档只记终态，修缺陷靠删改而非追加。** 设计文档是**被评审面**，review-history 文件不被评审、不产生 findings、想多长都行——所以留痕的正确载体是后者。实测反例：一次 21 轮设计评审里，主控把「修正缺陷」执行成「追加自我批注」，`design.md` 四轮内 127KB→148KB 而实质技术面无变更，432 行交付规格里堆出 81 处「第 N 轮」/77 处「前版」/21 处「订正」，修复速率与新增缺陷速率接近 1:1。机制在于：删掉一个腐烂的数字是 O(1) 无副作用，而追加一段「为何删掉」同时造出**新的被评审文本面 + 新的耦合点 + 一个自身可能写错的东西**（实测确实写错了）。配套两条：**检查文档自身文本的自查规则不写进设计文档**（grep 这个动作免费，写进交付物则它同时变成被评审面、自己的扫描对象和新耦合点——实测这类块捕获约 3 项问题、自身产生 20+ 项 findings）；以及 review-agent 的对应口径——finding 若唯一后果是「将来编辑设计文档的人可能被误导」（到不了实现/测试/交付行为），标为**非阻塞**并建议记入 review-history，不阻止 `no-changes-needed`。分界线是**能否到达产物**，不是措辞严重程度；能产出错代码、无法测的验收标准、遗漏需求、章节冲突、角色得靠猜的歧义，一律照旧阻塞。
 
-**g) 评审循环按「能否到达产物」收口，而不是等评审者无话可说。** 以「评审者说没问题了」为收口条件，在难缠的输入上不收敛：每次修复只回应一个构造，下一轮就在同类的下一个变体上找到「理论缺口」。实测：一个报错文本令牌脱敏子任务从第 10 轮走到第 20 轮——前几轮修的是真实路径上的泄漏，后面大量轮次在应对 `__str__` 抛异常、元类 `__name__` 抛异常、重写 `strip`/`startswith` 的 str 子类、环形上千层异常链、第 4 次调用才带令牌的有状态 `__str__`；评审自己多次标注 contrived，流程却没有规定何时收口。所以每条 finding（设计/实现/汇总，review-agent 与交叉评审一样）分三级：`blocking`（声明域或现有调用方能产生的输入可达：主路径缺陷、可复现的安全/正确性/数据/回归问题、域内边界值、缺失或违背设计）、`non-blocking:normal`（真实改进，但任何可达输入上都不出错）、`non-blocking:contrived`（只在声明域之外成立：要两处以上不自然改动叠加或依赖对抗性对象，且现有调用方无一可达）。**判据是设计文档 `## Scope Boundary` 声明的输入域与威胁模型，不是构造看起来多刁钻**——同一个敌意对象，对「只喂本程序自身异常」的脱敏函数是 contrived，对执行攻击者代码的沙箱就是 blocking；域未声明而又涉及安全/数据时，这是用户设计里的歧义，由用户决定。评审点在 review-agent **本轮报告零 blocking**、交叉评审没有被接受为 blocking 的 finding、也没有待用户决定的问题时收口。被裁决者拒绝或降级的 blocking 不会单凭裁决收口，要由下一轮 review-agent 确认或重提，这样「接受↔拒绝反复 3 次即升级」才依然有效；contrived 不在本循环内修，按类（不是按变体）记入 `<task-dir>/residual-risks.md`（复现构造、影响面、已验证的加固方案），作为后续补强任务的输入，后续评审者拿到它的路径、不再重复提出。同类第二个变体出现即标 `recurring`：域内就要求一个类级修复（一处总兜底 / 一处深度与环检测 / 一处归一化）加表驱动测试，不再逐个打补丁。每个评审点第 3 轮仍有 blocking 时（之后每 3 轮）主控做一次收敛检查并告知用户结果：继续 / 改类级修复 / 把域内的对抗性加固重排为主路径之后的独立 SubTask（仍在本任务内交付）/ 涉及范围或威胁模型的问题升级给用户。护栏：分级只改变处置、不改变上报——每条 finding 照报、各带证据（「只报 blocking」仍是 L5 拦截的范围缩减）；把评审者判的 blocking 降级，要像拒绝一样附调用方枚举证据；拿不准时按 blocking 处理。
+**g) 评审循环按「能否到达产物」收口，而不是等评审者无话可说。** 以「评审者说没问题了」为收口条件，在难缠的输入上不收敛：每次修复只回应一个构造，下一轮就在同类的下一个变体上找到「理论缺口」。实测：一个报错文本令牌脱敏子任务从第 10 轮走到第 20 轮——前几轮修的是真实路径上的泄漏，后面大量轮次在应对 `__str__` 抛异常、元类 `__name__` 抛异常、重写 `strip`/`startswith` 的 str 子类、环形上千层异常链、第 4 次调用才带令牌的有状态 `__str__`；评审自己多次标注 contrived，流程却没有规定何时收口。所以每条 finding（设计/实现/汇总，review-agent 与交叉评审一样）分三级：`blocking`（声明域或现有调用方能产生的输入可达：主路径缺陷、可复现的安全/正确性/数据/回归问题、域内边界值、缺失或违背设计）、`non-blocking:normal`（真实改进，但任何可达输入上都不出错）、`non-blocking:contrived`（只在声明域之外成立：要两处以上不自然改动叠加或依赖对抗性对象，且现有调用方无一可达）。**判据是设计文档 `## 范围边界` 声明的输入域与威胁模型，不是构造看起来多刁钻**——同一个敌意对象，对「只喂本程序自身异常」的脱敏函数是 contrived，对执行攻击者代码的沙箱就是 blocking；域未声明而又涉及安全/数据时，这是用户设计里的歧义，由用户决定。评审点在 review-agent **本轮报告零 blocking**、交叉评审没有被接受为 blocking 的 finding、也没有待用户决定的问题时收口。被裁决者拒绝或降级的 blocking 不会单凭裁决收口，要由下一轮 review-agent 确认或重提，这样「接受↔拒绝反复 3 次即升级」才依然有效；contrived 不在本循环内修，按类（不是按变体）记入 `<task-dir>/residual-risks.md`（复现构造、影响面、已验证的加固方案），作为后续补强任务的输入，后续评审者拿到它的路径、不再重复提出。同类第二个变体出现即标 `recurring`：域内就要求一个类级修复（一处总兜底 / 一处深度与环检测 / 一处归一化）加表驱动测试，不再逐个打补丁。每个评审点第 3 轮仍有 blocking 时（之后每 3 轮）主控做一次收敛检查并告知用户结果：继续 / 改类级修复 / 把域内的对抗性加固重排为主路径之后的独立 SubTask（仍在本任务内交付）/ 涉及范围或威胁模型的问题升级给用户。护栏：分级只改变处置、不改变上报——每条 finding 照报、各带证据（「只报 blocking」仍是 L5 拦截的范围缩减）；把评审者判的 blocking 降级，要像拒绝一样附调用方枚举证据；拿不准时按 blocking 处理。
 
 ## 四、watchdog 强制层：为什么需要，怎么分层
 
@@ -135,7 +133,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 ### 4.3 关键机制
 
 - **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到再看编排 spawn 导出的 `$ZYZ_TASK_DIR`；两者都没有，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑（两个方向都踩过）**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来（issue #5）。为此曾加过「兄弟 worktree 兜底」，结果反向翻车：同仓两个并发任务时，指针落空的会话**吸附到另一个会话的任务**，看门狗随即以命令式告警＋Stop 闸门推着主 agent 往不属于自己的 status.md 写「当前进度」（issue #18）——兜底把「确定性失败（静默，且已有 §1 armed 检查兜住）」换成了「概率性错挂且外观可信」，是最坏的交换，已删除。现行契约：任务目录不在 session cwd 下时指针内容**必须是绝对路径**；编排场景用 `$ZYZ_TASK_DIR`；解析器**刻意不做任何搜索**（既不枚举兄弟 worktree，也不向上遍历——默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session）。
-- **阶段分类：终态与 design 先排除，再匹配活跃。** 强制层只在活跃执行阶段（implementation/testing/review/delivery）出声，但活跃匹配用的是子串通配，两个方向都翻过车：`*review*` 曾把 `design review` 当活跃，让 L4 在 §2 step 8——工作流唯一要求无限期等人的闸门——推着主 agent 行动；`*deliver*` 曾把 `delivered` 当活跃，对永远不会再写状态的已交付任务无休止告警（#18 现场删指针的诱因正是想止住这种告警）。现行实现 `zyz_phase_terminal` 前缀匹配一组终态同义词（`done`/`delivered`/`completed`/`closed`/`finished`/`cancelled`/`abandoned`，含 `done(delivered)` 这类注记形态），`zyz_phase_active` 先排终态、再排 `design`、最后才匹配活跃；同一判定也让完结任务的遗留目录不再触发假的 NOT ARMED。
+- **阶段分类：终态与 design 先排除，再匹配活跃。** 强制层只在活跃执行阶段（implementation/testing/review/delivery）出声，但活跃匹配用的是子串通配，两个方向都翻过车：`*review*` 曾把 `design review` 当活跃，让 L4 在 §2 第 8 步——工作流唯一要求无限期等人的闸门——推着主 agent 行动；`*deliver*` 曾把 `delivered` 当活跃，对永远不会再写状态的已交付任务无休止告警（#18 现场删指针的诱因正是想止住这种告警）。现行实现 `zyz_phase_terminal` 前缀匹配一组终态同义词（`done`/`delivered`/`completed`/`closed`/`finished`/`cancelled`/`abandoned`，含 `done(delivered)` 这类注记形态），`zyz_phase_active` 先排终态、再排 `design`、最后才匹配活跃；同一判定也让完结任务的遗留目录不再触发假的 NOT ARMED。
 - **看门狗输出是兜底,不是神谕。** 它既可能漏报（#9：`.done` 已写但投递失败）也曾误报过别人的任务（#18）。所以主 agent 收到点名 status 文件/任务目录的告警,先核对该路径属于本会话的任务（指针或 `$ZYZ_TASK_DIR` 所指），不属于就不写——往另一个会话的 status.md 写「当前进度」等于伪造那个任务的事实源——只向用户报告归属不符。
 - **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求通过只读 fixed-pack observer 确认 PACK_HEADER 中的 `main_heartbeat_epoch` 已推进；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。
 - **固定 START 存在、无 DONE/FINALIZED、HEARTBEAT 仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。observer 无法验证 catalog/runtime 时只能报告 tracking unavailable，不能把静默当成健康。
@@ -287,13 +285,13 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 
 - **新增 phase**：execute-task SKILL.md 的枚举 + 阶段映射表、orchestration 的 `worker-status.md` 模板、两边的 SKILL/主控提示词。
 - **改 `dispatch.md` 字段**：模板、spawn 与 reuse 两个 Phase-1 写入点、check 的 Phase-2 回写（必须原样保留复用字段与编号仓字段组，否则首次轮询就会丢）、merge/cleanup/reuse 的仓集读取、崩溃恢复章节、T8 测试。
-- **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## Inputs` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
+- **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## 输入` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
 - **改角色提示词**：`agents/<role>.md` 与 `subagents/<role>.md` 必须同改（正文被逐字节比对）。
-- **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## User Design Authority` 与 §3.0.0、`prompts/main-agent.md` 的同名节、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
-- **改设计文档 `## Quick Review`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`SKILL.md` 的 `## Quick Review` 定义（含「正文为准 + 冲突时从正文重新生成」三条）、§2 步骤 1/6/8、`prompts/main-agent.md` 的维护职责、review-agent 两份镜像的一致性核对、以及 T6 断言。注意：摘要腐烂的机制与正文相同——**用追加代替改写**（在一句已过时的话旁边补「(现在是 5 个模块)」），不是「存在第二份描述」本身。所以规则是「改动时重写受影响的整块，冲突时按正文重新生成」，而非「保持同步」。
-- **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## Design Document Edit Discipline` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
-- **改跨 harness 交叉评审**（§3.3 d2）：`scripts/cross-review.sh`、`skills/execute-task/templates/cross-review-prompt.md`、`SKILL.md` 的 `## Cross-Harness Review` 及 §2/§3.A/§3.B/§3.C/§4 的挂点、`prompts/main-agent.md` 的同名节与 Design/Implementation Workflow、implementation/test 两个角色提示词两份镜像的 cross-harness 段、`templates/task-status.md` 的 `## Cross-Harness Review` 记录位、`templates/final-report.md` 与 `templates/review-report.md` 的 Reviewer 字段、以及 `test-cross-review.sh`。新增一种 harness 时改脚本的 `KNOWN_HARNESSES`、`build_cmd` 与该 harness 的只读/隔离参数。
-- **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog Enforcement` 三处口径要一致。
+- **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## 用户设计主导权` 与 §3.0.0、`prompts/main-agent.md` 的同名节、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
+- **改设计文档 `## 快速审阅`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`SKILL.md` 的 `## 快速审阅` 定义（含「正文为准 + 冲突时从正文重新生成」三条）、§2 步骤 1/6/8、`prompts/main-agent.md` 的维护职责、review-agent 两份镜像的一致性核对、以及 T6 断言。注意：摘要腐烂的机制与正文相同——**用追加代替改写**（在一句已过时的话旁边补「(现在是 5 个模块)」），不是「存在第二份描述」本身。所以规则是「改动时重写受影响的整块，冲突时按正文重新生成」，而非「保持同步」。
+- **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## 设计文档编辑纪律` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
+- **改跨 harness 交叉评审**（§3.3 d2）：`scripts/cross-review.sh`、`skills/execute-task/templates/cross-review-prompt.md`、`SKILL.md` 的 `## 跨 harness 交叉评审` 及 §2/§3.A/§3.B/§3.C/§4 的挂点、`prompts/main-agent.md` 的同名节与设计工作流、实现工作流两节、implementation/test 两个角色提示词两份镜像的 cross-harness 段、`templates/task-status.md` 的 `## 跨 harness 交叉评审` 记录位、`templates/final-report.md` 与 `templates/review-report.md` 的 `评审者:` 字段、以及 `test-cross-review.sh`。新增一种 harness 时改脚本的 `KNOWN_HARNESSES`、`build_cmd` 与该 harness 的只读/隔离参数。
+- **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog 强制层` 三处口径要一致。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。
 
 **已知的复制粘贴面。** helper 之间没有共享库（刻意的：每个脚本要能被单独调用、单独读懂），代价是几个小函数在多个脚本里各存一份——`fm_field`（frontmatter 取值，6 份）与 tilde 展开（9 处内联）。这些副本**必须保持行为一致**：`fm_field` 曾出现过分歧（一部分副本缺少「文件不存在则返回空」的守卫，在 `set -e` 下会直接杀掉调用者），已统一。改其中任一份时，同步改全部。

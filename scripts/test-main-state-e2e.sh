@@ -172,22 +172,22 @@ printf '{"hook_event_name":"Notification","notification_type":"permission_prompt
 age_state awaiting-user 54000
 # 13e watchdog one shot -> NO status-stale stdout, NO main-origin stuck
 run_wd
-if printf '%s' "$WD_OUT" | grep -qi 'status file'; then fail "13e watchdog suppresses status-stale stdout" "$WD_OUT"; else pass "13e watchdog: NO status-stale stdout in awaiting-user"; fi
+if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "13e watchdog suppresses status-stale stdout" "$WD_OUT"; else pass "13e watchdog: NO status-stale stdout in awaiting-user"; fi
 if grep -q -- '--origin main' "$NOTIFY_LOG" 2>/dev/null; then fail "13e no main-origin stuck IM" "log=[$(cat "$NOTIFY_LOG")]"; else pass "13e watchdog: NO main-origin notify_stuck recorded"; fi
 # 13f stop-gate -> status-stale clause absent from any block reason
 out13f="$(run_stop_gate)"
-if printf '%s' "$out13f" | grep -qi 'status file'; then fail "13f stop-gate omits status-stale clause" "$out13f"; else pass "13f stop-gate: status-stale clause absent under awaiting-user"; fi
+if printf '%s' "$out13f" | grep -q '分钟没有更新'; then fail "13f stop-gate omits status-stale clause" "$out13f"; else pass "13f stop-gate: status-stale clause absent under awaiting-user"; fi
 # 13g no-TTL: verdict independent of how old (or new) the epoch is
 g_fail=0
 for ep in 54000 999999999 0; do
     age_state awaiting-user "$ep"
     run_wd
-    printf '%s' "$WD_OUT" | grep -qi 'status file' && g_fail=1
+    printf '%s' "$WD_OUT" | grep -q '分钟没有更新' && g_fail=1
 done
 # also an epoch in the "future"/near-now: still awaiting-user -> still suppressed
 printf 'awaiting-user %s\n' "$(( $(now_epoch) + 100 ))" > "$STATE_FILE"
 run_wd
-printf '%s' "$WD_OUT" | grep -qi 'status file' && g_fail=1
+printf '%s' "$WD_OUT" | grep -q '分钟没有更新' && g_fail=1
 [ "$g_fail" -eq 0 ] && pass "13g no-TTL: suppression independent of epoch (string compare only)" || fail "13g no-TTL invariant" "an epoch value changed the verdict"
 
 # ===========================================================================
@@ -198,7 +198,7 @@ echo "--- E2E 14: recovery positive control ---"
 ms "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$PROJ\"}"
 [ "$(read_state)" = working ] && pass "14 recovery: UserPromptSubmit -> working" || fail "14 recovery -> working" "got [$(read_state)]"
 run_wd
-if printf '%s' "$WD_OUT" | grep -qi 'status file'; then pass "14 status-stale stdout REAPPEARS under working (gate not vacuous)"; else fail "14 status-stale reappears under working" "gate may be vacuous: [$WD_OUT]"; fi
+if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then pass "14 status-stale stdout REAPPEARS under working (gate not vacuous)"; else fail "14 status-stale reappears under working" "gate may be vacuous: [$WD_OUT]"; fi
 if grep -q -- '--origin main' "$NOTIFY_LOG" 2>/dev/null; then pass "14 main-origin notify_stuck recorded under working (positive control)"; else fail "14 main-origin stuck recorded under working" "log=[$(cat "$NOTIFY_LOG")]"; fi
 
 # ===========================================================================
@@ -228,14 +228,14 @@ else
         # 10/15 watchdog: subagent stdout present, status-stale absent
         run_wd
         if printf '%s' "$WD_OUT" | grep -q 'waiting-stale'; then pass "10/15 ($st) subagent death stdout STILL emitted"; else fail "10/15 ($st) subagent stdout emitted" "$WD_OUT"; fi
-        if printf '%s' "$WD_OUT" | grep -qi 'status file'; then fail "15 ($st) status-stale still suppressed" "$WD_OUT"; else pass "15 ($st) status-stale still suppressed alongside subagent report"; fi
+        if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "15 ($st) status-stale still suppressed" "$WD_OUT"; else pass "15 ($st) status-stale still suppressed alongside subagent report"; fi
         # 15b origin split at argv boundary
         if grep -q -- '--origin subagent' "$NOTIFY_LOG" 2>/dev/null; then pass "15b ($st) subagent-origin stuck IM recorded (bypasses suppression, F2)"; else fail "15b ($st) subagent-origin stuck recorded" "log=[$(cat "$NOTIFY_LOG")]"; fi
         if grep -q -- '--origin main' "$NOTIFY_LOG" 2>/dev/null; then fail "15b ($st) main-origin stuck suppressed" "unexpected: [$(cat "$NOTIFY_LOG")]"; else pass "15b ($st) main-origin stuck IM suppressed"; fi
         # 9 stop-gate: role still blocks, status-stale clause absent
         out9="$(run_stop_gate)"
         if printf '%s' "$out9" | grep -q 'waiting-stale'; then pass "9 ($st) stop-gate STILL blocks stale role (A-scope)"; else fail "9 ($st) stop-gate blocks stale role" "$out9"; fi
-        if printf '%s' "$out9" | grep -qi 'status file'; then fail "9 ($st) stop-gate status-stale clause absent" "$out9"; else pass "9 ($st) stop-gate status-stale clause absent under suppression"; fi
+        if printf '%s' "$out9" | grep -q '分钟没有更新'; then fail "9 ($st) stop-gate status-stale clause absent" "$out9"; else pass "9 ($st) stop-gate status-stale clause absent under suppression"; fi
     done
 fi
 
@@ -250,7 +250,7 @@ ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
 [ "$(read_state)" = awaiting-user ] && pass "16 Stop keeps awaiting-user (immunity)" || fail "16 Stop keeps awaiting-user" "got [$(read_state)]"
 if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then fail "16 no idle IM on immunity" "unexpected: [$(cat "$NOTIFY_LOG")]"; else pass "16 no idle IM fired on immunity"; fi
 run_wd
-if printf '%s' "$WD_OUT" | grep -qi 'status file'; then fail "16 still no status-stale after immune Stop" "$WD_OUT"; else pass "16 still no status-stale after immune Stop"; fi
+if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "16 still no status-stale after immune Stop" "$WD_OUT"; else pass "16 still no status-stale after immune Stop"; fi
 # Positive control (mirrors test 14 discipline): the SAME recorder DOES capture
 # an idle IM when one should fire (working+Stop, active) — proves the "no idle
 # IM on immunity" negative above is NON-vacuous (recorder + idle-IM path live).
@@ -277,7 +277,7 @@ else
 fi
 # (b) watchdog with old status -> status-stale suppressed (idle suppresses, F4)
 run_wd
-if printf '%s' "$WD_OUT" | grep -qi 'status file'; then fail "17b idle suppresses status-stale" "$WD_OUT"; else pass "17b idle suppresses status-stale stdout (F4)"; fi
+if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "17b idle suppresses status-stale" "$WD_OUT"; else pass "17b idle suppresses status-stale stdout (F4)"; fi
 # (c) real notify.sh idle send path with a minimal enabled notify.json incl idle
 CAP17="$SB/cap17.txt"; CFG17="$SB/notify17.json"; : > "$CAP17"
 CMD17="{ printf 'EV=%s ' \$ZYZ_NOTIFY_EVENT; cat; echo; } >> $CAP17"

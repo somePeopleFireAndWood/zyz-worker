@@ -279,12 +279,12 @@ timestamp="$(zyz_iso)"
 # free text, sent only when include_message is true (privacy control).
 if [ -z "$event_title" ]; then
     case "$category" in
-        needs_input) event_title="Agent needs your input" ;;
-        completed)   event_title="Agent finished and is waiting" ;;
-        failed)      event_title="Agent interrupted by an error" ;;
-        stuck)       event_title="Agent appears stuck" ;;
-        session_end) event_title="Session ended" ;;
-        idle)        event_title="Agent stopped and handed back" ;;
+        needs_input) event_title="Agent 需要你的输入" ;;
+        completed)   event_title="Agent 已完成，正在等你" ;;
+        failed)      event_title="Agent 因错误中断" ;;
+        stuck)       event_title="Agent 似乎卡住了" ;;
+        session_end) event_title="会话已结束" ;;
+        idle)        event_title="Agent 已停下并交还给你" ;;
     esac
 fi
 [ "$include_message" = "true" ] || event_message=""

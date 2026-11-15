@@ -97,9 +97,9 @@ zyz_cooldown_ok "$root/runtime/nag/$audience.last" "$cooldown" || exit 0
 
 mins=$((age / 60))
 if [ "$audience" = "main" ]; then
-    msg="[zyz-worker watchdog] The task status file has not been updated for ${mins} minutes (${status_file}). Persist current progress, active roles, blockers, and the next step into it now — status lives on disk, not in conversation context."
+    msg="[zyz-worker watchdog] 任务状态文件已有 ${mins} 分钟没有更新（${status_file}）。现在就把当前进度、活跃角色、阻塞项和下一步写进去——状态保存在磁盘上，而不是会话上下文里。"
 else
-    msg="[zyz-worker watchdog] The task status file has not been updated for ${mins} minutes. Report your current progress back through your normal output soon, and if you maintain a SubTask-status file, update it now (${status_file} is the overall file the main agent owns)."
+    msg="[zyz-worker watchdog] 任务状态文件已有 ${mins} 分钟没有更新。请尽快通过你的常规输出汇报当前进度；如果你维护着 SubTask 状态文件，现在就更新它（${status_file} 是主 agent 负责的总状态文件）。"
 fi
 zyz_emit_context "PostToolUse" "$msg"
 exit 0

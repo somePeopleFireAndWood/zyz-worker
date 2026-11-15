@@ -1,65 +1,65 @@
-# Review Report
+# 评审报告
 
-## Scope
+## 范围
 
-<!-- Include the reviewed files' mtimes/hashes recorded at review START and re-checked at FINISH. If any changed mid-review, this report is VOID — report for re-dispatch, do not patch findings. Do not sign off on a moving target. -->
+<!-- 写明评审**开始**时记录、**结束**时复核的被评审文件 mtime / 哈希。只要有任何文件在评审过程中变了，本报告即**作废**——报告给主 agent 以便重新派发，不要修补发现。不要为一个移动中的目标签字。 -->
 
-## Coverage Dimensions
+## 覆盖维度
 
-(Register EVERY dimension before this review counts as closed. Each is either
-`covered` — you actually examined it and its findings are in `## Findings` —
-or `not-covered: <concrete reason>`. An unregistered or silently omitted
-dimension means the review is NOT closed, regardless of the `Result` below.
-This mirrors the per-category registration for aggregate testing: it is a
-registration requirement, not a must-cover-everything requirement.)
+（本次评审要算作结束，必须先登记**每一个**维度。每个维度要么是
+`covered`——你确实检查过它，相关发现都在 `## 发现` 中——
+要么是 `not-covered: <concrete reason>`。只要有一个维度未登记或被悄悄省略，
+评审就**没有**结束，无论下面的 `结果` 写的是什么。
+这与汇总测试的逐类别登记是对应的：它是一项登记要求，
+而不是"必须覆盖所有内容"的要求。）
 
-For a design-phase review (no implementation or tests exist yet), the
-implementation-oriented dimensions are registered `n/a: design phase`.
+对于设计阶段的评审（还不存在实现或测试），
+面向实现的维度登记为 `n/a: design phase`。
 
-- Design Conformance: (covered | not-covered: <reason>) — checked in BOTH directions element by element: nothing the design requires is missing, nothing contradicts it. Name the design section and the `file:line` for each divergence; divergences are BLOCKING.
-- Correctness: (covered | not-covered: <reason> | n/a: design phase)
-- Test Quality: (covered | not-covered: <reason> | n/a: design phase)
-- Regression Risk: (covered | not-covered: <reason> | n/a: design phase)
-- Risk-Specific: (one line per dimension the design `## Risks` calls out — e.g. performance, capacity, security, data migration — each covered | not-covered: <reason>; or `n/a: no such risk recorded`)
+- 设计一致性: (covered | not-covered: <reason>)——**双向**逐元素检查：设计要求的东西一样不缺，也没有任何内容与设计相矛盾。每处偏离都要写明设计章节和 `file:line`；偏离属于**阻断**项。
+- 正确性: (covered | not-covered: <reason> | n/a: design phase)
+- 测试质量: (covered | not-covered: <reason> | n/a: design phase)
+- 回归风险: (covered | not-covered: <reason> | n/a: design phase)
+- 风险专项: （设计 `## 风险` 点名的每个维度各占一行——例如性能、容量、安全、数据迁移——每行为 covered | not-covered: <reason>；或 `n/a: no such risk recorded`）
 
-## Result
+## 结果
 
-- Status: (`changes-requested` exactly when at least one finding below is `blocking`; otherwise `no-changes-needed`)
-- Reviewer: (`reviewAgent`, or `cross-harness:<harness>` for a cross-harness review session)
+- 状态: （当且仅当下面至少有一个发现是 `blocking` 时为 `changes-requested`；否则为 `no-changes-needed`）
+- 评审者: （`reviewAgent`；跨 harness 评审会话则为 `cross-harness:<harness>`）
 
-## Findings
+## 发现
 
-<!-- Numbered, ordered by severity. Numbering feeds the main agent's finding ledger and ## Next Review Input below. -->
+<!-- 编号，按严重程度排序。编号会进入主 agent 的发现台账和下面的 ## 下一轮评审输入。 -->
 
-<!-- Every review kind: label each finding with its tier (see reviewAgent `## Finding Tiers` and SKILL.md `## Review Convergence`), judged against the design's `## Scope Boundary`:
-     - `blocking` — reachable on an input the declared domain or a current caller produces; name the path (caller file:line or domain clause).
-     - `non-blocking:normal` — a real improvement, no wrong behavior on any reachable input. A design-document finding whose ONLY consequence is that a future editor of the document might be misled is this tier (reviewAgent `### Document-Hygiene Findings Are Non-Blocking`); its destination is the review-history file, not an edit to the design body.
-     - `non-blocking:contrived` — only outside the declared domain (2+ stacked unnatural changes, or an adversarial object/state no in-domain input produces) AND no current caller reaches it. Carry: a minimal reproduction, the enumerated callers, and any hardening plan with how you verified it. Variants of one class are ONE finding.
-     Add `recurring: <class> (rounds …)` to a new variant of a class already fixed at this review point, with what a class-level fix would cover.
-     Non-blocking findings do not hold back `no-changes-needed`. Reachability into the artifact is the dividing line, not severity of wording or strangeness of the construction. A tier is a verdict, NOT a license to report less: every finding still appears here with its own evidence. -->
+<!-- 所有评审类型都一样：给每个发现标上级别（见 reviewAgent `## 发现分级` 和 SKILL.md `## 评审收口`），以设计的 `## 范围边界` 为准来判断：
+     - `blocking`——在声明域或某个现有调用方会产生的输入上可达；写明路径（调用方 file:line 或声明域条款）。
+     - `non-blocking:normal`——确实是改进，但在任何可达输入上都没有错误行为。一个设计文档发现，如果其**唯一**后果是文档将来的编辑者可能被误导，就属于这一级（reviewAgent `### 文档卫生类发现不阻断`）；它的去处是评审历史文件，而不是改设计正文。
+     - `non-blocking:contrived`——只在声明域之外才会出现（叠加 2 个以上不自然的改动，或声明域内任何输入都产生不了的对抗性对象 / 状态），**并且**没有任何现有调用方能触达。需附上：一个最小复现、列举出的调用方，以及加固方案（如有）和你如何验证了它。同一个类的多个变体算**一个**发现。
+     如果是本评审点已修复过的某个类的新变体，加上 `recurring: <class> (rounds …)`，并说明类级修复会覆盖什么。
+     非阻断发现不妨碍 `no-changes-needed`。分界线是能否触达产物，而不是措辞多严重、构造多奇特。级别是一个裁决，**不是**少报的许可：每个发现仍然要在这里出现，并带着各自的证据。 -->
 
-## Independent Reproduction
+## 独立复现
 
-<!-- Which of the author's verdicts you re-derived by running the decisive checks read-only, and how your own probe aligned against the author's recorded output (byte-for-byte before use as a criterion). A review that only audits the report co-signs the author's tool failures. n/a for a design-phase review. -->
+<!-- 你以只读方式运行决定性检查，重新推导了作者的哪些结论；以及你自己的探测与作者记录的输出是如何对齐的（用作判据之前要逐字节比对）。只审计报告的评审，等于给作者的工具故障联署。设计阶段评审写 n/a。 -->
 
-## Injected Mutations
+## 注入的变异
 
-<!-- Complementary-surface mutations you injected (your own targets, not the author's): each with target, expected-red cases, KILLED/SURVIVED — and the restoration verification: per-file `cmp` against the backup copy you took BEFORE mutating. NOT "git status clean" — a shared worktree carries other agents' legitimate in-flight edits, and NEVER restore via git checkout/restore (resets to HEAD, destroys others' uncommitted work). n/a for a design-phase review. -->
+<!-- 你注入的互补面变异（你自己选的目标，不是作者的）：每条写明目标、预期变红的用例、KILLED/SURVIVED——以及恢复验证：逐文件对变异**之前**所做的备份副本执行 `cmp`。**不是**"git status 干净"——共享的 worktree 里有其他 agent 合法的进行中编辑；也**绝不**用 git checkout/restore 恢复（那会重置到 HEAD，毁掉别人未提交的工作）。设计阶段评审写 n/a。 -->
 
-## No-Op Assertion Checklist
+## 空转断言清单
 
-<!-- All eight forms (see reviewAgent ## No-Op Assertion Checklist), each answered with the evidence read (file:line + actual predicate). Batching into "the rest are fine" is prohibited — these forms are precisely the ones careful reading does not catch. n/a for a design-phase review. -->
+<!-- 全部八种形式（见 reviewAgent ## 空转断言清单），每种都要用读到的证据作答（file:line + 实际谓词）。禁止合并成"其余都没问题"——这些形式恰恰是仔细阅读也发现不了的。设计阶段评审写 n/a。 -->
 
-## Required Changes
+## 必须修改项
 
-## Suggestions
+## 建议
 
-## Rejected Suggestions Reviewed
+## 已复核的被拒绝建议
 
-## Residual Risk
+## 遗留风险
 
-<!-- The non-blocking findings this round leaves behind, each written as a residual-risk register entry (`templates/residual-risks.md` fields: tier and class, reproduction, impact — why nothing in-domain reaches it and what would make it reachable — hardening plan or `none proposed`). Items already in the register are referenced by entry id, not repeated. -->
+<!-- 本轮留下的非阻断发现，每条都写成一条遗留风险清单记录（`templates/residual-risks.md` 的字段：级别与类别、复现、影响——为什么声明域内没有东西能触达它，以及什么会让它变得可触达——加固方案或 `none proposed`）。已在清单中的项用条目 id 引用，不要重复。 -->
 
-## Next Review Input
+## 下一轮评审输入
 
-<!-- Include the numbered findings expected to have LANDED by the next review, so the next pass verifies landing instead of assuming it. List the BLOCKING findings here. Add the `non-blocking:normal` findings the main agent chose to land in the one extra normal-fix round, if it opens one. Every other non-blocking finding is recorded instead: in the review-history file for a design-document finding, in the residual-risk register for behavior or tests. Those findings are not going to land, so listing them would make the next pass verify a landing that was never intended and re-raise it every round. Name them separately as "recorded, not landing". -->
+<!-- 写入预计在下一轮评审前已经**落地**的编号发现，好让下一轮去核实落地，而不是想当然。**阻断**发现列在这里。如果主 agent 开了那唯一一轮额外的普通修复轮，再把它选择在该轮落地的 `non-blocking:normal` 发现加进来。其他所有非阻断发现改为记录：设计文档类发现记入评审历史文件，行为或测试类发现记入遗留风险清单。这些发现不会落地，列在这里只会让下一轮去核实一个从未打算发生的落地，并且每轮都重新提出它。把它们单独列为"已记录，不落地"。 -->
