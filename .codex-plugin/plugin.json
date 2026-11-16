@@ -1,6 +1,6 @@
 {
   "name": "zyz-worker",
-  "version": "0.27.0+codex.20261115232826",
+  "version": "0.28.0+codex.20261116214542",
   "description": "面向 Codex 与 Claude Code 的设计先行代码开发工作流，由编排的实现、测试与评审 worker 协作完成。",
   "author": {
     "name": "yu",

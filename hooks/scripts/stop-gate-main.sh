@@ -19,8 +19,9 @@
 # ## Outputs
 #
 # - Normally nothing (allow stop).
-# - Blocks (top-level {"decision":"block","reason":...}) when the current
-#   task is in an active execution phase AND either:
+# - Blocks (top-level {"decision":"block","reason":...}) when a task of this
+#   session (every line of its session pointer) is in an active execution
+#   phase AND either:
 #     (a) a fixed-pack role instance is non-terminal and its latest logical
 #         START/HEARTBEAT fact is stale, or its tracking state is unverifiable
 #         (covers subagents killed by API errors, where SubagentStop never
@@ -28,7 +29,8 @@
 #     (b) the overall status file is older than ZYZ_STOP_STATUS_STALE_SEC.
 #   The reason tells the main agent exactly which roles to check/restart
 #   and/or to flush the status file. Never blocks when stop_hook_active is
-#   true, and at most once per cooldown window.
+#   true, and at most once per cooldown window per task; reasons for several
+#   tasks are joined into one block.
 #
 # ## Failure behavior
 #
@@ -56,18 +58,37 @@ base="$(zyz_get cwd)"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$base" ] || base="$PWD"
 
-root="$(zyz_task_root "$base")"
-[ -n "$root" ] || exit 0
-status_file="$root/status.md"
-[ -f "$status_file" ] || exit 0
+roots="$(zyz_task_roots "$base")"
+[ -n "$roots" ] || exit 0
+zyz_roots_any_active "$roots" || exit 0
+running_types="$(zyz_bg_running_types)"
+# Subagent clauses are session-scoped (#23): records live under one task dir,
+# but nothing says which task a role serves, so they are judged against the
+# newest status write of ANY task and never name an owning task.
+session_status_mtime="$(zyz_roots_latest_status_mtime "$roots")"
 
-phase="$(zyz_phase_of "$status_file")"
-zyz_phase_active "$phase" || exit 0
+# Prints the block reason for one task root (with its cooldown applied), or
+# nothing. The main agent owns every task of its session, so each task is gated
+# on its own and the reasons are joined into one block. The status clause needs
+# THIS task to be active; the subagent clauses only need some task of the
+# session to be (checked above), since a role's records may sit under a task
+# that is not the one it was dispatched for.
+gate_reason() {
+    local root status_file phase own_active stale_sec horizon runtime_observation
+    local stale_roles status_stale_sec status_age mtime reason running_roles detail
+    local key age role_type stale_kind unharvested_roles udetail role cooldown
+    local scope_note
+    root="$1"
+    status_file="$root/status.md"
+    phase="$(zyz_phase_of "$status_file")"
+    own_active=0
+    [ -f "$status_file" ] && zyz_phase_active "$phase" && own_active=1
+    scope_note="$(zyz_subagent_scope_note "$roots" "$root")"
 
-stale_sec="${ZYZ_ROLE_STALE_SEC:-900}"
-horizon="${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}"
-runtime_observation="$(zyz_runtime_observe "$root" false)"
-stale_roles="$(printf '%s' "$runtime_observation" | python3 -c '
+    stale_sec="${ZYZ_ROLE_STALE_SEC:-900}"
+    horizon="${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}"
+    runtime_observation="$(zyz_runtime_observe "$root" false)"
+    stale_roles="$(printf '%s' "$runtime_observation" | python3 -c '
 import json,sys
 try:
  stale,horizon,now=map(int,sys.argv[1:4]);data=json.load(sys.stdin)
@@ -87,65 +108,64 @@ try:
   else:print(f"{key}\t{age}\t{role}\tstale-liveness")
 except Exception:pass
 ' "$stale_sec" "$horizon" "$(zyz_now)" 2>/dev/null || true)"
-running_types="$(zyz_bg_running_types)"
 
-status_stale_sec="${ZYZ_STOP_STATUS_STALE_SEC:-1200}"
-status_age=0
-mtime="$(zyz_mtime "$status_file")"
-[ -n "$mtime" ] && status_age=$(( $(zyz_now) - mtime ))
+    status_stale_sec="${ZYZ_STOP_STATUS_STALE_SEC:-1200}"
+    status_age=0
+    mtime="$(zyz_mtime "$status_file")"
+    [ -n "$mtime" ] && status_age=$(( $(zyz_now) - mtime ))
 
-reason=""
-if [ -n "$stale_roles" ]; then
-    # Normalize scope prefixes on both sides: the logical START role and
-    # background_tasks may disagree on "zyz-worker:role" vs bare "role".
-    running_roles=""
-    if [ -n "$running_types" ]; then
-        running_roles="$(printf '%s\n' "$running_types" | while IFS= read -r t; do
-            [ -n "$t" ] && zyz_role_of "$t" && printf '\n'
-        done)"
-    fi
-    detail=""
-    while IFS="$(printf '\t')" read -r key age role_type stale_kind; do
-        [ -n "$key" ] || continue
-        # A still-running background subagent of the same role is not dead —
-        # it may just be reasoning without tool calls. Skip it.
-        if [ -n "$running_roles" ] && [ -n "$role_type" ] \
-            && printf '%s\n' "$running_roles" | grep -qxF "$(zyz_role_of "$role_type")" 2>/dev/null; then
-            continue
+    reason=""
+    if [ -n "$stale_roles" ]; then
+        # Normalize scope prefixes on both sides: the logical START role and
+        # background_tasks may disagree on "zyz-worker:role" vs bare "role".
+        running_roles=""
+        if [ -n "$running_types" ]; then
+            running_roles="$(printf '%s\n' "$running_types" | while IFS= read -r t; do
+                [ -n "$t" ] && zyz_role_of "$t" && printf '\n'
+            done)"
         fi
-        detail="${detail}${key}（${role_type}，${stale_kind}，已静默 $((age / 60)) 分钟）；"
-    done <<EOF
+        detail=""
+        while IFS="$(printf '\t')" read -r key age role_type stale_kind; do
+            [ -n "$key" ] || continue
+            # A still-running background subagent of the same role is not dead —
+            # it may just be reasoning without tool calls. Skip it.
+            if [ -n "$running_roles" ] && [ -n "$role_type" ] \
+                && printf '%s\n' "$running_roles" | grep -qxF "$(zyz_role_of "$role_type")" 2>/dev/null; then
+                continue
+            fi
+            detail="${detail}${key}（${role_type}，${stale_kind}，已静默 $((age / 60)) 分钟）；"
+        done <<EOF
 $stale_roles
 EOF
-    if [ -n "$detail" ]; then
-        reason="已派发的角色看起来已经死亡或卡住，且没有正常结束：${detail}它们可能已被 API 错误杀掉，而 SubagentStop 没有触发。先核实平台状态，再走受支持的 runtime 协议：创建一个精确的 probe 并调查它的 ACK；确认死亡后运行 agent-runtime-state.sh finalize <task-dir> <agent-id> <role> <reason> [replacement-id]。绝不手工删除或伪造 runtime 标记。"
+        if [ -n "$detail" ]; then
+            reason="已派发的角色看起来已经死亡或卡住，且没有正常结束：${detail}它们可能已被 API 错误杀掉，而 SubagentStop 没有触发。先核实平台状态，再走受支持的 runtime 协议：创建一个精确的 probe 并调查它的 ACK；确认死亡后运行 agent-runtime-state.sh finalize <task-dir> <agent-id> <role> <reason> [replacement-id]。绝不手工删除或伪造 runtime 标记。${scope_note}"
+        fi
     fi
-fi
 
-# Status-stale attribution clause. Gated by BOTH the manual Waiting On guard
-# (zyz_status_waiting) AND the signal-driven main-state suppression
-# (zyz_main_state_suppresses is true when the main agent is awaiting-user /
-# idle): either being active means the main agent is legitimately not writing
-# status, so status-stale must not block idle. The stale-role and unharvested
-# clauses are NOT gated — those are subagent-attributed (A option).
-if [ "$status_age" -gt "$status_stale_sec" ] && ! zyz_status_waiting "$status_file" \
-    && ! zyz_main_state_suppresses "$root"; then
-    [ -n "$reason" ] && reason="${reason} "
-    reason="${reason}总状态文件（${status_file}）在活跃阶段（${phase}）已有 $((status_age / 60)) 分钟没有更新。停下空闲之前，先把当前进度、活跃角色、阻塞项和下一步写进去。"
-fi
+    # Status-stale attribution clause. Gated by BOTH the manual Waiting On guard
+    # (zyz_status_waiting) AND the signal-driven main-state suppression
+    # (zyz_main_state_suppresses is true when the main agent is awaiting-user /
+    # idle): either being active means the main agent is legitimately not writing
+    # status, so status-stale must not block idle. The stale-role and unharvested
+    # clauses are NOT gated — those are subagent-attributed (A option).
+    if [ "$own_active" = 1 ] && [ "$status_age" -gt "$status_stale_sec" ] \
+        && ! zyz_status_waiting "$status_file" \
+        && ! zyz_main_state_suppresses "$root"; then
+        [ -n "$reason" ] && reason="${reason} "
+        reason="${reason}总状态文件（${status_file}）在活跃阶段（${phase}）已有 $((status_age / 60)) 分钟没有更新。停下空闲之前，先把当前进度、活跃角色、阻塞项和下一步写进去。"
+    fi
 
-# Terminal-but-unharvested detection (L4 primary): a role reached a terminal
-# state (clean DONE / adjudicated FINALIZED) but the main agent has been idle
-# since — its last tool call predates completion (main_heartbeat_epoch <=
-# terminal_epoch) AND no status was written since (status.md mtime <=
-# terminal_epoch). Reuses the SAME observer snapshot. Every epoch is
-# isinstance(int)-guarded before comparison so a missing epoch is skipped, never
-# thrown (an unguarded None<=int would abort the whole filter). Fails open
-# (observer error / macOS genesis-unavailable → empty → no block), like the
-# stale-role branch above.
-status_mtime=0
-[ -n "$mtime" ] && status_mtime="$mtime"
-unharvested_roles="$(printf '%s' "$runtime_observation" | python3 -c '
+    # Terminal-but-unharvested detection (L4 primary): a role reached a terminal
+    # state (clean DONE / adjudicated FINALIZED) but the main agent has been idle
+    # since — its last tool call predates completion (main_heartbeat_epoch <=
+    # terminal_epoch) AND no status was written since (status.md mtime <=
+    # terminal_epoch). Reuses the SAME observer snapshot. Every epoch is
+    # isinstance(int)-guarded before comparison so a missing epoch is skipped, never
+    # thrown (an unguarded None<=int would abort the whole filter). Fails open
+    # (observer error / macOS genesis-unavailable → empty → no block), like the
+    # stale-role branch above. "No status written since" spans every task of the
+    # session: the result may have been recorded in another task's status.md.
+    unharvested_roles="$(printf '%s' "$runtime_observation" | python3 -c '
 import json,sys
 try:
  status_mtime=int(sys.argv[1]);data=json.load(sys.stdin)
@@ -160,25 +180,47 @@ try:
    key=item.get("instance_key");role=item.get("role") or "unknown"
    print(f"{key}\t{role}")
 except Exception:pass
-' "$status_mtime" 2>/dev/null || true)"
-if [ -n "$unharvested_roles" ]; then
-    udetail=""
-    while IFS="$(printf '\t')" read -r key role; do
-        [ -n "$key" ] || continue
-        udetail="${udetail}${role}（${key}；它在 ${root}/subtasks/ 下的结果 SubTask 文件及其持久日志）；"
-    done <<EOF
+' "$session_status_mtime" 2>/dev/null || true)"
+    if [ -n "$unharvested_roles" ]; then
+        udetail=""
+        while IFS="$(printf '\t')" read -r key role; do
+            [ -n "$key" ] || continue
+            if [ -n "$scope_note" ]; then
+                udetail="${udetail}${role}（${key}）；"
+            else
+                udetail="${udetail}${role}（${key}；它在 ${root}/subtasks/ 下的结果 SubTask 文件及其持久日志）；"
+            fi
+        done <<EOF
 $unharvested_roles
 EOF
-    if [ -n "$udetail" ]; then
-        [ -n "$reason" ] && reason="${reason} "
-        reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就读取上面列出的每个结果，记录到 ${status_file}，然后继续——这样即可解除本次阻断。"
+        if [ -n "$udetail" ]; then
+            [ -n "$reason" ] && reason="${reason} "
+            if [ -n "$scope_note" ]; then
+                reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就到它所属任务的 subtasks/ 下读取它的结果 SubTask 文件及其持久日志，记录到该任务的 status.md，然后继续——这样即可解除本次阻断。${scope_note}"
+            else
+                reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就读取上面列出的每个结果，记录到 ${status_file}，然后继续——这样即可解除本次阻断。"
+            fi
+        fi
     fi
-fi
 
-[ -n "$reason" ] || exit 0
+    [ -n "$reason" ] || return 0
 
-cooldown="${ZYZ_STOP_GATE_COOLDOWN_SEC:-600}"
-zyz_cooldown_ok "$root/runtime/nag/stopgate.last" "$cooldown" || exit 0
+    cooldown="${ZYZ_STOP_GATE_COOLDOWN_SEC:-600}"
+    zyz_cooldown_ok "$root/runtime/nag/stopgate.last" "$cooldown" || return 0
 
-zyz_emit_block "[zyz-worker watchdog] ${reason}"
+    printf '%s' "$reason"
+}
+
+reasons=""
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    one="$(gate_reason "$root")"
+    [ -n "$one" ] || continue
+    reasons="${reasons:+$reasons }$one"
+done <<EOF
+$roots
+EOF
+
+[ -n "$reasons" ] || exit 0
+zyz_emit_block "[zyz-worker watchdog] ${reasons}"
 exit 0

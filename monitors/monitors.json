@@ -2,7 +2,7 @@
   {
     "name": "zyz-worker-watchdog",
     "command": "\"${CLAUDE_PLUGIN_ROOT}\"/monitors/watchdog.sh \"${CLAUDE_PROJECT_DIR}\"",
-    "description": "execute-task watchdog：报告静默/死亡的 subagent 角色和过期的任务状态文件，让主 agent 介入。之所以用 when=always 启用，是因为 on-skill-invoke 只按“实际发出的” skill 名精确匹配：插件加载的 skill 发出限定名（zyz-worker:execute-task），而同一 skill 在项目模式下发出裸名（execute-task）——一个字面量无法同时覆盖两者。watchdog.sh 本身受 .zyz-worker/current-task 指针门控，所以始终启用在效果上等价，代价只是一个休眠进程。",
+    "description": "execute-task watchdog：报告静默/死亡的 subagent 角色和过期的任务状态文件，让主 agent 介入。之所以用 when=always 启用，是因为 on-skill-invoke 只按“实际发出的” skill 名精确匹配：插件加载的 skill 发出限定名（zyz-worker:execute-task），而同一 skill 在项目模式下发出裸名（execute-task）——一个字面量无法同时覆盖两者。watchdog.sh 本身受本会话的任务指针（.zyz-worker/sessions/<session-id>，退回时为 .zyz-worker/current-task）门控，所以始终启用在效果上等价，代价只是一个休眠进程。",
     "when": "always"
   }
 ]

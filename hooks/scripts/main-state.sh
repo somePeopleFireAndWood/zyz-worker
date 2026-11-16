@@ -31,8 +31,9 @@
 #
 # ## Supported agents
 #
-# Main agent only. No-op unless the session cwd has a `.zyz-worker/current-task`
-# pointer to an existing task directory. macOS bash 3.2 + Linux compatible.
+# Main agent only. No-op unless a task pointer of this session resolves
+# (zyz_task_roots); every task of the session gets its own state write.
+# macOS bash 3.2 + Linux compatible.
 
 set -u
 [ "${ZYZ_HOOKS_DISABLE:-0}" = "1" ] && exit 0
@@ -49,9 +50,8 @@ base="$(zyz_get cwd)"
 [ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$base" ] || base="$PWD"
-
-root="$(zyz_task_root "$base")"
-[ -n "$root" ] || exit 0
+roots="$(zyz_task_roots "$base")"
+[ -n "$roots" ] || exit 0
 
 # main-state is written only by main-agent events. UserPromptSubmit/Stop/
 # SessionEnd never fire inside a subagent, so this is defensive redundancy
@@ -60,46 +60,61 @@ agent_id="$(zyz_get agent_id)"
 [ -n "$agent_id" ] && exit 0
 
 hook_event="$(zyz_get hook_event_name)"
-state=""
 case "$hook_event" in
-    UserPromptSubmit)
-        state=working
-        ;;
-    Stop)
-        # Stop overwrite immunity: if the state is already awaiting-user, do NOT
-        # overwrite it to idle and do NOT fire the idle IM — the user is still
-        # being waited on (a needs_input round that then hit Stop), which is not
-        # "stopped and handed back". Leaving awaiting-user in place keeps the
-        # suppression correct and avoids a misleading idle IM. Only working->idle
-        # and no-state->idle actually write idle.
-        if zyz_main_state_awaiting "$root"; then
-            exit 0
-        fi
-        state=idle
-        ;;
-    SessionEnd)
-        state=ended
-        ;;
-    *)
-        exit 0
-        ;;
+    UserPromptSubmit|Stop|SessionEnd) ;;
+    *) exit 0 ;;
 esac
 
-zyz_main_state_set "$root" "$state"
+# The main agent owns every task of its session, so each task's state machine
+# moves on its own.
+apply_state() {
+    local root state phase
+    root="$1"
+    case "$hook_event" in
+        UserPromptSubmit)
+            state=working
+            ;;
+        Stop)
+            # Stop overwrite immunity: if the state is already awaiting-user, do
+            # NOT overwrite it to idle and do NOT fire the idle IM — the user is
+            # still being waited on (a needs_input round that then hit Stop),
+            # which is not "stopped and handed back". Leaving awaiting-user in
+            # place keeps the suppression correct and avoids a misleading idle
+            # IM. Only working->idle and no-state->idle actually write idle.
+            if zyz_main_state_awaiting "$root"; then
+                return 0
+            fi
+            state=idle
+            ;;
+        SessionEnd)
+            state=ended
+            ;;
+    esac
 
-# F4: when a Stop actually wrote idle during an active execution phase, fire an
-# independent `idle` IM in the background so the user learns the main agent
-# stopped and handed control back. The active-phase filter lives here (not in
-# notify.sh) because only this script holds both "the event was Stop" and "idle
-# was actually written (not immunity-skipped)". Non-active phases (design /
-# terminal) do not fire — matching the watchdog's active-phase scope. notify.sh
-# then applies its own config gate + per-category cooldown. Backgrounded and
-# fully redirected so it never blocks Stop.
-if [ "$hook_event" = Stop ] && [ "$state" = idle ]; then
-    phase="$(zyz_phase_of "$root/status.md")"
-    if zyz_phase_active "$phase"; then
-        "$SCRIPT_DIR/notify.sh" --event idle --task-root "$root" >/dev/null 2>&1 &
+    zyz_main_state_set "$root" "$state"
+
+    # F4: when a Stop actually wrote idle during an active execution phase, fire
+    # an independent `idle` IM in the background so the user learns the main
+    # agent stopped and handed control back. The active-phase filter lives here
+    # (not in notify.sh) because only this script holds both "the event was
+    # Stop" and "idle was actually written (not immunity-skipped)". Non-active
+    # phases (design / terminal) do not fire — matching the watchdog's
+    # active-phase scope. notify.sh then applies its own config gate +
+    # per-category cooldown. Backgrounded and fully redirected so it never
+    # blocks Stop.
+    if [ "$hook_event" = Stop ] && [ "$state" = idle ]; then
+        phase="$(zyz_phase_of "$root/status.md")"
+        if zyz_phase_active "$phase"; then
+            "$SCRIPT_DIR/notify.sh" --event idle --task-root "$root" >/dev/null 2>&1 &
+        fi
     fi
-fi
+}
+
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    apply_state "$root"
+done <<EOF
+$roots
+EOF
 
 exit 0

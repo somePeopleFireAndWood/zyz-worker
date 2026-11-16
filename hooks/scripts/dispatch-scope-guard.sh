@@ -32,8 +32,8 @@
 #
 # ## Failure behavior
 #
-# Fail open: missing input, missing JSON parser, missing `.zyz-worker/
-# current-task` pointer, or any error exits 0 (allow). Only inspects
+# Fail open: missing input, missing JSON parser, no resolvable task pointer
+# for this session, or any error exits 0 (allow). Only inspects
 # dispatches to the zyz-worker roles; other subagent types pass untouched.
 #
 # ## Supported agents

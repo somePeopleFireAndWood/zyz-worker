@@ -45,6 +45,8 @@
 set -u
 # Keep the invoking session's project dir out of zyz_task_root's fallback.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
+# ...and its session identity out of the per-session pointer lookup (#23).
+unset ZYZ_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CLAUDE_PID
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,7 +58,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.27.0"
+EXPECTED_VERSION="0.28.0"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -86,7 +88,7 @@ raise SystemExit(0 if ok else 1)' "$3" "$4"
 # ---------------------------------------------------------------------------
 # T1 — layout, exec bits, syntax
 # ---------------------------------------------------------------------------
-HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh hooks/scripts/agent-runtime-state.sh"
+HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh hooks/scripts/agent-runtime-state.sh hooks/scripts/task-pointer.sh"
 for f in $HOOK_SCRIPTS monitors/watchdog.sh hooks/hooks.json monitors/monitors.json hooks/README.md; do
     if [ -f "$f" ]; then pass "T1 exists: $f"; else fail "T1 exists: $f" "missing"; fi
 done

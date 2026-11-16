@@ -103,11 +103,11 @@ skill 可以是只带 `SKILL.md`（没有 `prompts/` 或 `templates/`）的轻�
 
 hook 应当小巧、确定，并写明其触发点、输入、输出和失败模式。
 
-已实现：`hooks/hooks.json` 通过双重插件根目录展开与双重工具名匹配器，为 Claude Code 与 Codex 两端注册 execute-task watchdog 层。Codex 还会在 `SessionStart` 时启动共享的后台 watchdog；Claude Code 则使用 `monitors/monitors.json`。所有 hook 都 fail-open，在没有 `.zyz-worker/current-task` 指针时什么也不做。见 `hooks/README.md` 与 [../architecture.md](../architecture.md)。
+已实现：`hooks/hooks.json` 通过双重插件根目录展开与双重工具名匹配器，为 Claude Code 与 Codex 两端注册 execute-task watchdog 层。Codex 还会在 `SessionStart` 时启动共享的后台 watchdog；Claude Code 则使用 `monitors/monitors.json`。所有 hook 都 fail-open，在解析不到本会话的任务指针（`.zyz-worker/sessions/<session-id>`，退回时为 `.zyz-worker/current-task`）时什么也不做。见 `hooks/README.md` 与 [../architecture.md](../architecture.md)。
 
 ### `monitors/`
 
-插件后台监视器。`monitors/monitors.json` 声明常驻进程，其 stdout 的每一行都会作为通知投递给主 agent。已实现：`watchdog.sh`，以 `when: "always"`（会话启动时）上膛，并以 `.zyz-worker/current-task` 指针自我门控；它报告静默/死亡的 subagent 角色以及过期的状态文件，让主 agent 无需记着轮询也能介入。不要把它收窄成 `on-skill-invoke:<skill>`——该写法会按精确字符串与发出的 skill 名比对，而插件安装下发出的是限定名（`zyz-worker:execute-task`），项目模式下发出的是裸名（`execute-task`），任何单个字面量都无法在两种情况下都上膛。
+插件后台监视器。`monitors/monitors.json` 声明常驻进程，其 stdout 的每一行都会作为通知投递给主 agent。已实现：`watchdog.sh`，以 `when: "always"`（会话启动时）上膛，并以本会话的任务指针自我门控；它报告静默/死亡的 subagent 角色以及过期的状态文件，让主 agent 无需记着轮询也能介入。不要把它收窄成 `on-skill-invoke:<skill>`——该写法会按精确字符串与发出的 skill 名比对，而插件安装下发出的是限定名（`zyz-worker:execute-task`），项目模式下发出的是裸名（`execute-task`），任何单个字面量都无法在两种情况下都上膛。
 
 ### `scripts/`
 

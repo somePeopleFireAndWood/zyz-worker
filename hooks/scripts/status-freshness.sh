@@ -18,12 +18,13 @@
 #
 # ## Outputs
 #
-# - When `<task-root>/status.md` exists, its mtime is older than
+# - For each task of the session (only the primary task for a subagent
+#   audience): when `<task-root>/status.md` exists, its mtime is older than
 #   ZYZ_STATUS_STALE_SEC, the task phase is an active execution phase, and
 #   the per-audience cooldown has elapsed: prints hookSpecificOutput
 #   additionalContext telling the CURRENT context (main agent or the
 #   subagent that made the tool call) to persist progress into the status
-#   file now. Otherwise prints nothing.
+#   file now — one line per stale task. Otherwise prints nothing.
 # - Side effect: stamps `<task-root>/runtime/nag/<audience>.last` (epoch)
 #   for the cooldown.
 #
@@ -54,10 +55,8 @@ base="$(zyz_get cwd)"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$base" ] || base="$PWD"
 
-root="$(zyz_task_root "$base")"
-[ -n "$root" ] || exit 0
-status_file="$root/status.md"
-[ -f "$status_file" ] || exit 0
+roots="$(zyz_task_roots "$base")"
+[ -n "$roots" ] || exit 0
 
 # Defer to post-agent-flush.sh on an Agent return. Both hooks are sync
 # PostToolUse and both read this same status-file mtime, so on a stale-status
@@ -69,16 +68,6 @@ status_file="$root/status.md"
 # else still gets this hook's reminder.
 case "$(zyz_get tool_name)" in Agent|spawn_agent|collaboration.spawn_agent) exit 0 ;; esac
 
-phase="$(zyz_phase_of "$status_file")"
-zyz_phase_active "$phase" || exit 0
-
-stale_sec="${ZYZ_STATUS_STALE_SEC:-600}"
-mtime="$(zyz_mtime "$status_file")"
-[ -n "$mtime" ] || exit 0
-now="$(zyz_now)"
-age=$((now - mtime))
-[ "$age" -gt "$stale_sec" ] || exit 0
-
 agent_type="$(zyz_get agent_type)"
 role="$(zyz_role_of "$agent_type")"
 case "$role" in
@@ -88,18 +77,53 @@ case "$role" in
     *) exit 0 ;;
 esac
 
-# A valid bounded wait declaration only suppresses the MAIN audience's generic
-# status-stale reminder. Role liveness and post-result flushing are orthogonal.
-[ "$audience" != main ] || ! zyz_status_waiting "$status_file" || exit 0
+# The main agent owns every task of its session; a subagent belongs to the
+# primary task (first pointer line), where subagent-track registered it.
+[ "$audience" = main ] || roots="${roots%%
+*}"
 
+stale_sec="${ZYZ_STATUS_STALE_SEC:-600}"
 cooldown="${ZYZ_STATUS_NAG_COOLDOWN_SEC:-300}"
-zyz_cooldown_ok "$root/runtime/nag/$audience.last" "$cooldown" || exit 0
+now="$(zyz_now)"
 
-mins=$((age / 60))
-if [ "$audience" = "main" ]; then
-    msg="[zyz-worker watchdog] 任务状态文件已有 ${mins} 分钟没有更新（${status_file}）。现在就把当前进度、活跃角色、阻塞项和下一步写进去——状态保存在磁盘上，而不是会话上下文里。"
-else
-    msg="[zyz-worker watchdog] 任务状态文件已有 ${mins} 分钟没有更新。请尽快通过你的常规输出汇报当前进度；如果你维护着 SubTask 状态文件，现在就更新它（${status_file} 是主 agent 负责的总状态文件）。"
-fi
+# Prints the reminder for one task root, or nothing.
+freshness_msg() {
+    local root status_file phase mtime age mins
+    root="$1"
+    status_file="$root/status.md"
+    [ -f "$status_file" ] || return 0
+    phase="$(zyz_phase_of "$status_file")"
+    zyz_phase_active "$phase" || return 0
+    mtime="$(zyz_mtime "$status_file")"
+    [ -n "$mtime" ] || return 0
+    age=$((now - mtime))
+    [ "$age" -gt "$stale_sec" ] || return 0
+
+    # A valid bounded wait declaration only suppresses the MAIN audience's
+    # generic status-stale reminder. Role liveness and post-result flushing are
+    # orthogonal.
+    [ "$audience" != main ] || ! zyz_status_waiting "$status_file" || return 0
+
+    zyz_cooldown_ok "$root/runtime/nag/$audience.last" "$cooldown" || return 0
+
+    mins=$((age / 60))
+    if [ "$audience" = "main" ]; then
+        printf '%s' "[zyz-worker watchdog] 任务状态文件已有 ${mins} 分钟没有更新（${status_file}）。现在就把当前进度、活跃角色、阻塞项和下一步写进去——状态保存在磁盘上，而不是会话上下文里。"
+    else
+        printf '%s' "[zyz-worker watchdog] 任务状态文件已有 ${mins} 分钟没有更新。请尽快通过你的常规输出汇报当前进度；如果你维护着 SubTask 状态文件，现在就更新它（${status_file} 是主 agent 负责的总状态文件）。"
+    fi
+}
+
+msg=""
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    one="$(freshness_msg "$root")"
+    [ -n "$one" ] || continue
+    msg="${msg:+$msg
+}$one"
+done <<EOF
+$roots
+EOF
+[ -n "$msg" ] || exit 0
 zyz_emit_context "PostToolUse" "$msg"
 exit 0

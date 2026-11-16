@@ -25,16 +25,19 @@
 # crash (kill -9 / OOM / terminal close / network drop) fires no hook and takes
 # the monitor down with it, so it is NOT covered here (documented in README).
 #
-# Every path is workflow-scoped: it no-ops unless a `.zyz-worker/current-task`
-# pointer resolves — exactly like the rest of the layer — so ordinary
-# interactive sessions are never touched.
+# Every path is workflow-scoped: it no-ops unless a task pointer of this
+# session resolves (zyz_task_roots) — exactly like the rest of the layer — so
+# ordinary interactive sessions are never touched.
 #
 # ## Inputs
 #
 # - Hook mode: hook JSON on stdin (hook_event_name, notification_type?, cwd,
 #   session_id?, message?, title?, error?, reason?).
 # - Direct mode: `--event <category> [--title T] [--message M]
-#   [--base DIR | --task-root DIR] [--session-id S] [--origin main|subagent]`.
+#   [--base DIR | --task-root DIR] [--session-id S] [--origin main|subagent]
+#   [--task-id LABEL]`. `--task-id` overrides the reported task id: the
+#   watchdog passes every task of a multi-task session for a subagent finding,
+#   whose owning task it cannot know (#23).
 #   `--origin` (default main) splits stuck delivery (F2): a main-origin stuck
 #   (status-stale derived) is suppressed while the main agent is awaiting-user /
 #   idle; a subagent-origin stuck (a truly dead role) bypasses that suppression.
@@ -96,6 +99,7 @@ arg_base=""
 arg_root=""
 arg_session=""
 arg_origin="main"
+arg_task_id=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --event) category="${2:-}"; shift 2 ;;
@@ -105,6 +109,7 @@ while [ "$#" -gt 0 ]; do
         --task-root) arg_root="${2:-}"; shift 2 ;;
         --session-id) arg_session="${2:-}"; shift 2 ;;
         --origin) arg_origin="${2:-}"; shift 2 ;;
+        --task-id) arg_task_id="${2:-}"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -156,12 +161,21 @@ esac
 
 # ---- scope gate: only inside an execute-task / orchestrate workflow ----------
 root="$arg_root"
+roots="$arg_root"
 if [ -z "$root" ]; then
     base="$arg_base"
     [ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
     [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
     [ -n "$base" ] || base="$PWD"
-    root="$(zyz_task_root "$base")"
+    # Every task of this session. One host event still sends at most one
+    # message; it is stamped under the primary (first) task's runtime/ and
+    # names every task, since the event belongs to the session, not to one task.
+    roots="$(zyz_task_roots "$base")"
+    root="${roots%%
+*}"
+    if [ -z "$arg_task_id" ] && [ "$(zyz_roots_count "$roots")" -gt 1 ]; then
+        arg_task_id="$(zyz_roots_label "$roots")"
+    fi
 fi
 [ -n "$root" ] || exit 0
 
@@ -176,7 +190,12 @@ fi
 if [ "${hook_event:-}" = Notification ]; then
     case "${ntype:-}" in
         permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog|idle_prompt)
-            zyz_main_state_set "$root" awaiting-user ;;
+            while IFS= read -r state_root; do
+                [ -n "$state_root" ] && zyz_main_state_set "$state_root" awaiting-user
+            done <<ZYZ_NOTIFY_ROOTS
+$roots
+ZYZ_NOTIFY_ROOTS
+            ;;
     esac
 fi
 
@@ -270,7 +289,7 @@ case "$cooldown" in ''|*[!0-9]*) cooldown=30 ;; esac
 zyz_cooldown_ok "$root/runtime/nag/notify-$category.last" "$cooldown" || exit 0
 
 # ---- build payload ----------------------------------------------------------
-task_id="$(basename "$root" 2>/dev/null)"
+task_id="${arg_task_id:-$(basename "$root" 2>/dev/null)}"
 phase="$(zyz_phase_of "$root/status.md")"
 host="$(hostname 2>/dev/null || echo unknown)"
 timestamp="$(zyz_iso)"

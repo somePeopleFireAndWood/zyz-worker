@@ -314,9 +314,11 @@ reviewAgent 评审设计、实现和测试。它不得把任何被修改的文�
 1. 创建或确定一个任务 id。
 2. 创建任务目录，首选 `.zyz-worker/tasks/<task-id>/`。
 3. 基于 `templates/task-status.md` 创建状态文件，在任务目录中命名为 `status.md`。这是唯一必需的总任务状态文件。文件名 `status.md` 是承重的：watchdog 层把总状态文件解析为 `<task-dir>/status.md`，换个文件名会让 L1/L3/L4 的新鲜度强制悄无声息地失效（见 `## Watchdog 强制层`）。
-4. 把任务 id（单独一行）写入**会话 cwd 下**的指针文件 `.zyz-worker/current-task`——会话 cwd 就是本次对话运行所在的目录，也就是 hooks 收到的 `cwd`。"项目根目录"在这里含义不清，并且已经造成过一次真实故障：在链接 worktree 内，`git rev-parse --show-toplevel` 返回的是 *worktree* 的根目录，所以在 `git-worktree` skill 创建的 worktree 中运行的任务（该 skill 把 worktree 放在主检出目录**之外**，也不会 cd 进去），其指针最终会落在一个不包含会话 cwd 的地方。
-   - **如果任务目录不在会话 cwd 下，指针的内容必须是任务目录的绝对路径。** 裸 id（或相对路径）会相对于存放指针的目录来解析，因此无法跨目录树访问。
-   - 解析器**只**看这个指针（以及编排模式派生时导出的 `$ZYZ_TASK_DIR`）。它有意**不**搜索同级的 git worktree：早先一个这样做的兜底逻辑曾把一个会话挂到并发会话的任务上，并针对一个不属于本会话的任务发出看似权威的过期告警（issue #18）。因此缺少指针时会确定性地失败——watchdog 保持沉默——而下面的"确认已启用"检查就是用来发现这种情况的。
+4. 在**会话 cwd 下**为本会话写入任务指针：运行 `<plugin-root>/hooks/scripts/task-pointer.sh arm <任务目录>`（`<plugin-root>` 的确定方式见 `## 跨 harness 交叉评审`）。会话 cwd 就是本次对话运行所在的目录，也就是 hooks 收到的 `cwd`。"项目根目录"在这里含义不清，并且已经造成过一次真实故障：在链接 worktree 内，`git rev-parse --show-toplevel` 返回的是 *worktree* 的根目录，所以在 `git-worktree` skill 创建的 worktree 中运行的任务（该 skill 把 worktree 放在主检出目录**之外**，也不会 cd 进去），其指针最终会落在一个不包含会话 cwd 的地方。
+   - **指针按会话区分（#23）。** 有会话 id 时，脚本把任务目录的**绝对路径**追加到 `.zyz-worker/sessions/<session-id>`（一行一个任务；同一个任务重复 arm 不会重复写入）。会话 id 取自本会话所在的 harness：Claude Code 是 `$CLAUDE_CODE_SESSION_ID`，Codex 是 `$CODEX_THREAD_ID`——两者都已实测与 hooks 收到的 `session_id` 一致，并且在 subagent 的 hooks 里仍是父会话的 id。脚本按最近的 `claude`/`codex` 祖先进程判定 harness，因为这两个变量会泄漏进嵌套启动的另一个 harness。只有拿不到会话 id 时，脚本才退回写共享的 `.zyz-worker/current-task`，并在 stderr 上提示。旧的 `current-task` 每个目录只有一份，同一目录下两个会话各跑一个 execute-task 时，后启动的会话只能覆盖它（先启动的会话的 watchdog 会悄无声息地挂到新任务上）或者不写（自己的 watchdog 失效）；会话指针让两者互不干扰。**不要**手工写 `current-task`。
+   - 只有主 agent 写指针，绝不交给 subagent：Codex sub-agent 的 shell 里 `$CODEX_THREAD_ID` 是它自己的子线程 id，写出来的指针属于错误的会话。
+   - 本会话同时推进多个任务时，对每个任务各 arm 一次；watchdog 会对每个任务分别检查、分别报告。第一行是**主任务**：subagent 的心跳、运行时跟踪和派发守卫的记录都存在主任务下——但这只是记账位置，hooks 无法知道某个 subagent 是为哪个任务派发的。所以多任务时，subagent 类告警（静默、跟踪未对账、probe 逾期、无输出、已完成未收取）不会断言它属于哪个任务，而是列出本会话的全部任务，由你按自己的派发记录判断归属，再到所属任务的 `subtasks/` 读结果、写进所属任务的 `status.md`；只有 `agent-runtime-state.sh finalize` 等 runtime 命令的 `<task-dir>` 要用告警里写明的记账目录。只要本会话有任一任务处于活跃阶段，这类告警就会发出；"已完成未收取"的判断以本会话所有任务中最新的一次状态写入为准。某个任务结束后可以用 `task-pointer.sh disarm <任务目录>` 把它移出；终态任务即使留在指针里也不会再触发强制。会话恢复（`--resume`、`/clear` 之后继续同一任务）时会话 id 可能已经改变，所以要重新 arm 一次。
+   - 解析器只看**本会话的**会话指针，缺失时依次回落到 `current-task` 和编排模式派生时导出的 `$ZYZ_TASK_DIR`。它有意**不**搜索同级的 git worktree，也不会去读别的会话的指针：早先一个这样做的兜底逻辑曾把一个会话挂到并发会话的任务上，并针对一个不属于本会话的任务发出看似权威的过期告警（issue #18）——"哪个任务属于我"只能由会话身份决定，不能靠推断。因此缺少指针时会确定性地失败——watchdog 保持沉默——而下面的"确认已启用"检查就是用来发现这种情况的。`task-pointer.sh show` 会列出 hooks 为本会话解析到的全部任务。
    - 插件的 watchdog hooks 和 monitor 就是通过这个指针来定位当前活动任务的；没有可解析的指针，整个 watchdog 层会悄无声息地什么都不做（见 `## Watchdog 强制层`）。
    - **确认该层确实已启用。** 在几次工具调用之后，用只读的 fixed-pack 观察器确认其经过认证的 `main_heartbeat_epoch` 存在并且在推进。不要去探测或创建独立的主心跳 inode：主心跳的权威来源是 catalog 的 PACK_HEADER。如果观察器无法验证它，就说明 watchdog 未生效：要在状态文件中和对用户明确说明，而不是当作受保护一样继续推进——一个未启用的 watchdog 与一个健康而安静的 watchdog 看起来毫无区别，曾经就有一整个任务在所有层都失效的情况下跑完，两个死掉的 subagent 都没有被报告。
 5. 记录任务名称、阶段、已知输入、待解问题和当前假设。
@@ -499,10 +501,10 @@ SubTask 按依赖图调度，而不是按列表顺序（见 §3.0.2）。把相�
 
 主 agent 对 watchdog 的义务：
 
-- 在 §1 启动任务时写入 `.zyz-worker/current-task` 指针（活动任务变化时更新它）。没有指针 → 没有 watchdog。
+- 在 §1 启动任务时用 `task-pointer.sh arm` 写入本会话的指针 `.zyz-worker/sessions/<session-id>`（活动任务变化时更新它；拿不到会话 id 时脚本退回写共享的 `.zyz-worker/current-task`）。没有指针 → 没有 watchdog。
 - 把总状态文件在任务目录中命名为 `status.md`。watchdog 把它解析为 `<task-dir>/status.md`，并读取其中的 `Current Phase` 标签；用其他任何文件名，都会让新鲜度相关的各层（L1/L3/L4）悄无声息地什么都不做。
 - 把任何 `[zyz-worker watchdog]` 通知或注入的上下文都当作可执行的指令，而不是噪音：立即用最新的设计和状态摘要重新派发被点名的角色，或者写入状态文件——不要推迟到下一个交付里程碑。
-- **但写入之前要核实归属。** 一条点名了某个状态文件或任务目录的 watchdog 告警，只有在该路径属于**本**会话的任务（你的指针或 `$ZYZ_TASK_DIR` 指向的那个）时才可执行。如果不属于——同级 worktree 中并发会话的任务、过时的指针、设错的环境变量——就不要往里写：把"当前进度"写进另一个会话的状态文件，等于伪造了那个任务的事实来源。改为向用户报告这一不匹配。watchdog 的输出既可能漏掉真实问题（#9），历史上也曾报告过别人的问题（#18）；它是兜底，不是神谕。
+- **但写入之前要核实归属。** 一条点名了某个状态文件或任务目录的 watchdog 告警，只有在该路径属于**本**会话的任务（本会话的会话指针、退回时的 `current-task`，或 `$ZYZ_TASK_DIR` 指向的那个；`task-pointer.sh show` 会列出它们）时才可执行。如果不属于——同级 worktree 中并发会话的任务、过时的指针、设错的环境变量——就不要往里写：把"当前进度"写进另一个会话的状态文件，等于伪造了那个任务的事实来源。改为向用户报告这一不匹配。watchdog 的输出既可能漏掉真实问题（#9），历史上也曾报告过别人的问题（#18）；它是兜底，不是神谕。
 - 保持状态文件的 `Current Phase` 字段准确；watchdog 只在活动执行阶段强制，并有意在 design 和 awaiting-confirmation 阶段保持安静（这些阶段等待用户是正确的）。
 - `<task-dir>/runtime/` 下的运行时标记是 watchdog 的记账数据。不要手工编辑它们。用 `probe-create`，并在重连时带上它的确切 id；只有观察到它的接收方角色才运行 `probe-ack`。心跳永远不是 ACK。一条有时限的 `Waiting On` 行只抑制状态新鲜度检查，并且必须在得到结果/到期时删除。
 

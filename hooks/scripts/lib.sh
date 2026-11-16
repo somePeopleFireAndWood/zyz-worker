@@ -19,15 +19,35 @@
 # - zyz_mtime <file>            mtime as epoch seconds (BSD or GNU stat).
 # - zyz_now / zyz_iso           current epoch seconds / ISO 8601 timestamp.
 # - zyz_sanitize <s>            s with chars outside [A-Za-z0-9._-] -> '_'.
-# - zyz_task_root <base>        the current task directory resolved via the
-#                               `<base>/.zyz-worker/current-task` pointer
-#                               (first line = task-id, or a path relative to
-#                               <base>, or an absolute path), else the same
-#                               pointer under the session project dir
-#                               ($CODEX_PROJECT_DIR / $CLAUDE_PROJECT_DIR), else
-#                               $ZYZ_TASK_DIR when exported, or empty when
-#                               missing/dangling. Deliberately NO search beyond
-#                               these (#18).
+# - zyz_session_id              this session's id: hook-input `session_id`
+#                               (the PARENT session's id inside subagent hooks,
+#                               verified on Claude Code and Codex), else
+#                               $ZYZ_SESSION_ID, $CLAUDE_CODE_SESSION_ID,
+#                               $CODEX_THREAD_ID; or empty.
+# - zyz_session_ids             zyz_session_id plus, outside a hook (watchdog)
+#                               and without $ZYZ_SESSION_ID, the live id from
+#                               Claude's ~/.claude/sessions/$CLAUDE_PID.json;
+#                               one per line, deduplicated.
+# - zyz_task_roots <base>       every task directory of THIS session, one per
+#                               line: the lines of the per-session pointer
+#                               `.zyz-worker/sessions/<session-id>` (#23), else
+#                               the first line of the legacy shared
+#                               `.zyz-worker/current-task`, else $ZYZ_TASK_DIR.
+#                               Each pointer is read under <base>, then under
+#                               the session project dir ($CODEX_PROJECT_DIR /
+#                               $CLAUDE_PROJECT_DIR). A pointer line is a
+#                               task-id, a path relative to the pointer's base,
+#                               or an absolute path; dangling lines are skipped.
+#                               Deliberately NO search beyond these (#18).
+# - zyz_task_root <base>        the first line of zyz_task_roots (the primary
+#                               task), or empty.
+# - zyz_roots_count / zyz_roots_any_active / zyz_roots_latest_status_mtime /
+#   zyz_roots_label <roots>     over a zyz_task_roots list: task count; 0 when
+#                               any task is in an active phase; newest
+#                               status.md mtime (0 if none); comma-joined ids.
+# - zyz_subagent_scope_note <roots> <record-root>
+#                               empty for a one-task session, else the note
+#                               that a subagent finding names no owning task.
 # - zyz_write_atomic <f> <line> tmpfile+rename single-line write.
 # - zyz_emit_context <ev> <msg> print hookSpecificOutput additionalContext
 #                               JSON for event <ev>.
@@ -260,14 +280,13 @@ sys.exit(0)
 PY
 }
 
-# Resolve a pointer file that lives under exactly one base directory.
-# Returns the task dir on stdout, or nothing (rc 0) on any miss — fail-open.
-zyz_resolve_pointer_at() {
+# Resolve one pointer line against the base dir the pointer lives under: an
+# absolute path, a path relative to <base>, or a bare task-id under
+# <base>/.zyz-worker/tasks/. Prints the task dir, or nothing when it is absent.
+zyz_resolve_ref_at() {
     [ -n "${1:-}" ] || return 0
-    local pointer target
-    pointer="$1/.zyz-worker/current-task"
-    [ -f "$pointer" ] || return 0
-    target="$(head -n1 "$pointer" 2>/dev/null | tr -d '[:space:]')"
+    local target
+    target="$(printf '%s' "${2:-}" | tr -d '[:space:]')"
     [ -n "$target" ] || return 0
     case "$target" in
         /*) ;;
@@ -276,6 +295,74 @@ zyz_resolve_pointer_at() {
     esac
     [ -d "$target" ] || return 0
     printf '%s' "$target"
+}
+
+# Resolve the legacy shared pointer that lives under exactly one base directory.
+# Only its first line counts. Returns the task dir on stdout, or nothing (rc 0)
+# on any miss — fail-open.
+zyz_resolve_pointer_at() {
+    [ -n "${1:-}" ] || return 0
+    local pointer
+    pointer="$1/.zyz-worker/current-task"
+    [ -f "$pointer" ] || return 0
+    zyz_resolve_ref_at "$1" "$(head -n1 "$pointer" 2>/dev/null)"
+}
+
+# Resolve the per-session pointer `<base>/.zyz-worker/sessions/<sid>` (#23).
+# Every line is one task of that session; prints each existing task dir on its
+# own line and skips blank or dangling lines.
+zyz_resolve_session_pointer_at() {
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 0
+    local pointer line dir
+    pointer="$1/.zyz-worker/sessions/$(zyz_sanitize "$2")"
+    [ -f "$pointer" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        dir="$(zyz_resolve_ref_at "$1" "$line")"
+        [ -n "$dir" ] && printf '%s\n' "$dir"
+    done < "$pointer"
+    return 0
+}
+
+# The live session id Claude Code keeps in its per-process registry
+# (~/.claude/sessions/<pid>.json). A monitor's environment is frozen when it is
+# spawned, while the registry follows the running process.
+zyz_claude_registry_sid() {
+    case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
+    local file
+    file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$1.json"
+    [ -f "$file" ] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.sessionId // empty' "$file" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("sessionId") or "")
+except Exception: pass' "$file" 2>/dev/null
+    fi
+    return 0
+}
+
+zyz_session_id() {
+    local sid=""
+    # Hook input first. Inside a subagent hook it is still the PARENT session's
+    # id (verified on Claude Code and Codex), while a Codex subagent's own
+    # $CODEX_THREAD_ID is the child thread — so the environment only backs up a
+    # payload that lacks the field, and the watchdog, which has no payload.
+    [ -n "${ZYZ_HOOK_INPUT:-}" ] && sid="$(zyz_get session_id)"
+    [ -n "$sid" ] || sid="${ZYZ_SESSION_ID:-}"
+    [ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-}"
+    [ -n "$sid" ] || sid="${CODEX_THREAD_ID:-}"
+    printf '%s' "$sid"
+}
+
+zyz_session_ids() {
+    {
+        zyz_session_id
+        printf '\n'
+        if [ -z "${ZYZ_HOOK_INPUT:-}" ] && [ -z "${ZYZ_SESSION_ID:-}" ]; then
+            zyz_claude_registry_sid "${CLAUDE_PID:-}"
+            printf '\n'
+        fi
+    } | awk 'NF && !seen[$0]++'
 }
 
 # True when the task dir's status.md reports a terminal phase (see
@@ -290,41 +377,57 @@ zyz_task_is_done() {
     zyz_phase_terminal "$ph"
 }
 
-zyz_task_root() {
+zyz_task_roots() {
     [ -n "${1:-}" ] || return 0
-    local base found
+    local base found project_dir sids sid
     base="$1"
+    # The session's own project dir. Hooks pass the payload cwd, which drifts
+    # wherever the agent last `cd`-ed (the task dir, apps/api, ...) and then has
+    # no pointer, while the watchdog resolves from the project dir. The mismatch
+    # silently no-op'd every hook (heartbeat, Stop, Notification) so main-state
+    # froze at `working` and the watchdog, still resolving the task, nagged
+    # through hours of awaiting-user/idle. This is not a search (#18): it is the
+    # one dir this session was launched in — the same one the watchdog trusts.
+    project_dir="${CODEX_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}"
+    [ "$project_dir" != "$base" ] || project_dir=""
 
-    # (a) Hot path: the pointer directly under the given base. No fork, no git,
-    # byte-identical to the historical behavior on a hit.
-    found="$(zyz_resolve_pointer_at "$base")"
-    if [ -n "$found" ]; then
-        printf '%s' "$found"
-        return 0
-    fi
-
-    # (a') The session's own project dir. Hooks pass the payload cwd, which
-    # drifts wherever the agent last `cd`-ed (the task dir, apps/api, ...) and
-    # then has no pointer, while the watchdog resolves from the project dir. The
-    # mismatch silently no-op'd every hook (heartbeat, Stop, Notification) so
-    # main-state froze at `working` and the watchdog, still resolving the task,
-    # nagged through hours of awaiting-user/idle. This is not a search (#18):
-    # it is the one dir this session was launched in — the same one the
-    # watchdog already trusts.
-    local project_dir="${CODEX_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}"
-    if [ -n "$project_dir" ] && [ "$project_dir" != "$base" ]; then
-        found="$(zyz_resolve_pointer_at "$project_dir")"
+    # (s) This session's own pointer (#23). The legacy `current-task` is one
+    # file per directory, so two sessions running execute-task in the same
+    # directory had to overwrite each other's pointer or run unarmed. Keying the
+    # pointer by session id makes "which task is mine" a matter of identity, not
+    # inference. Every line is one task; all of them are this session's.
+    sids="$(zyz_session_ids)"
+    if [ -n "$sids" ]; then
+        found="$(while IFS= read -r sid; do
+            [ -n "$sid" ] || continue
+            zyz_resolve_session_pointer_at "$base" "$sid"
+            [ -z "$project_dir" ] || zyz_resolve_session_pointer_at "$project_dir" "$sid"
+        done <<EOF
+$sids
+EOF
+)"
         if [ -n "$found" ]; then
-            printf '%s' "$found"
+            printf '%s\n' "$found" | awk 'NF && !seen[$0]++'
             return 0
         fi
+    fi
+
+    # (a) The legacy shared pointer directly under the given base, then (a')
+    # under the session project dir. Reached only when this session has no
+    # session pointer, so sessions that predate #23 (or run where no session id
+    # is available) behave exactly as before.
+    found="$(zyz_resolve_pointer_at "$base")"
+    [ -n "$found" ] || [ -z "$project_dir" ] || found="$(zyz_resolve_pointer_at "$project_dir")"
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
     fi
 
     # (b) Explicit override. Only usable where something exported it into the
     # environment before `claude` started (orchestrated spawn/reuse do this); a
     # skill cannot set it for itself, since each skill Bash call is a new shell.
     if [ -n "${ZYZ_TASK_DIR:-}" ] && [ -d "${ZYZ_TASK_DIR}" ]; then
-        printf '%s' "$ZYZ_TASK_DIR"
+        printf '%s\n' "$ZYZ_TASK_DIR"
         return 0
     fi
 
@@ -340,8 +443,68 @@ zyz_task_root() {
     # is indistinguishable from a correct one. The scenario it covered (task in
     # a worktree the session cwd is not inside) is handled by the contract that
     # such pointers hold an ABSOLUTE path, plus $ZYZ_TASK_DIR for orchestrated
-    # spawns.
+    # spawns. The same reasoning rules out "several pointers, pick the newest or
+    # unfinished one": only the session id may decide ownership (#23).
     return 0
+}
+
+zyz_task_root() {
+    [ -n "${1:-}" ] || return 0
+    local roots
+    roots="$(zyz_task_roots "$1")"
+    printf '%s' "${roots%%
+*}"
+}
+
+# ---- session-scoped subagent findings (#23) ---------------------------------
+#
+# Subagent runtime records live under exactly one task dir (the primary task,
+# where subagent-track registered them), but no hook input says which of the
+# session's tasks a subagent was dispatched FOR. Subagent findings are
+# therefore session-scoped: they are reported whenever ANY task of the session
+# is active, judged against the newest status write of ANY task, and, when the
+# session has several tasks, worded so they never claim an owner — the main
+# agent, which holds the dispatch record, decides. Each helper takes the
+# newline-separated root list printed by zyz_task_roots.
+
+zyz_roots_count() {
+    printf '%s\n' "${1:-}" | awk 'NF' | wc -l | tr -d '[:space:]'
+}
+
+zyz_roots_any_active() {
+    local r
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        zyz_phase_active "$(zyz_phase_of "$r/status.md")" && return 0
+    done <<ZYZ_ROOTS
+${1:-}
+ZYZ_ROOTS
+    return 1
+}
+
+zyz_roots_latest_status_mtime() {
+    local r m best=0
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        m="$(zyz_mtime "$r/status.md")"
+        [ -n "$m" ] && [ "$m" -gt "$best" ] && best="$m"
+    done <<ZYZ_ROOTS
+${1:-}
+ZYZ_ROOTS
+    printf '%s' "$best"
+}
+
+zyz_roots_label() {
+    printf '%s\n' "${1:-}" | awk 'NF' | while IFS= read -r r; do basename "$r"; done \
+        | awk 'NR > 1 { printf "," } { printf "%s", $0 }'
+}
+
+zyz_subagent_scope_note() {
+    # $1 roots, $2 the task dir holding the runtime records. Prints nothing for a
+    # single-task session (no ambiguity), else the attribution disclaimer.
+    [ "$(zyz_roots_count "${1:-}")" -gt 1 ] || return 0
+    printf '（本会话有多个任务：%s；watchdog 无法判断这个角色是为哪一个派发的——请按你的派发记录判断归属。它的运行时记录在 %s 下，finalize 等 runtime 命令的 <task-dir> 用这个目录；这不代表它属于该任务。）' \
+        "$(printf '%s\n' "$1" | awk 'NF { printf "%s%s", (n++ ? "、" : ""), $0 }')" "${2:-}"
 }
 
 zyz_phase_of() {

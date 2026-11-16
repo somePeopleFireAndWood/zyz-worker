@@ -79,7 +79,19 @@ Legacy 迁移会先锁住经过清洗的旧来源，再锁住全哈希目标；�
 2. **状态文件保持新鲜。** 状态陈旧时会触发注入式提醒、退出门和停止门，而不是依赖模型自己记得。
 3. **恢复绝不缩小要求。** 限缩角色必须交付内容的派发，会在到达角色之前被拒绝（L5）——缩减每轮输出量可以，缩减总交付不行。
 
-所有 hook 都注册在 `hooks.json` 中（插件启用时自动加载），并且 fail open：任何输入缺失、JSON 解析器缺失（`jq` 或 `python3`）或写入错误，都会静默地以 exit 0 退出——watchdog 绝不能破坏或拖慢它所保护的工作流。除非会话 cwd 中有一个 `.zyz-worker/current-task` 指针（第一行：task id 或任务目录路径），并且它解析到一个已存在的任务目录，否则每个脚本都什么也不做。主 agent 在工作流 §1 启动任务时写入这个指针。
+所有 hook 都注册在 `hooks.json` 中（插件启用时自动加载），并且 fail open：任何输入缺失、JSON 解析器缺失（`jq` 或 `python3`）或写入错误，都会静默地以 exit 0 退出——watchdog 绝不能破坏或拖慢它所保护的工作流。除非能解析到**本会话的**任务指针，否则每个脚本都什么也不做。主 agent 在工作流 §1 启动任务时用 `scripts/task-pointer.sh arm` 写入这个指针。
+
+**任务指针按会话区分（#23）。** 解析顺序（`zyz_task_roots`，先看会话 cwd，再看会话项目目录 `$CODEX_PROJECT_DIR` / `$CLAUDE_PROJECT_DIR`）：
+
+1. `.zyz-worker/sessions/<session-id>`——本会话自己的指针，一行一个任务（task id、相对于该目录的路径，或绝对路径；悬空行跳过）。第一行是**主任务**。
+2. `.zyz-worker/current-task`——旧的共享指针，只看第一行。本会话没有会话指针时才会用到，所以旧会话和拿不到会话 id 的环境行为不变。
+3. `$ZYZ_TASK_DIR`——编排模式派生时导出。
+
+除此之外**不做任何搜索**（#18）：不搜同级 worktree，也不按"最新"或"未完成"去挑别的会话的指针——"哪个任务属于我"只能由会话身份决定。会话 id 的来源：hook 输入里的 `session_id`（已在 Claude Code 2.1.251 和 codex-cli 0.151.0 上实测：在 subagent 的 hook 里它仍是**父**会话的 id，并且等于 `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`）；没有 hook 输入时（watchdog）依次取 `$ZYZ_SESSION_ID`（Codex 的 `start-watchdog.sh` 设置）、`$CLAUDE_CODE_SESSION_ID`、`$CODEX_THREAD_ID`，Claude 的 monitor 还会额外认 `~/.claude/sessions/$CLAUDE_PID.json` 里的实时 id（monitor 的环境在启动时就固定了）。
+
+归属规则：主 agent 相关的 hook（主心跳、main-state、status-freshness 的主 agent 提醒、L4 停止门、notify 的 awaiting-user 记录）作用于本会话的**每一个**任务，多个任务的拦截理由合并成一次；subagent 相关的 hook（subagent-track、subagent 心跳与提醒、L2、L5 日志、L6、post-agent-flush）把记录存在主任务下；IM 每个事件只发一条，冷却记在主任务下。
+
+**subagent 类发现按会话、不按任务归属。** 主任务只是记账位置：hook 输入里没有任何字段说明某个 subagent 是为哪个任务派发的。因此 L3 和 L4 的 subagent 类发现（静默 / 跟踪未对账 / probe 逾期 / 无输出 / 已完成未收取）：只要本会话**任一**任务处于活跃阶段就会检查；"已完成未收取"比较的是本会话**所有**任务中最新的 `status.md` mtime（结果可能已写进别的任务）；多任务会话里消息不断言归属，而是列出全部任务、请主 agent 按派发记录判断，并单独写明记账目录（`finalize` 用它）；IM 的 `task_id` 是全部任务（`notify.sh --task-id`）。单任务会话的措辞不变。
 
 manifest 依次通过宿主提供的 `PLUGIN_ROOT`、编排模式下的 `ZYZ_PLUGIN_ROOT`、`CLAUDE_PLUGIN_ROOT`，最后是 legacy、非规范的 `CODEX_PLUGIN_ROOT` 来解析 hook 脚本。未设置和空值都会落到下一个变量。如果所有 root 都缺失，hook 以 no-op 方式成功；它绝不会去搜索会话 cwd、源码 checkout 或 marketplace 路径。只写一个 `./hooks` 路径是不够的：Codex 0.147.0 会相对于 worker 的 cwd 解析它。工具 matcher 同时接受 Claude 的名字（`Agent`、`Bash`）和 Codex 的名字（`spawn_agent`/`collaboration.spawn_agent`、`exec_command`/`functions.exec`）。Hook 脚本按以下顺序解析基准目录：输入中的 `cwd`，然后 `CODEX_PROJECT_DIR`、`CLAUDE_PROJECT_DIR` 和 `$PWD`。Codex 没有 Claude 的 monitor manifest 生命周期，也没有 async-hook 通知通道，因此 `SessionStart` 会同步运行 `start-watchdog.sh`；这个简短的辅助脚本会把共享扫描器分离到一个按线程区分的临时日志中运行。Codex 的 L0/L1/Stop hook 仍然是会话内的强制执行路径。
 
@@ -146,9 +158,16 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
 - 失败行为：输入/解析器/指针缺失时 fail open（放行）。匹配天然是启发式的，因此才有上面的豁免和逐守卫的禁用开关；T7 钉住了 23 种必须被拒绝的限缩写法和 28 种必须放行的正当写法。T7 的载荷构造器会对提示词做 JSON 转义——如果直接插值一个包含 `"` 的 fixture，会得到非法 JSON，守卫随之 fail open，断言就会空转通过。
 - 支持的 agent：派发 implementation-agent / test-agent / review-agent 的主 agent。
 
+## scripts/task-pointer.sh
+
+- 触发点：由**主 agent** 在自己的 Bash 中运行（execute-task §1 第 4 步）；从不由 hook 调用，也绝不交给 subagent（Codex sub-agent 的 shell 里 `$CODEX_THREAD_ID` 是它自己的子线程 id）。
+- 用法：`task-pointer.sh arm <task-dir>` 把任务目录的绝对路径追加到 `.zyz-worker/sessions/<session-id>`（重复 arm 不重复写）；`disarm <task-dir>` 移除该行（文件空了就删掉）；`show` 打印会话 id、指针文件和 hooks 为本会话解析到的全部任务；`session-id` 只打印会话 id。`--base <dir>` 默认 `$PWD`（必须是会话 cwd），`--session-id <id>` / `$ZYZ_SESSION_ID` 可以显式指定。
+- 会话 id：按最近的 `claude` / `codex` 祖先进程判定 harness，再取 `$CLAUDE_CODE_SESSION_ID`（外加 `~/.claude/sessions/<pid>.json` 里与之不同的实时 id）或 `$CODEX_THREAD_ID`。之所以看祖先进程而不是看变量是否存在，是因为这两个变量都会泄漏进嵌套启动的另一个 harness（例如由 Claude 会话启动的编排 worker 里跑的 Codex）。
+- 失败行为：拿不到会话 id 时退回写共享的 `.zyz-worker/current-task`，并在 stderr 上提示它会被同目录下的其它会话覆盖；用法错误或任务目录不存在时以 exit 2 退出。绝不触碰其它会话的指针。
+
 ## scripts/stop-gate-subagent.sh — L2
 
-- 触发点：`SubagentStop`，与 subagent-track 使用相同的角色 matcher。**不保证**在 API 错误导致死亡时触发——这个缺口由 L3 覆盖。没有 `current-task` 指针时什么也不做（这个门在 execute-task 工作流之外永远不生效）。
+- 触发点：`SubagentStop`，与 subagent-track 使用相同的角色 matcher。**不保证**在 API 错误导致死亡时触发——这个缺口由 L3 覆盖。解析不到任务指针时什么也不做（这个门在 execute-task 工作流之外永远不生效）。
 - 输入：stdin 上的 hook JSON（`stop_hook_active`、`last_assistant_message`）；`ZYZ_SUBAGENT_MIN_FINAL_CHARS`（默认 80，按**字节**计）。
 - 输出：正常停止时，提交逻辑 DONE，关闭 active/probe/inflight 状态，并通过固定记录推进终止交接/清理。当最终消息短于最小值时，输出一次 `{"decision":"block","reason":...}`，要求该角色给出一份合格的最终报告；在被接受的那次停止之前，不会提交任何终止记录。
 - 阈值刻意按字节计：`${#var}` 在 UTF-8 locale 下数的是字符，在 `LC_ALL=C` 下数的却是字节，所以一份完整的 45 个汉字的中文报告被量成 45，低于阈值 80 而被阻断。80 字节约等于 80 个 ASCII 字符或约 26 个 CJK 字符——两者都确实太短。
@@ -190,7 +209,7 @@ IM 停止通知器。把"agent 停下来了"这类事件转发给用户配置的
 - **stuck 的来源拆分（F2）。** `--origin`（默认 `main`）决定一条 `stuck` IM 能否穿过 main-state 压制：**main-origin** 的 stuck（watchdog 的状态陈旧发现）在主 agent 处于 `awaiting-user` / `idle` 时被丢弃（`exit 0`），而 **subagent-origin** 的 stuck（一个真正死亡/静默的角色）会绕过这道门、总是发送，所以离线的用户依然会被叫到。needs_input IM 不受门控——只有 main-origin 的 stuck 才受。
 - 输入：stdin 上的 hook JSON（hook 模式）或 `--event/--title/--message/--task-root/--base/--session-id/--origin`（直接调用模式）；配置文件 `~/.zyz-worker/notify.json`（可用 `$ZYZ_NOTIFY_CONFIG` 覆盖）。
 - 配置键：`enabled`（bool）、`command`（字符串；以 `ZYZ_NOTIFY_*` 环境变量和 stdin 上的 JSON 对象两种形式接收事件）、`events`（可选白名单——缺省时默认集合为 `needs_input`/`completed`/`failed`/`stuck`/`idle`，即排除 `session_end`；在这里加上或去掉 `idle`，即可控制"已停下并交还"这条提醒）、`cooldown_sec`（可选，默认 30；按类别计——`idle` 类别通过 `runtime/nag/notify-idle.last` 冷却）、`include_message`（可选，默认 true——设为 false 时只发送类别/任务，不带任何自由文本消息内容）。
-- 作用范围：与其它所有 hook 一样，除非能解析到 `.zyz-worker/current-task` 指针，否则什么也不做，所以普通的交互式会话永远不会收到通知。
+- 作用范围：与其它所有 hook 一样，除非能解析到本会话的任务指针，否则什么也不做，所以普通的交互式会话永远不会收到通知。
 - 失败行为：fail open——输入/配置/解析器/指针缺失、配置被禁用、事件被过滤或冷却生效时，以 exit 0 退出且没有任何副作用；用户命令失败绝不会向上传播。
 - **覆盖边界（如实说明）：** 真正的整个进程死亡——`kill -9`、OOM、关闭终端、网络/SSH 断开——不会触发任何 hook，还会把 watchdog monitor 一起带走，所以**不在**覆盖范围内。`stuck` 捕获的是会话内的情况（进程仍存活，但某个角色静默了 / 工作流停滞了）。要可靠地检测宿主机崩溃，需要一个完全外部的守护进程（未来可能加入）。
 - 禁用：`ZYZ_NOTIFY_DISABLE=1` 只关闭通知器；`ZYZ_HOOKS_DISABLE=1` 关闭整个层。
@@ -198,7 +217,7 @@ IM 停止通知器。把"agent 停下来了"这类事件转发给用户配置的
 
 ## ../monitors/watchdog.sh — L3
 
-见 `monitors/monitors.json`：这是一个以 `when: "always"` 启用的后台 monitor（所以它随会话启动），并以 `.zyz-worker/current-task` 指针自我门控，在有任务处于活跃状态之前一直处于失效状态。它刻意**不**使用 `on-skill-invoke:execute-task`：这个值是与发出的 skill 名做精确字符串比较的，而同一个 skill 在插件安装方式下发出的是 `zyz-worker:execute-task`，在项目模式下发出的却是裸的 `execute-task`——一个字面量无法在两种情况下都生效；裸写法曾经发布过一段时间，在正常安装下从未生效过。它每隔 `ZYZ_WATCHDOG_INTERVAL_SEC`（默认 60）扫描一次心跳和状态文件 mtime，每个发现输出一行通知（角色静默 / 状态陈旧），即使会话处于空闲也能唤醒主 agent。这就是捕获被 API 错误杀死的 subagent 的那一层——那种情况下 `SubagentStop` 永远不会触发。阈值：`ZYZ_WATCHDOG_ROLE_STALE_SEC`（默认 1200——刻意高于 L4 门的阈值，因为 L3 无法交叉核对 `background_tasks`，而健康的角色也可能在不调用工具的情况下推理一段时间；它的消息要求主 agent 先**核实**，而不是盲目重启）、`ZYZ_WATCHDOG_STATUS_STALE_SEC`（默认 1800），冷却 `ZYZ_WATCHDOG_COOLDOWN_SEC`（默认 900）。
+见 `monitors/monitors.json`：这是一个以 `when: "always"` 启用的后台 monitor（所以它随会话启动），并以本会话的任务指针自我门控，在有任务处于活跃状态之前一直处于失效状态；会话指针里列出的每个任务都分别扫描、分别报告（冷却标记也按任务记在各自的 `runtime/nag/` 下）。"未启用"报告只在会话 cwd 下存在一个未完成、且**没有被任何会话指针认领**的任务目录时才发出——同目录下其它会话的任务不算本会话丢了指针的证据。它刻意**不**使用 `on-skill-invoke:execute-task`：这个值是与发出的 skill 名做精确字符串比较的，而同一个 skill 在插件安装方式下发出的是 `zyz-worker:execute-task`，在项目模式下发出的却是裸的 `execute-task`——一个字面量无法在两种情况下都生效；裸写法曾经发布过一段时间，在正常安装下从未生效过。它每隔 `ZYZ_WATCHDOG_INTERVAL_SEC`（默认 60）扫描一次心跳和状态文件 mtime，每个发现输出一行通知（角色静默 / 状态陈旧），即使会话处于空闲也能唤醒主 agent。这就是捕获被 API 错误杀死的 subagent 的那一层——那种情况下 `SubagentStop` 永远不会触发。阈值：`ZYZ_WATCHDOG_ROLE_STALE_SEC`（默认 1200——刻意高于 L4 门的阈值，因为 L3 无法交叉核对 `background_tasks`，而健康的角色也可能在不调用工具的情况下推理一段时间；它的消息要求主 agent 先**核实**，而不是盲目重启）、`ZYZ_WATCHDOG_STATUS_STALE_SEC`（默认 1800），冷却 `ZYZ_WATCHDOG_COOLDOWN_SEC`（默认 900）。
 
 **main-state 门控 + 来源拆分。** 每轮扫描都会读取主 agent 状态文件（`zyz_main_state_suppresses`，在 `awaiting-user` / `idle` 时为 true）。压制期间，**状态陈旧**发现会被静音——它的 stdout 行和它的 main-origin `stuck` IM 都会——因为它归因于主 agent，而主 agent 此时正当地没有在工作。这是纯字符串比较（不看 epoch，没有 TTL），所以用户等上几个小时也绝不会让它重新触发。**subagent** 类发现（stale / tracking / probe / no-output / unharvested）**绝不**受压制门控（A 方案）：它们的 stdout 总会输出，它们的 `stuck` IM 带有 `--origin subagent`，所以即使处于压制状态、即使用户离线，notify.sh 也会把它们转发给用户。状态陈旧的 `stuck` 使用 `--origin main`（默认值），notify.sh 在压制状态下会丢弃它。状态文件缺失或损坏时 fail open，恢复完整告警。
 

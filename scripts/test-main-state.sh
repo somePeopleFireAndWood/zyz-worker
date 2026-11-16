@@ -40,6 +40,8 @@ set -o pipefail
 # zyz_task_root falls back to the session project dir; never let the invoking
 # session's own dir leak a real task into this sandbox.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
+# ...and its session identity out of the per-session pointer lookup (#23).
+unset ZYZ_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CLAUDE_PID
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then

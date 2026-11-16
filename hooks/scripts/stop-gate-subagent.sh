@@ -31,7 +31,7 @@
 # ## Failure behavior
 #
 # Fail open: missing input/pointer/parser exits 0 (allow stop). No-op when
-# the session has no `.zyz-worker/current-task` pointer (the gate never
+# no task pointer of the session resolves (the gate never
 # applies outside an execute-task workflow). When stop_hook_active is true,
 # never blocks again (no loops); the built-in 8-consecutive-block cap also
 # applies.

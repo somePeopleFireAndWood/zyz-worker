@@ -37,7 +37,12 @@
 # ## Failure behavior
 #
 # Never exits on scan errors; sleeps and retries. Exits 0 on SIGTERM/INT/HUP
-# or when the base dir disappears. Silent when no current-task pointer.
+# or when the base dir disappears. Silent when no task pointer of this session
+# resolves (zyz_task_roots: .zyz-worker/sessions/<session-id>, then the legacy
+# .zyz-worker/current-task, then $ZYZ_TASK_DIR). The session id comes from
+# $ZYZ_SESSION_ID (the Codex starter sets it) or the Claude monitor's own
+# $CLAUDE_CODE_SESSION_ID, plus the live id in ~/.claude/sessions/$CLAUDE_PID.json.
+# Each task listed in the session pointer is scanned and reported separately.
 #
 # ## Main-agent state gating (pure signal, no TTL)
 #
@@ -99,9 +104,11 @@ UNARMED_REPORTED="false"
 # calling it on every finding is safe. NOTE: a whole-process crash takes this
 # monitor down with it, so this covers stalls, not host death.
 NOTIFY_SH="$SCRIPT_DIR/../hooks/scripts/notify.sh"
-notify_stuck() { # $1 = task root, $2 = short message, $3 = origin (main|subagent)
+notify_stuck() { # $1 = task root, $2 = short message, $3 = origin (main|subagent),
+                # $4 = task label for the IM (default: basename of $1)
     [ -x "$NOTIFY_SH" ] || return 0
-    "$NOTIFY_SH" --event stuck --task-root "$1" --message "$2" --origin "${3:-main}" >/dev/null 2>&1 &
+    "$NOTIFY_SH" --event stuck --task-root "$1" --message "$2" --origin "${3:-main}" \
+        ${4:+--task-id "$4"} >/dev/null 2>&1 &
 }
 
 # But this monitor is armed `when: always`, so it starts in EVERY session —
@@ -114,50 +121,68 @@ notify_stuck() { # $1 = task root, $2 = short message, $3 = origin (main|subagen
 # under the base yet resolution still came back empty. A repo with no task dirs
 # at all, or one whose task dirs are all finished, stays silent.
 zyz_unarmed_is_suspicious() {
-    local d
+    local d claimed
+    claimed="$(zyz_claimed_task_dirs)"
     for d in "$BASE"/.zyz-worker/tasks/*/; do
         [ -d "$d" ] || continue
         # A task dir counts as evidence only while it is not finished; completed
         # tasks legitimately leave their directories behind forever.
         zyz_task_is_done "${d%/}" && continue
         [ -f "${d%/}/status.md" ] || continue
+        # A task another session's pointer claims is that session's, not a sign
+        # that ours went missing (#23): several sessions may share this dir.
+        [ -n "$claimed" ] && printf '%s\n' "$claimed" \
+            | grep -qxF "$(cd "$d" 2>/dev/null && pwd -P)" 2>/dev/null && continue
         return 0
     done
     return 1
 }
 
-while :; do
-    case "${ZYZ_WATCHDOG_PARENT_PID:-}" in
-        ''|*[!0-9]*) ;;
-        *) kill -0 "$ZYZ_WATCHDOG_PARENT_PID" 2>/dev/null || exit 0 ;;
-    esac
-    [ -d "$BASE" ] || exit 0
-    root="$(zyz_task_root "$BASE")"
-    if [ -z "$root" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then
-        UNARMED_REPORTED="true"
-        printf '[zyz-worker watchdog] 未启用：无法从 %s 解析到任务指针（已尝试该目录下的 .zyz-worker/current-task 和 $ZYZ_TASK_DIR；解析器有意不搜索同级 worktree——在那里找到的任务可能属于另一个并发会话）。本会话的 watchdog 层处于失效状态——死掉的 subagent 不会被报告，空闲门也不会拦住停止。如果有正在运行的 execute-task，请在会话 cwd 下写入指针，或者把指针内容改为任务目录的绝对路径。每次未命中只报告一次，不会每轮扫描都报一次。\n' "$BASE"
-    fi
-    if [ -n "$root" ]; then
-        UNARMED_REPORTED="false"
-        status_file="$root/status.md"
-        phase="$(zyz_phase_of "$status_file")"
-        if zyz_phase_active "$phase"; then
-            # main-state suppression gate (read once per tick). When the main
-            # agent is awaiting-user / idle (zyz_main_state_suppresses), the
-            # status-stale branch below is silenced (main-agent-attributed). The
-            # subagent findings are NEVER suppress-gated (A option) and their
-            # stuck IMs carry --origin subagent to bypass notify.sh's suppression.
-            suppress="$(zyz_main_state_suppresses "$root" && echo 1 || echo 0)"
-            # (a) Fixed-pack liveness, tracking, probe, no-output, and
-            # terminal-but-unharvested signals. One authenticated observer
-            # snapshot owns enumeration; shell never treats pathname membership
-            # as new-format state authority. Status mtime is read first so the
-            # terminal-unharvested predicate can consume it.
-            mtime="$(zyz_mtime "$status_file")"
-            status_mtime_arg=0
-            [ -n "$mtime" ] && status_mtime_arg="$mtime"
-            runtime_observation="$(zyz_runtime_observe "$root" true)"
-            runtime_events="$(printf '%s' "$runtime_observation" | python3 -c '
+# Physical paths of every task dir named by any session pointer under $BASE,
+# one per line. Read only by the unarmed check above; resolution never uses it.
+zyz_claimed_task_dirs() {
+    local f line dir
+    for f in "$BASE"/.zyz-worker/sessions/*; do
+        [ -f "$f" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            dir="$(zyz_resolve_ref_at "$BASE" "$line")"
+            [ -n "$dir" ] && (cd "$dir" 2>/dev/null && pwd -P)
+        done < "$f"
+    done
+    return 0
+}
+
+# One scan of one task dir. Every task of this session is scanned on its own
+# (#23): a session pointer may list several tasks, and each gets its own
+# findings, cooldown markers and IMs, all keyed under that task's runtime/.
+#
+# The two halves are scoped differently. (a) Subagent findings read the runtime
+# records stored under this dir, but no hook input says which task a role was
+# dispatched FOR (records sit under the primary task), so they are
+# session-scoped: the caller runs this only while SOME task of the session is
+# active, the unharvested predicate compares against the newest status write
+# of ANY task ($SESSION_STATUS_MTIME), and for a multi-task session the message
+# names no owning task — the main agent decides from its dispatch record.
+# (b) The status-stale finding is about THIS task's status.md, so it needs
+# THIS task to be active.
+scan_task() {
+    local root status_file phase suppress mtime runtime_observation runtime_events
+    local event_kind key role_line age detail scope_note im_task
+    root="$1"
+    status_file="$root/status.md"
+    phase="$(zyz_phase_of "$status_file")"
+    scope_note="$(zyz_subagent_scope_note "$roots" "$root")"
+    im_task=""
+    [ -z "$scope_note" ] || im_task="$SESSION_LABEL"
+
+    # (a) Fixed-pack liveness, tracking, probe, no-output, and
+    # terminal-but-unharvested signals. One authenticated observer snapshot
+    # owns enumeration; shell never treats pathname membership as new-format
+    # state authority. The subagent findings are NEVER suppress-gated (A option)
+    # and their stuck IMs carry --origin subagent to bypass notify.sh's
+    # suppression.
+    runtime_observation="$(zyz_runtime_observe "$root" true)"
+    runtime_events="$(printf '%s' "$runtime_observation" | python3 -c '
 import json,sys
 try:
  stale,horizon,now,status_mtime=map(int,sys.argv[1:5]);data=json.load(sys.stdin)
@@ -188,56 +213,86 @@ try:
   if item.get("probe_state")=="overdue":print("probe\t{}\t{}\t0\t{}".format(key,role,item.get("probe_id") or "unknown"))
   if item.get("no_output_state")=="unchanged":print(f"no-output\t{key}\t{role}\t0\t-")
 except Exception:pass
-' "$ROLE_STALE" "$HORIZON" "$(zyz_now)" "$status_mtime_arg" 2>/dev/null || true)"
-            while IFS="$(printf '\t')" read -r event_kind key role_line age detail; do
-                [ -n "$event_kind" ] || continue
-                case "$event_kind" in
-                    stale)
-                        zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] 角色 %s（%s）已静默 %s 分钟且没有正常结束——请核实平台状态，发送一个精确的重连 probe，确认死亡后先用 agent-runtime-state.sh finalize 收尾，再重新派发。\n' "$key" "$role_line" "$((age / 60))"
-                        notify_stuck "$root" "角色 ${role_line} 已静默 $((age / 60)) 分钟，且没有正常结束" subagent
-                        ;;
-                    tracking)
-                        zyz_cooldown_ok "$root/runtime/nag/watchdog-tracking-$key-$detail.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] 角色 %s（%s）的 fixed-pack 跟踪状态为 %s——有可用的确切持久化事件时就据此对账；不要把无法核实的实例当作健康的安静状态。\n' "$key" "$role_line" "$detail"
-                        notify_stuck "$root" "角色 ${role_line} 的跟踪状态尚未对账（${detail}）" subagent
-                        ;;
-                    probe)
-                        zyz_cooldown_ok "$root/runtime/nag/watchdog-probe-$key-$detail.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] 重连 probe %s（角色实例 %s）已逾期，且没有收到明确匹配的 ACK；单有心跳不算 ACK。现在就查询平台的 running/inflight 状态，并按有界恢复协议处理。\n' "$detail" "$key"
-                        notify_stuck "$root" "角色 ${role_line} 的重连 probe 已逾期，且没有 ACK" subagent
-                        ;;
-                    no-output)
-                        zyz_cooldown_ok "$root/runtime/nag/watchdog-no-output-$key.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] 角色实例 %s 已达到无输出阈值，而它固定的 LIVE_INVENTORY 基线仍与当前受描述符约束的物理树一致；这个并行通道（lane）可能已经丢失。\n' "$key"
-                        notify_stuck "$root" "角色 ${role_line} 已达到无输出阈值；这个 lane 可能已经丢失" subagent
-                        ;;
-                    unharvested)
-                        zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
-                        printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。读取 %s/subtasks/ 下它的结果 SubTask 文件及其持久日志，记录到 %s，然后继续。\n' "$key" "$role_line" "$root" "$status_file"
-                        notify_stuck "$root" "角色 ${role_line} 已结束，但其结果尚未处理" subagent
-                        ;;
-                esac
-            done <<EOF
+' "$ROLE_STALE" "$HORIZON" "$(zyz_now)" "$SESSION_STATUS_MTIME" 2>/dev/null || true)"
+    while IFS="$(printf '\t')" read -r event_kind key role_line age detail; do
+        [ -n "$event_kind" ] || continue
+        case "$event_kind" in
+            stale)
+                zyz_cooldown_ok "$root/runtime/nag/watchdog-$key.last" "$COOLDOWN" || continue
+                printf '[zyz-worker watchdog] 角色 %s（%s）已静默 %s 分钟且没有正常结束——请核实平台状态，发送一个精确的重连 probe，确认死亡后先用 agent-runtime-state.sh finalize 收尾，再重新派发。%s\n' "$key" "$role_line" "$((age / 60))" "$scope_note"
+                notify_stuck "$root" "角色 ${role_line} 已静默 $((age / 60)) 分钟，且没有正常结束" subagent "$im_task"
+                ;;
+            tracking)
+                zyz_cooldown_ok "$root/runtime/nag/watchdog-tracking-$key-$detail.last" "$COOLDOWN" || continue
+                printf '[zyz-worker watchdog] 角色 %s（%s）的 fixed-pack 跟踪状态为 %s——有可用的确切持久化事件时就据此对账；不要把无法核实的实例当作健康的安静状态。%s\n' "$key" "$role_line" "$detail" "$scope_note"
+                notify_stuck "$root" "角色 ${role_line} 的跟踪状态尚未对账（${detail}）" subagent "$im_task"
+                ;;
+            probe)
+                zyz_cooldown_ok "$root/runtime/nag/watchdog-probe-$key-$detail.last" "$COOLDOWN" || continue
+                printf '[zyz-worker watchdog] 重连 probe %s（角色实例 %s）已逾期，且没有收到明确匹配的 ACK；单有心跳不算 ACK。现在就查询平台的 running/inflight 状态，并按有界恢复协议处理。%s\n' "$detail" "$key" "$scope_note"
+                notify_stuck "$root" "角色 ${role_line} 的重连 probe 已逾期，且没有 ACK" subagent "$im_task"
+                ;;
+            no-output)
+                zyz_cooldown_ok "$root/runtime/nag/watchdog-no-output-$key.last" "$COOLDOWN" || continue
+                printf '[zyz-worker watchdog] 角色实例 %s 已达到无输出阈值，而它固定的 LIVE_INVENTORY 基线仍与当前受描述符约束的物理树一致；这个并行通道（lane）可能已经丢失。%s\n' "$key" "$scope_note"
+                notify_stuck "$root" "角色 ${role_line} 已达到无输出阈值；这个 lane 可能已经丢失" subagent "$im_task"
+                ;;
+            unharvested)
+                zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
+                if [ -n "$scope_note" ]; then
+                    printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。到它所属任务的 subtasks/ 下读取它的结果 SubTask 文件及其持久日志，记录到该任务的 status.md，然后继续。%s\n' "$key" "$role_line" "$scope_note"
+                else
+                    printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。读取 %s/subtasks/ 下它的结果 SubTask 文件及其持久日志，记录到 %s，然后继续。\n' "$key" "$role_line" "$root" "$status_file"
+                fi
+                notify_stuck "$root" "角色 ${role_line} 已结束，但其结果尚未处理" subagent "$im_task"
+                ;;
+        esac
+    done <<EOF
 $runtime_events
 EOF
 
-            # (b) stale overall status file during an active phase. Reuses the
-            # $mtime read above for the unharvested predicate. Suppressed when
-            # the main agent is awaiting-user / idle (suppress=1): this is a
-            # main-agent-attributed finding, so its stdout and its main-origin
-            # stuck IM both go silent while the main agent is not working.
-            if [ -n "$mtime" ]; then
-                age=$(( $(zyz_now) - mtime ))
-                if [ "$age" -gt "$STATUS_STALE" ] && [ "$suppress" = 0 ] && ! zyz_status_waiting "$status_file"; then
-                    if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
-                        printf '[zyz-worker watchdog] 状态文件 %s 已有 %s 分钟没有更新，当前处于活跃阶段 %s——现在就把当前进度、活跃角色、阻塞项和下一步写进去。\n' \
-                            "$status_file" "$((age / 60))" "$phase"
-                        notify_stuck "$root" "状态文件已有 $((age / 60)) 分钟没有更新，当前处于活跃阶段 ${phase}" main
-                    fi
-                fi
+    # (b) stale overall status file of THIS task during its active phase.
+    # Suppressed when the main agent is awaiting-user / idle (main-state read
+    # once per task per tick): this is a main-agent-attributed finding, so its
+    # stdout and its main-origin stuck IM both go silent while the main agent is
+    # not working.
+    zyz_phase_active "$phase" || return 0
+    suppress="$(zyz_main_state_suppresses "$root" && echo 1 || echo 0)"
+    mtime="$(zyz_mtime "$status_file")"
+    if [ -n "$mtime" ]; then
+        age=$(( $(zyz_now) - mtime ))
+        if [ "$age" -gt "$STATUS_STALE" ] && [ "$suppress" = 0 ] && ! zyz_status_waiting "$status_file"; then
+            if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
+                printf '[zyz-worker watchdog] 状态文件 %s 已有 %s 分钟没有更新，当前处于活跃阶段 %s——现在就把当前进度、活跃角色、阻塞项和下一步写进去。\n' \
+                    "$status_file" "$((age / 60))" "$phase"
+                notify_stuck "$root" "状态文件已有 $((age / 60)) 分钟没有更新，当前处于活跃阶段 ${phase}" main
             fi
         fi
+    fi
+}
+
+while :; do
+    case "${ZYZ_WATCHDOG_PARENT_PID:-}" in
+        ''|*[!0-9]*) ;;
+        *) kill -0 "$ZYZ_WATCHDOG_PARENT_PID" 2>/dev/null || exit 0 ;;
+    esac
+    [ -d "$BASE" ] || exit 0
+    roots="$(zyz_task_roots "$BASE")"
+    if [ -z "$roots" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then
+        UNARMED_REPORTED="true"
+        printf '[zyz-worker watchdog] 未启用：无法从 %s 解析到任务指针（已尝试该目录下本会话的 .zyz-worker/sessions/<session-id>、共享的 .zyz-worker/current-task 和 $ZYZ_TASK_DIR；解析器有意不搜索同级 worktree，也不按“最新”或“未完成”去挑别的会话的指针——那些任务可能属于另一个并发会话）。本会话的 watchdog 层处于失效状态——死掉的 subagent 不会被报告，空闲门也不会拦住停止。如果有正在运行的 execute-task，请用 hooks/scripts/task-pointer.sh arm <任务目录绝对路径> 写入本会话的指针。每次未命中只报告一次，不会每轮扫描都报一次。\n' "$BASE"
+    fi
+    if [ -n "$roots" ]; then
+        UNARMED_REPORTED="false"
+    fi
+    if [ -n "$roots" ] && zyz_roots_any_active "$roots"; then
+        SESSION_STATUS_MTIME="$(zyz_roots_latest_status_mtime "$roots")"
+        SESSION_LABEL="$(zyz_roots_label "$roots")"
+        while IFS= read -r root; do
+            [ -n "$root" ] && scan_task "$root" </dev/null
+        done <<ZYZ_WATCHDOG_ROOTS
+$roots
+ZYZ_WATCHDOG_ROOTS
     fi
     [ "$ONCE" = 1 ] && exit 0
     sleep "$INTERVAL"

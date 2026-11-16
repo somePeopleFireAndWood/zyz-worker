@@ -26,8 +26,11 @@
 #
 # ## Supported agents
 #
-# All (main agent and every subagent type). No-op unless the session cwd has
-# a `.zyz-worker/current-task` pointer to an existing task directory.
+# All (main agent and every subagent type). No-op unless a task pointer of this
+# session resolves (zyz_task_roots: the per-session pointer, the legacy
+# `.zyz-worker/current-task`, or $ZYZ_TASK_DIR). A subagent's beat goes to the
+# primary task (first pointer line), where subagent-track registered it; the
+# main agent's beat and state go to every task of the session.
 
 set -u
 [ "${ZYZ_HOOKS_DISABLE:-0}" = "1" ] && exit 0
@@ -52,8 +55,10 @@ base="$(zyz_get cwd)"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$base" ] || base="$PWD"
 
-root="$(zyz_task_root "$base")"
-[ -n "$root" ] || exit 0
+roots="$(zyz_task_roots "$base")"
+[ -n "$roots" ] || exit 0
+root="${roots%%
+*}"
 
 agent_id="$(zyz_get agent_id)"
 agent_type="$(zyz_get agent_type)"
@@ -78,16 +83,12 @@ if [ "$key" != main ]; then
     exit 0
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-    python3 "$SCRIPT_DIR/runtime_state.py" hook-main-heartbeat "$root" \
-        "${agent_type:-main}" >/dev/null 2>&1 || true
-fi
-
 # Main-agent state machine: every main-agent tool call refreshes `working`,
 # which is the primary signal that pulls the state back out of awaiting-user
-# once the user answers. Independent of the runtime_state.py python3 path above:
-# reaching here (past the §zyz_json_ok gate and the main-branch split) is enough
-# to record liveness even when python3 is unavailable for the heartbeat mutator.
+# once the user answers. Independent of the runtime_state.py python3 call in
+# the loop below: reaching here (past the §zyz_json_ok gate and the main-branch
+# split) is enough to record liveness even when python3 is unavailable for the
+# heartbeat mutator.
 #
 # Exception: PreToolUse of AskUserQuestion is the platform-confirmed moment the
 # main agent blocks on the user, so it records awaiting-user instead. Claude
@@ -96,10 +97,20 @@ fi
 # notify.sh alone left the state at `working` and the watchdog nagged every
 # cooldown for the whole wait. The matching PostToolUse (the user answered)
 # falls through to `working` below.
+main_state=working
 if [ "$(zyz_get hook_event_name)" = PreToolUse ] && [ "$(zyz_get tool_name)" = AskUserQuestion ]; then
-    zyz_main_state_set "$root" awaiting-user
-else
-    zyz_main_state_set "$root" working
+    main_state=awaiting-user
 fi
+
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    if command -v python3 >/dev/null 2>&1; then
+        python3 "$SCRIPT_DIR/runtime_state.py" hook-main-heartbeat "$root" \
+            "${agent_type:-main}" >/dev/null 2>&1 || true
+    fi
+    zyz_main_state_set "$root" "$main_state"
+done <<EOF
+$roots
+EOF
 
 exit 0

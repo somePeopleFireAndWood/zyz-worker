@@ -13,14 +13,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ZYZ_HOOK_INPUT="$(cat 2>/dev/null || true)"
 
 base=""
+sid=""
 if [ -n "$ZYZ_HOOK_INPUT" ] && zyz_json_ok; then
     base="$(zyz_get cwd)"
+    sid="$(zyz_get session_id)"
 fi
 [ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$base" ] || base="$PWD"
 
-key="$(zyz_sanitize "${CODEX_THREAD_ID:-session-$$}")"
+# The watchdog has no hook payload, so hand it this session's id explicitly: it
+# selects the per-session task pointer (#23). Codex hook payloads carry the same
+# session_id as $CODEX_THREAD_ID (verified on PreToolUse/PostToolUse, including
+# inside a spawned sub-agent), so the key below is unchanged.
+[ -n "$sid" ] || sid="${CODEX_THREAD_ID:-}"
+key="$(zyz_sanitize "${sid:-session-$$}")"
 tmp_base="${TMPDIR:-/tmp}"
 pid_file="$tmp_base/zyz-worker-codex-watchdog-$key.pid"
 log_file="$tmp_base/zyz-worker-codex-watchdog-$key.log"
@@ -37,6 +44,7 @@ fi
 # fast; stdout goes to a per-thread diagnostic log because Codex has no monitor
 # notification channel equivalent to Claude's monitors.json.
 nohup env ZYZ_WATCHDOG_PARENT_PID="$PPID" ZYZ_WATCHDOG_PID_FILE="$pid_file" \
+    ZYZ_SESSION_ID="$sid" \
     "$SCRIPT_DIR/../../monitors/watchdog.sh" "$base" \
     >>"$log_file" 2>&1 </dev/null &
 printf '%s\n' "$!" > "$pid_file"

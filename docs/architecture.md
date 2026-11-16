@@ -73,7 +73,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 ### 3.2 主线流程
 
 ```text
-§1 启动    建任务目录 + status.md + 写 .zyz-worker/current-task 指针（给 watchdog 上膛）
+§1 启动    建任务目录 + status.md + task-pointer.sh arm 写本会话指针 .zyz-worker/sessions/<session-id>（给 watchdog 上膛）
    ↓
 §2 设计    与用户共同产出设计文档 → review-agent（+ 其它 harness 的只读交叉评审）自动循环评审直到无异议
    ↓       ★ 唯一的人工闸门：必须等到用户明确批准才能进实现
@@ -132,7 +132,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 ### 4.3 关键机制
 
-- **上膛靠指针。** 所有 hook 都先找 session cwd 下的 `.zyz-worker/current-task`；解析不到再看编排 spawn 导出的 `$ZYZ_TASK_DIR`；两者都没有，整层静默 no-op。主 agent 在 §1 写它。**踩过的坑（两个方向都踩过）**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来（issue #5）。为此曾加过「兄弟 worktree 兜底」，结果反向翻车：同仓两个并发任务时，指针落空的会话**吸附到另一个会话的任务**，看门狗随即以命令式告警＋Stop 闸门推着主 agent 往不属于自己的 status.md 写「当前进度」（issue #18）——兜底把「确定性失败（静默，且已有 §1 armed 检查兜住）」换成了「概率性错挂且外观可信」，是最坏的交换，已删除。现行契约：任务目录不在 session cwd 下时指针内容**必须是绝对路径**；编排场景用 `$ZYZ_TASK_DIR`；解析器**刻意不做任何搜索**（既不枚举兄弟 worktree，也不向上遍历——默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session）。
+- **上膛靠指针，指针按会话区分。** 所有 hook 都先找 session cwd（及 session 项目目录）下**本会话的** `.zyz-worker/sessions/<session-id>`（一行一个任务）；没有再看共享的旧指针 `.zyz-worker/current-task`；再没有看编排 spawn 导出的 `$ZYZ_TASK_DIR`；都没有，整层静默 no-op。主 agent 在 §1 用 `task-pointer.sh arm` 写它。会话 id 来自 hook 输入的 `session_id`（实测 subagent 的 hook 里仍是父会话 id），watchdog 没有 hook 输入，用 `$CLAUDE_CODE_SESSION_ID` / Codex 启动器传入的 `$ZYZ_SESSION_ID`。**为什么按会话（issue #23）**：旧指针每个目录只有一份，同目录两个会话各跑 execute-task，后来者要么覆盖（先来者的 watchdog 悄悄挂到新任务上），要么不写（自己失效），两种都没有任何提示；而「多个指针、由 watchdog 挑一个」正是下面 #18 那种推断——归属只能靠会话身份。**踩过的坑（两个方向都踩过）**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来（issue #5）。为此曾加过「兄弟 worktree 兜底」，结果反向翻车：同仓两个并发任务时，指针落空的会话**吸附到另一个会话的任务**，看门狗随即以命令式告警＋Stop 闸门推着主 agent 往不属于自己的 status.md 写「当前进度」（issue #18）——兜底把「确定性失败（静默，且已有 §1 armed 检查兜住）」换成了「概率性错挂且外观可信」，是最坏的交换，已删除。现行契约：任务目录不在 session cwd 下时指针内容**必须是绝对路径**（`task-pointer.sh` 一律写绝对路径）；编排场景用 `$ZYZ_TASK_DIR`；解析器**刻意不做任何搜索**（既不枚举兄弟 worktree，也不向上遍历——默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session）。
 - **阶段分类：终态与 design 先排除，再匹配活跃。** 强制层只在活跃执行阶段（implementation/testing/review/delivery）出声，但活跃匹配用的是子串通配，两个方向都翻过车：`*review*` 曾把 `design review` 当活跃，让 L4 在 §2 第 8 步——工作流唯一要求无限期等人的闸门——推着主 agent 行动；`*deliver*` 曾把 `delivered` 当活跃，对永远不会再写状态的已交付任务无休止告警（#18 现场删指针的诱因正是想止住这种告警）。现行实现 `zyz_phase_terminal` 前缀匹配一组终态同义词（`done`/`delivered`/`completed`/`closed`/`finished`/`cancelled`/`abandoned`，含 `done(delivered)` 这类注记形态），`zyz_phase_active` 先排终态、再排 `design`、最后才匹配活跃；同一判定也让完结任务的遗留目录不再触发假的 NOT ARMED。
 - **看门狗输出是兜底,不是神谕。** 它既可能漏报（#9：`.done` 已写但投递失败）也曾误报过别人的任务（#18）。所以主 agent 收到点名 status 文件/任务目录的告警,先核对该路径属于本会话的任务（指针或 `$ZYZ_TASK_DIR` 所指），不属于就不写——往另一个会话的 status.md 写「当前进度」等于伪造那个任务的事实源——只向用户报告归属不符。
 - **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求通过只读 fixed-pack observer 确认 PACK_HEADER 中的 `main_heartbeat_epoch` 已推进；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。

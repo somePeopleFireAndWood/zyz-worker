@@ -20,7 +20,7 @@
 - `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md`（跨 harness 交叉评审：在每个评审点，除了 `review-agent` subagent 之外，还会在本机装着的每一个**其它** agent harness 里各起一个只读评审会话——宿主是 Claude Code 时起 Codex，宿主是 Codex 时起 Claude Code；它的发现只作参考，每一条都要先经过独立核实才能接受，也可以附上记录在案的理由予以拒绝——见 `skills/execute-task/SKILL.md` `## 跨 harness 交叉评审`）
 - `hooks/hooks.json` + `hooks/scripts/` 与 `monitors/`（watchdog 强制层：每次工具调用自动写心跳、状态新鲜度提醒、subagent 退出门、后台死亡角色 watchdog、主 agent 停止门——见 `skills/execute-task/SKILL.md` `## Watchdog 强制层` 与 `hooks/README.md`）
 
-主 agent 在任务开始时写入 `.zyz-worker/current-task` 指针，从而启用 watchdog；`[zyz-worker watchdog]` 通知和注入的上下文都是需要立即执行的指令（重新派发被点名的角色，或马上刷新状态文件），不是噪音。
+主 agent 在任务开始时用 `hooks/scripts/task-pointer.sh arm <任务目录>` 写入本会话的指针 `.zyz-worker/sessions/<session-id>`（拿不到会话 id 时退回共享的 `.zyz-worker/current-task`），从而启用 watchdog——同一目录下的多个会话各跑各的 execute-task，互不覆盖；`[zyz-worker watchdog]` 通知和注入的上下文都是需要立即执行的指令（重新派发被点名的角色，或马上刷新状态文件），不是噪音。
 
 当前对话 agent 就是主 agent。它保持面向用户，并负责协调整个工作流。
 

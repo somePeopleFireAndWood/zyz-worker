@@ -169,4 +169,4 @@ echo "copied untracked file from main work tree: $MAIN_ROOT/$REL -> $(pwd)/$REL"
 
 git worktree 提供的是隔离的执行检出，不是记录任务状态的地方。一个任务可以持有多个 worktree（它涉及的每个仓库一个），但它们都只是执行隔离，不是状态。任务进度、决策和阻塞项要持久化到 `.zyz-worker/tasks/<task-id>/` 下的任务状态文件中（或派发方 agent 提供的路径）。参见 [docs/conventions/long-running-state.md](../../docs/conventions/long-running-state.md)。
 
-**创建 worktree 不会移动 watchdog 的锚点。** `execute-task` 的 watchdog 通过 **session cwd** 下的 `.zyz-worker/current-task` 定位活动任务——而本 skill 刻意不 `cd` 进新 worktree，所以 session cwd 保持原处。如果任务在这里创建的 worktree 中运行，就把指针保留在 session cwd 下，并在指针里写指向任务目录的**绝对**路径。没有回退机制：解析器刻意不搜索兄弟 worktree（早先的回退机制曾把会话挂到并发会话的任务上——issue #18），所以一个 session cwd 看不到的指针，会让整个 watchdog 层失效，而表面上看起来一切正常。§1 的"确认已启用"检查正是用来发现这种情况的。
+**创建 worktree 不会移动 watchdog 的锚点。** `execute-task` 的 watchdog 通过 **session cwd** 下本会话的指针 `.zyz-worker/sessions/<session-id>`（退回时是 `.zyz-worker/current-task`）定位活动任务——而本 skill 刻意不 `cd` 进新 worktree，所以 session cwd 保持原处。如果任务在这里创建的 worktree 中运行，就在 session cwd 下运行 `task-pointer.sh arm <worktree 里的任务目录>`：它写入的始终是任务目录的**绝对**路径。没有回退机制：解析器刻意不搜索兄弟 worktree（早先的回退机制曾把会话挂到并发会话的任务上——issue #18），所以一个 session cwd 看不到的指针，会让整个 watchdog 层失效，而表面上看起来一切正常。§1 的"确认已启用"检查正是用来发现这种情况的。

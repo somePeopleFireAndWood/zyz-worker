@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-11-16
+
+- **任务指针按会话区分（closes #23）。** 过去一个目录只有一份 `.zyz-worker/current-task`：同一目录下两个会话各跑一个 execute-task 时，后启动的会话只能覆盖它（先启动的会话的 watchdog 悄无声息地挂到新任务上）或者不写（自己的 watchdog 失效），两种结果都没有任何提示；唯一的绕行办法是另开 worktree 和新会话，丢掉当前会话的全部上下文。
+  - **新指针 `.zyz-worker/sessions/<session-id>`**，一行一个任务（绝对路径），一个会话可以同时被 watchdog 监视多个任务。解析顺序：本会话的指针 → `current-task` → `$ZYZ_TASK_DIR`。仍然不做任何搜索，也不读别的会话的指针，保持 #18 的不变量——"哪个任务属于我"只由会话身份决定。
+  - **会话身份**取自 hook 输入的 `session_id`。已在 Claude Code 2.1.251 和 codex-cli 0.151.0 上实测：它等于 `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`，并且在 subagent 的 hook 里仍是**父**会话的 id（Codex sub-agent 自己 shell 里的 `$CODEX_THREAD_ID` 则是子线程 id，所以 hook 侧优先读输入）。Claude 的后台 monitor 能拿到本会话的 `$CLAUDE_CODE_SESSION_ID` 和 `$CLAUDE_PID`，并额外认 `~/.claude/sessions/$CLAUDE_PID.json` 里的实时 id；Codex 的 `start-watchdog.sh` 把 hook 输入里的 id 通过 `$ZYZ_SESSION_ID` 交给 watchdog。
+  - **新脚本 `hooks/scripts/task-pointer.sh`**（`arm` / `disarm` / `show` / `session-id`），主 agent 在 §1 用它写指针。它按最近的 `claude` / `codex` 祖先进程判定 harness，因为两个会话 id 变量都会泄漏进嵌套启动的另一个 harness；拿不到会话 id 时退回写 `current-task` 并提示。
+  - **多任务语义。**
+    - 主 agent 相关的层（主心跳、main-state、L1 主 agent 提醒、L4 停止门、notify 的 awaiting-user）作用于会话的每个任务，L4 把多个任务的理由合并成一次拦截。L3 watchdog 对每个任务的状态文件分别检查、分别报告。
+    - subagent 的运行时记录存在主任务（指针第一行）下，但 hook 无法知道 subagent 是为哪个任务派发的，所以 subagent 类告警按会话处理：只要任一任务活跃就检查；"已完成未收取"以所有任务中最新的状态写入为准；多任务时消息不断言归属，列出全部任务由主 agent 判断，并写明记账目录供 `finalize` 使用。
+    - IM 每个事件只发一条，多任务时 `task_id` 为全部任务（新增 `notify.sh --task-id`）。
+  - **未启用报告**不再把同目录下其它会话指针认领的任务当作本会话丢了指针的证据。
+  - 新增 `scripts/test-session-pointer.sh`（75 项），覆盖两个会话同目录互不串扰、回落行为、多任务报告与 subagent 告警措辞、旧会话兼容和脚本本身。subagent 类场景用替身观察器驱动，因此在没有 GENESIS 能力的主机（如 macOS）上也会实际运行。
+
 ## [0.27.0] — 2026-11-15
 
 - **插件的全部提示词与文档改为简体中文。** 范围包括：

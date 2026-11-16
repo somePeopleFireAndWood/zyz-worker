@@ -50,6 +50,8 @@
 set -u
 # Keep the invoking session's project dir out of zyz_task_root's fallback.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
+# ...and its session identity out of the per-session pointer lookup (#23).
+unset ZYZ_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CLAUDE_PID
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,7 +81,7 @@ command -v python3 >/dev/null 2>&1 || { echo "SKIP  all — python3 unavailable"
 extract_l4() { # -> L4 python body (unharvested_roles filter in stop-gate-main.sh)
     awk '
         /unharvested_roles="\$\(printf/ {grab=1; next}
-        grab && /^'"'"' "\$status_mtime"/ {grab=0}
+        grab && /^'"'"' "\$(session_)?status_mtime"/ {grab=0}
         grab {print}
     ' "$L4_FILE"
 }

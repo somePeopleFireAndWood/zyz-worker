@@ -39,7 +39,7 @@
 | `idle` | 主 agent 在活跃阶段停下（`Stop`）并把控制权交还给你 | agent 已停下、等你接手 |
 | `session_end` | 会话正常关闭（logout / quit / clear / resume）——**默认关闭** | 会话正常结束 |
 
-`needs_input` / `completed` 只在你确实离开之后才会触发（权限确认约 6 秒，空闲结束后约 60 秒），所以正在打字的会话绝不会被刷屏。通知只在 `execute-task` / `orchestrate-tasks` 工作流内部触发（必须能解析到 `.zyz-worker/current-task` 指针）——普通的交互式会话不受影响。
+`needs_input` / `completed` 只在你确实离开之后才会触发（权限确认约 6 秒，空闲结束后约 60 秒），所以正在打字的会话绝不会被刷屏。通知只在 `execute-task` / `orchestrate-tasks` 工作流内部触发（必须能解析到本会话的任务指针 `.zyz-worker/sessions/<session-id>`，或退回时的 `.zyz-worker/current-task`）——普通的交互式会话不受影响。
 
 **它捕获不到的情况：** 真正的整个进程死亡——`kill -9`、OOM、关闭终端、SSH/网络连接断开——不会运行任何 hook，而且会把 watchdog 一起带走。`stuck` 类别覆盖的是进程仍然存活、但某个角色停滞的情况；要可靠地捕获宿主机死亡，需要一个单独的常驻守护进程（未提供）。
 
