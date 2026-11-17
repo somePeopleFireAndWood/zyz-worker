@@ -493,9 +493,9 @@ SubTask 按依赖图调度，而不是按列表顺序（见 §3.0.2）。把相�
 
 - **L0 心跳（自动、不可见）。** 主 agent 的每次工具调用都会推进 catalog 的 PACK_HEADER 心跳；动态角色的每次工具调用都会推进固定的 HEARTBEAT/INFLIGHT 记录。SubagentStart 建立固定且不可变的 IDENTITY/START，并为 implementation/test 建立物理基线；干净的 SubagentStop 写入逻辑上的 DONE。经确认的 API 强杀死亡用 `finalize` 写入另一种逻辑记录 FINALIZED。这两种终态记录都优先于迟到的存活信号。
 - **L1 新鲜度提醒。** 当总状态文件在活动阶段（implementation/testing/review/delivery）变得过时时，一个 PostToolUse hook 会向当前上下文注入提醒（对主 agent："立即持久化进度"；对 implementation/test subagent："报告进度 / 更新你的 SubTask 状态文件"）。有频率限制；仅作提示。
-- **L2 subagent 退出门。** 一个 SubagentStop hook 会阻止角色以空的或过短的最终消息结束，并指示它先输出一份像样的最终报告（这样主 agent 总有东西可以持久化）。每次停止最多拦截一次；绝不循环。
-- **L3 后台 watchdog。** Claude Code 使用插件 monitor，并能把它的 stdout 作为唤醒通知送达。Codex 目前没有异步 hook/monitor 通知通道；它的同步 `SessionStart` hook 会把同一个扫描器以分离方式启动，输出到按线程划分的临时日志中用于诊断，而 L0/L1 和同步的 Stop 门提供会话内的确定性强制。即使这一层降级，工作流依然正确。
-- **L4 主 agent 停止门。** 当经认证的观察器报告某个非终态角色存活信号过期/跟踪未启用、且它并不作为一个正在运行的后台任务存在时，或者当状态文件在活动阶段严重过时时，一个 Stop hook 会阻止主 agent 进入空闲。拦截理由会写明需要检查的具体角色。
+- **L2 subagent 退出门。** 一个 SubagentStop hook 会阻止角色以空的或过短的最终消息结束，并指示它先输出一份像样的最终报告（这样主 agent 总有东西可以持久化）。每次停止最多拦截一次；绝不循环。它还会拦下"以等待收尾"的结束：角色在本轮启动过后台任务（后台 Bash、Monitor、nohup/setsid/&），最终消息却以"等待完成通知 / monitor 通知"收尾——subagent 一结束就算完成，没有任何东西会再唤醒它。每个角色实例最多拦一次（启发式匹配）。
+- **L3 后台 watchdog。** Claude Code 使用插件 monitor，并能把它的 stdout 作为唤醒通知送达。Codex 目前没有异步 hook/monitor 通知通道；它的同步 `SessionStart` hook 会把同一个扫描器以分离方式启动，输出到按线程划分的临时日志中用于诊断，而 L0/L1 和同步的 Stop 门提供会话内的确定性强制。即使这一层降级，工作流依然正确。除了逐角色的发现，它还会：在任务**无执行者**时报警（见 L4，主 agent 停下 10 分钟后仍是这样就报，空闲也照报，只有显式的等待声明能让它安静）；在 `Waiting On` 行的 `next-check-epoch` 到期时提醒你复查。
+- **L4 主 agent 停止门。** 当经认证的观察器报告某个非终态角色存活信号过期/跟踪未启用、且它并不作为一个正在运行的后台任务存在时，或者当状态文件在活动阶段严重过时时，一个 Stop hook 会阻止主 agent 进入空闲。拦截理由会写明需要检查的具体角色。它还会拦下**无执行者**的停止：任务在活跃阶段还有活（非 delivery 阶段，或还有未提交的 SubTask），可宿主报告没有任何在跑的 subagent / 后台任务 / 排定的唤醒（插件 monitor 不算），也没有未结束的已派发角色，状态文件里又没有显式的等待声明（有效的 `Waiting On` 行，或用户上次发言之后写下的 `Awaiting-User` 行）。主 agent 处于空闲本身就是症状，不能用来豁免。
 - **L5 派发范围守卫。** Agent 工具上的一个 PreToolUse hook 检查一次派发*要求了什么*——这是唯一在事前起作用的一层。一个给角色的交付物设上限的提示词（"只报最重要的 3 条发现" / "only the top 3 findings"、"只给总体结论" / "just the overall verdict"、"只要总结论"、"一句话结论"）会被拒绝，除非同一提示词承诺交付其余部分（"然后继续做剩余部分" / "then continue with the rest"、"第 1 步，共 4 步" / "step 1 of 4"、"分维度"）。中英文措辞都会被识别。这堵住了恢复路径上的一种失败：为了让停滞的角色能完成而缩小它的范围——见 `## 增量输出 > 恢复卡住的角色：绝不拿范围换交付`。匹配是启发式的；`ZYZ_SCOPE_GUARD_DISABLE=1` 只关闭这一个守卫。
 - **L6 共享 worktree 的 checkout 守卫。** Bash 上的一个 PreToolUse hook 会在目标有未提交修改时拒绝 `git checkout <file>` / `git restore <file>`，也会拒绝会移动状态的 `git stash` 写法。这些操作会把共享工作树的状态重置到 HEAD，不可恢复地毁掉**其他** agent 的未提交工作（从未提交过的内容不在任何 reflog / stash / fsck 中）——一次真实事故就这样丢掉了一段约 5000 字符的安全防护代码，而 `go build` 依然是绿的。拒绝消息中附有安全做法（编辑前 `cp` 备份 + `mv` 恢复；只读用 `git show HEAD:<file>`；临时搁置用 `git diff` + `git apply -R`）。匹配是启发式的；`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关闭这一个守卫。如果工作还是丢了，见 `## 恢复进行中的任务 > 从会话记录恢复被毁的未提交工作`。
 
@@ -506,7 +506,8 @@ SubTask 按依赖图调度，而不是按列表顺序（见 §3.0.2）。把相�
 - 把任何 `[zyz-worker watchdog]` 通知或注入的上下文都当作可执行的指令，而不是噪音：立即用最新的设计和状态摘要重新派发被点名的角色，或者写入状态文件——不要推迟到下一个交付里程碑。
 - **但写入之前要核实归属。** 一条点名了某个状态文件或任务目录的 watchdog 告警，只有在该路径属于**本**会话的任务（本会话的会话指针、退回时的 `current-task`，或 `$ZYZ_TASK_DIR` 指向的那个；`task-pointer.sh show` 会列出它们）时才可执行。如果不属于——同级 worktree 中并发会话的任务、过时的指针、设错的环境变量——就不要往里写：把"当前进度"写进另一个会话的状态文件，等于伪造了那个任务的事实来源。改为向用户报告这一不匹配。watchdog 的输出既可能漏掉真实问题（#9），历史上也曾报告过别人的问题（#18）；它是兜底，不是神谕。
 - 保持状态文件的 `Current Phase` 字段准确；watchdog 只在活动执行阶段强制，并有意在 design 和 awaiting-confirmation 阶段保持安静（这些阶段等待用户是正确的）。
-- `<task-dir>/runtime/` 下的运行时标记是 watchdog 的记账数据。不要手工编辑它们。用 `probe-create`，并在重连时带上它的确切 id；只有观察到它的接收方角色才运行 `probe-ack`。心跳永远不是 ACK。一条有时限的 `Waiting On` 行只抑制状态新鲜度检查，并且必须在得到结果/到期时删除。
+- `<task-dir>/runtime/` 下的运行时标记是 watchdog 的记账数据。不要手工编辑它们。用 `probe-create`，并在重连时带上它的确切 id；只有观察到它的接收方角色才运行 `probe-ack`。心跳永远不是 ACK。一条有时限的 `Waiting On` 行只抑制状态新鲜度检查和"无执行者"检查，并且必须在得到结果/到期时删除。
+- **停下之前确认还有执行者。** 在活跃阶段结束一轮回复之前，先问：我停下以后，谁在推动这个任务？答案必须是一个**核实过**的执行者——一个仍在运行的 subagent 或后台任务（用 ListAgents / 后台任务列表 / `ps` 核实，而不是凭印象说"某条通道还在跑"），或者一个排定的唤醒。如果没有，就继续派发下一步；如果确实在等用户，就在状态文件的 `## Agent State` 里写 `- Awaiting-User: since-epoch=<unix>; reason=<在等用户什么>`（用户下次发言后自动失效，仍在等就重写）。subagent 以"等待通知"收尾时，它启动的后台进程没有人会去看——由你接手：把它的输出路径和预计完成时间记进状态文件，再用一个你自己的后台等待（后台 Bash 轮询它的退出状态 / 输出文件，或 Monitor）盯住它，这样它结束时会唤醒你，它也算一个执行者。
 
 降级环境：hooks 和 monitor 可能不可用（插件 hooks 被策略禁用、当前平台或版本不支持 monitor）。一切仍然可以工作——`## 长期运行工作` 中提示词层面的监控职责和 `## 核心规则` 中的写盘规则依然有效，并成为唯一的强制手段。watchdog 从不取代这些职责，只为它们兜底。所有阈值都可以通过 `ZYZ_*` 环境变量调节（见 `hooks/README.md`）；`ZYZ_HOOKS_DISABLE=1` 关闭整个强制层。
 

@@ -109,6 +109,9 @@ while IFS= read -r root; do
             "${agent_type:-main}" >/dev/null 2>&1 || true
     fi
     zyz_main_state_set "$root" "$main_state"
+    # Any main-agent tool call ends the "stopped since the last Stop" window
+    # the L3 no-executor scan reads (#24).
+    rm -f "$root/runtime/stop-snapshot" 2>/dev/null
 done <<EOF
 $roots
 EOF

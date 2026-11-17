@@ -9,7 +9,7 @@
 #
 # ## Inputs
 #
-# - stdin: hook JSON (cwd, stop_hook_active, background_tasks[]).
+# - stdin: hook JSON (cwd, stop_hook_active, background_tasks[], session_crons[]).
 # - env: CLAUDE_PROJECT_DIR (fallback base dir), ZYZ_HOOKS_DISABLE=1 skips,
 #   ZYZ_ROLE_STALE_SEC (default 900) role-silence threshold,
 #   ZYZ_ROLE_STALE_HORIZON_SEC (default 21600) ignore-older-than horizon,
@@ -26,11 +26,21 @@
 #         START/HEARTBEAT fact is stale, or its tracking state is unverifiable
 #         (covers subagents killed by API errors, where SubagentStop never
 #         fired); or
-#     (b) the overall status file is older than ZYZ_STOP_STATUS_STALE_SEC.
+#     (b) the overall status file is older than ZYZ_STOP_STATUS_STALE_SEC; or
+#     (c) the task has no executor (#24): it still has work (an active phase
+#         other than delivery, or an uncommitted SubTask), yet the host reports
+#         no in-flight background task or session cron (plugin monitors
+#         excluded), the observer sees no non-terminal role instance, and
+#         status.md declares no wait (no valid Waiting On row, no Awaiting-User
+#         row written since the last user prompt). Fails open when the input
+#         has no background_tasks array.
 #   The reason tells the main agent exactly which roles to check/restart
 #   and/or to flush the status file. Never blocks when stop_hook_active is
 #   true, and at most once per cooldown window per task; reasons for several
 #   tasks are joined into one block.
+# - Side effect, on every Stop (blocked or not): writes
+#   <task-dir>/runtime/stop-snapshot = `<epoch> <executor-count|unknown>` for
+#   the L3 no-executor scan.
 #
 # ## Failure behavior
 #
@@ -51,8 +61,6 @@ zyz_json_ok || exit 0
 ZYZ_HOOK_INPUT="$(cat 2>/dev/null || true)"
 [ -n "$ZYZ_HOOK_INPUT" ] || exit 0
 
-[ "$(zyz_get stop_hook_active)" = "true" ] && exit 0
-
 base="$(zyz_get cwd)"
 [ -n "$base" ] || base="${CODEX_PROJECT_DIR:-}"
 [ -n "$base" ] || base="${CLAUDE_PROJECT_DIR:-}"
@@ -60,8 +68,49 @@ base="$(zyz_get cwd)"
 
 roots="$(zyz_task_roots "$base")"
 [ -n "$roots" ] || exit 0
+
+# Stop snapshot for the L3 no-executor scan (#24): `<epoch> <executors>`. The
+# monitor cannot see background_tasks, so every Stop — blocked or not, and
+# before the stop_hook_active exit — leaves what the harness reported here.
+# heartbeat.sh deletes it on the next main-agent tool call and main-state.sh on
+# the next user prompt, so it exists only while the main agent has done nothing
+# since this Stop.
+bg_executors="$(zyz_bg_executor_count)"
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    mkdir -p "$root/runtime" 2>/dev/null && zyz_write_atomic "$root/runtime/stop-snapshot" "$(zyz_now) $bg_executors"
+done <<EOF
+$roots
+EOF
+
+[ "$(zyz_get stop_hook_active)" = "true" ] && exit 0
 zyz_roots_any_active "$roots" || exit 0
 running_types="$(zyz_bg_running_types)"
+
+# One observer snapshot per task, shared by the per-task clauses below and the
+# session-wide live-role count of the no-executor clause. Without a temp dir
+# each caller observes on its own (slower, same answers).
+obs_dir="$(mktemp -d "${TMPDIR:-/tmp}/zyz-stopgate.XXXXXX" 2>/dev/null)" || obs_dir=""
+[ -z "$obs_dir" ] || trap 'rm -rf "$obs_dir" 2>/dev/null' EXIT
+observation_for() {
+    local f
+    [ -n "$obs_dir" ] || { zyz_runtime_observe "$1" false; return 0; }
+    f="$obs_dir/$(printf '%s' "$1" | cksum | tr -d ' ')"
+    [ -f "$f" ] || zyz_runtime_observe "$1" false > "$f" 2>/dev/null
+    cat "$f" 2>/dev/null
+}
+# Dispatched roles that have not ended, summed over the session's tasks (their
+# records sit under the primary task). Stays empty when no task could be
+# observed (macOS genesis-unavailable); the clause then relies on
+# background_tasks alone, which already lists every background subagent.
+session_live_roles=""
+while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    n="$(observation_for "$root" | zyz_live_role_count "${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}")"
+    [ -n "$n" ] && session_live_roles=$(( ${session_live_roles:-0} + n ))
+done <<EOF
+$roots
+EOF
 # Subagent clauses are session-scoped (#23): records live under one task dir,
 # but nothing says which task a role serves, so they are judged against the
 # newest status write of ANY task and never name an owning task.
@@ -77,7 +126,7 @@ gate_reason() {
     local root status_file phase own_active stale_sec horizon runtime_observation
     local stale_roles status_stale_sec status_age mtime reason running_roles detail
     local key age role_type stale_kind unharvested_roles udetail role cooldown
-    local scope_note
+    local scope_note pending
     root="$1"
     status_file="$root/status.md"
     phase="$(zyz_phase_of "$status_file")"
@@ -87,7 +136,7 @@ gate_reason() {
 
     stale_sec="${ZYZ_ROLE_STALE_SEC:-900}"
     horizon="${ZYZ_ROLE_STALE_HORIZON_SEC:-21600}"
-    runtime_observation="$(zyz_runtime_observe "$root" false)"
+    runtime_observation="$(observation_for "$root")"
     stale_roles="$(printf '%s' "$runtime_observation" | python3 -c '
 import json,sys
 try:
@@ -200,6 +249,28 @@ EOF
             else
                 reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就读取上面列出的每个结果，记录到 ${status_file}，然后继续——这样即可解除本次阻断。"
             fi
+        fi
+    fi
+
+    # No-executor clause (#24): this task still has work, yet nothing will move
+    # it once the main agent stops — no in-flight background task or scheduled
+    # wakeup (background_tasks / session_crons), no dispatched role that has
+    # not ended, and no explicit wait. Every per-role check above is silent in
+    # exactly this shape (the role ended DONE, the main agent was busy elsewhere
+    # so nothing looks unharvested, status was just written), which is how a
+    # task sat idle for half an hour while the main agent said a lane was still
+    # running. NOT gated by main-state: idle is the symptom, not an excuse. Only
+    # an explicit wait mutes it — a valid Waiting On row or an Awaiting-User row
+    # written since the user last spoke. An absent background_tasks array (Codex,
+    # unreachable registry) means unknown and fails open.
+    if [ "$own_active" = 1 ] && [ "$bg_executors" = 0 ] && [ "${session_live_roles:-0}" = 0 ]; then
+        pending="$(zyz_status_uncommitted "$status_file")"
+        pending="${pending#*	}"
+        if zyz_task_has_pending_work "$phase" "$pending" \
+            && ! zyz_status_waiting "$status_file" \
+            && ! zyz_status_awaiting_user "$status_file" "$root"; then
+            [ -n "$reason" ] && reason="${reason} "
+            reason="${reason}$(zyz_no_executor_msg "$root" "$phase" "$pending" stop)"
         fi
     fi
 

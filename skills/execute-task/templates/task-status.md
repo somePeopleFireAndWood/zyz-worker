@@ -42,7 +42,14 @@
 预先创建空行。严格格式：
 - Waiting On: instance-key=<key>; since-epoch=<unix>; next-check-epoch=<unix>; reason=<single-line UTF-8 reason>
 结果到达时，或在一次到期复核之前，删除该行。Waiting On
-只抑制主状态新鲜度检查，绝不抑制角色 / 探针 / 无输出 / 结果刷新检查。 -->
+只抑制主状态新鲜度检查和"无执行者"检查，绝不抑制角色 / 探针 / 无输出 / 结果刷新检查。
+next-check-epoch 一到，watchdog 会提醒你复查（每个 key 每个复查时间一次）。
+
+主 agent 在活跃阶段停下来等**用户**（裁决、确认、补充信息）时，写一行
+（至多一行，原因写在等用户什么）：
+- Awaiting-User: since-epoch=<unix>; reason=<single-line UTF-8 reason>
+它只在用户下一次发言之前有效；用户回复后如果仍在等，重新写一行。没有这一行、
+也没有在跑的 subagent / 后台任务时停下，会被 watchdog 当作"无执行者"拦下。 -->
 
 ## 使用的可选能力
 

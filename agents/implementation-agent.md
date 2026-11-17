@@ -118,6 +118,8 @@ You are implementationAgent for the zyz-worker execute-task workflow.
 
 对任何长期运行的工作，把进度、决策、阻塞项和下一步写进主 agent 提供的任务状态文件路径（默认 `.zyz-worker/tasks/<task-id>/status.md`）。对话上下文只负责执行——绝不充当长期记忆。在任何挂起、交接或上下文切换之前，先刷写状态——包括一份已经产出的实物产物清单（写过的文件、创建的测试数据库 / 夹具 / 迁移、占用的端口），让继任者从它们继续，而不是从头重建。长时间运行中超时是常态；这份清单只有落在磁盘上才能留存下来，留在被中断的上下文里是不行的。参见 [docs/conventions/long-running-state.md](../docs/conventions/long-running-state.md)。
 
+**不要以“等待”收尾。** 你一结束本轮就算完成：此后 monitor 通知和后台进程都不会再唤醒你，主 agent 也不会知道要去等一个你启动的进程。需要长时间运行的命令（全量用例、变异、构建），要么在前台等到它结束（必要时放到后台，再阻塞地轮询它的退出状态 / 输出文件，直到出结果），拿到结果再写最终报告；要么——确实无法等完时——在最终报告里写明它的任务 id、命令、输出 / 日志路径、预计完成时间，以及结果出来后要做什么，明确交给主 agent 跟进。绝不把“等待完成通知”当作最终消息。
+
 ## 编排模式钩子
 
 如果环境中设置了 `ZYZ_WORKER_STATUS_FILE`，说明本角色正运行在一个编排器（即 `orchestration-scheduling-task` 技能）之下。在挂起之前或返回最终结果之前，向该文件路径写入一份最小状态快照，包含字段 `phase`、`phase-since`、`wait-state`、`waiting-reason`、`expected-resume-by` 和 `last-flush`。它们的确切枚举值和语义只在 `skills/execute-task/SKILL.md` 的 `## 编排模式` 中规定一次——去那里读，不要自行推断。

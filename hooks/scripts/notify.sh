@@ -34,13 +34,15 @@
 # - Hook mode: hook JSON on stdin (hook_event_name, notification_type?, cwd,
 #   session_id?, message?, title?, error?, reason?).
 # - Direct mode: `--event <category> [--title T] [--message M]
-#   [--base DIR | --task-root DIR] [--session-id S] [--origin main|subagent]
+#   [--base DIR | --task-root DIR] [--session-id S] [--origin main|subagent|stall]
 #   [--task-id LABEL]`. `--task-id` overrides the reported task id: the
 #   watchdog passes every task of a multi-task session for a subagent finding,
 #   whose owning task it cannot know (#23).
 #   `--origin` (default main) splits stuck delivery (F2): a main-origin stuck
 #   (status-stale derived) is suppressed while the main agent is awaiting-user /
-#   idle; a subagent-origin stuck (a truly dead role) bypasses that suppression.
+#   idle; a subagent-origin stuck (a truly dead role) bypasses that suppression,
+#   and so does a stall-origin stuck (#24: the task has no executor at all —
+#   the main agent being idle is the symptom being reported, not an excuse).
 # - Config file `~/.zyz-worker/notify.json` (override with $ZYZ_NOTIFY_CONFIG).
 # - env: ZYZ_HOOKS_DISABLE=1 or ZYZ_NOTIFY_DISABLE=1 skips the whole notifier.
 #

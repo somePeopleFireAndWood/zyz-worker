@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-11-17
+
+- **活跃任务「无执行者」不再静默搁置（closes #24）。** 已有的三层检查（L2 退出门、L3 watchdog、L4 停止门）判据都是「某个具体角色有没有异常」，于是一种整体状态谁都不管：任务还有活，却没有任何执行者。真实事故：implementation-agent 在后台启动约 60 分钟的全量用例后以「等待通知」收尾、被记为 DONE；用例跑绿时没有任何东西唤醒它；主 agent 一直在处理别的通道，所以「已完成未收取」不成立、状态文件也是新的；最后主 agent 说「数仓还在跑」然后停下，Stop 门放行，任务空等约 30 分钟。
+  - **L4 停止门新增「无执行者」子句。** 同时满足以下条件时拦一次（与其它子句共用冷却）：任务在活跃阶段且还有活（非 delivery 阶段，或 `## SubTasks` 记分板里还有未提交的 SubTask——列表和表格两种写法都解析，拦截理由会点名）；Stop 输入的 `background_tasks` 里没有未结束的任务、`session_crons` 为空；观察器看不到未结束的已派发角色；状态文件里没有显式的等待声明。主 agent 空闲**不**算豁免。插件 monitor 不算执行者——本 watchdog 自己就以一个 `running` 的 shell 任务出现在 `background_tasks` 里（已在 Claude Code 2.1.251 上实测）。输入里没有 `background_tasks`（Codex）时 fail open。
+  - **新的显式等待声明 `- Awaiting-User: since-epoch=<unix>; reason=<…>`**（写在 `## Agent State`）。它只在用户下一次发言之前有效（`main-state.sh` 在 `UserPromptSubmit` 时记录 `runtime/user-prompt-epoch`），所以一行被忘掉的声明不会永久压住检查。有效的 `Waiting On` 行同样算显式等待。
+  - **L3 watchdog 定时兜底。** L4 在每次 Stop 时写 `runtime/stop-snapshot`（宿主报告的执行者数），主 agent 的下一次工具调用或用户发言会删掉它。快照存在、执行者为 0、已过去 `ZYZ_WATCHDOG_NO_EXECUTOR_SEC`（默认 600）秒且没有显式等待时，watchdog 发一条唤醒通知和一条 `--origin stall` 的 stuck IM（绕过空闲压制）。它覆盖 L4 冷却期内的停止，不受 main-state 门控（`idle_prompt` 会在每次 Stop 后把状态记成 `awaiting-user`）。
+  - **`Waiting On` 到期主动提醒。** 某一行的 `next-check-epoch` 到期后，L3 提醒主 agent 复查（每个 key 每个复查时间一次，按冷却限频）。
+  - **L2 拦下「以等待收尾」。** 角色在本轮启动过后台任务（会话记录里有 `run_in_background`、Monitor、`nohup`/`setsid`/结尾 `&`），最终消息却以「等待完成通知 / monitor 通知」收尾时拦一次，要求前台等到结果，或把后台任务的 id、输出路径、预计完成时间明确交给主 agent。每个实例一次，`stop_hook_active` 时也检查（事故里那句话正是对「过短」拦截的回应）。
+  - 提示词：主 agent 停下之前必须能指出一个核实过的执行者，否则继续派发或写 `Awaiting-User`；接手 subagent 留下的后台进程时用自己的后台等待盯住它。implementation / test / review 角色新增「不要以等待收尾」。
+  - **修正：`## Agent State` 解析器跳过 HTML 注释。** 状态模板在这个小节的注释里写着 `- Waiting On:`（以及新增的 `- Awaiting-User:`）示例行，旧解析器把它们当成格式错误的行，导致从模板创建的 status.md 里任何真实的 `Waiting On` 声明都无效。
+  - 已知局限写进了 `hooks/README.md`：常驻后台条目（自己的 `tail -f` Monitor、开发服务器、其它插件 monitor、循环 cron）会让检查一直不触发；空闲 teammate 在 `background_tasks` 里的呈现未经验证；完成通知丢失时 L3 在 macOS 上没有兜底。
+  - 新增 `scripts/test-no-executor.sh`（79 项），驱动真实的 hook / monitor 脚本覆盖上述各层，包括用真实模板生成的 status.md、多仓库写法的 `Committed`，以及用替身观察器驱动的已派发角色与多任务会话；除一个等价变异外，每个守卫被去掉后都有用例变红。
+
 ## [0.28.0] — 2026-11-16
 
 - **任务指针按会话区分（closes #23）。** 过去一个目录只有一份 `.zyz-worker/current-task`：同一目录下两个会话各跑一个 execute-task 时，后启动的会话只能覆盖它（先启动的会话的 watchdog 悄无声息地挂到新任务上）或者不写（自己的 watchdog 失效），两种结果都没有任何提示；唯一的绕行办法是另开 worktree 和新会话，丢掉当前会话的全部上下文。

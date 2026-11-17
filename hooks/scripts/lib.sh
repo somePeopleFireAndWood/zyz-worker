@@ -98,6 +98,22 @@
 #                               1. Pure string compare (no epoch/TTL). The sole
 #                               main-agent-attributed suppression gate for
 #                               L3/L4/notify.
+# - zyz_status_waits_due <status.md>
+#                               `<key>\t<next>\t<reason>` per Waiting On row
+#                               whose next-check-epoch has arrived (#24).
+# - zyz_status_awaiting_user <status.md> <task-dir>
+#                               0 for one valid `- Awaiting-User:` row written
+#                               since the last user prompt (#24).
+# - zyz_status_uncommitted <status.md>
+#                               `<parsed>\t<ids>` of uncommitted SubTasks.
+# - zyz_task_has_pending_work <phase> <ids>
+#                               0 when the task still has executor work.
+# - zyz_bg_executor_count       in-flight executors in the Stop input (plugin
+#                               monitors excluded), or `unknown`.
+# - zyz_live_role_count <horizon>
+#                               non-terminal roles in observer JSON on stdin.
+# - zyz_no_executor_msg <root> <phase> <ids> <stop|watchdog>
+#                               the shared L3/L4 no-executor finding text.
 #
 # ## Failure behavior
 #
@@ -249,13 +265,22 @@ import re, sys
 p, now, horizon = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 heading = b"## Agent State"
 row = re.compile(br"^- Waiting On: instance-key=([A-Za-z0-9._-]+); since-epoch=(0|[1-9][0-9]*); next-check-epoch=(0|[1-9][0-9]*); reason=(.*)$")
-sections = 0; inside = False; candidates = []; bad = False
+sections = 0; inside = False; candidates = []; bad = False; in_c = False
 try:
     with open(p, "rb", buffering=0) as f:
         for raw in f:
             if len(raw) > 4096: bad = True; continue
             line = raw.rstrip(b"\n")
             if line.endswith(b"\r"): bad = True; continue
+            # Skip HTML comments: the status template documents the row formats
+            # inside a <!-- --> block in this very section, and an example row
+            # must not count as a (malformed) declaration (#24).
+            if in_c:
+                if b"-->" in line: in_c = False
+                continue
+            if line.lstrip().startswith(b"<!--"):
+                in_c = b"-->" not in line.lstrip()[4:]
+                continue
             if line == heading: sections += 1; inside = True; continue
             if inside and line.startswith(b"## "): inside = False
             if inside and line.startswith(b"- Waiting On:"):
@@ -278,6 +303,250 @@ for key, since_b, nxt_b, reason in candidates:
     if since > 2147483647-horizon or nxt > since+horizon: sys.exit(1)
 sys.exit(0)
 PY
+}
+
+# Print one `<key>\t<next-check-epoch>\t<reason>` line for every well-formed
+# Waiting On row (same row grammar as zyz_status_waiting, in the single
+# `## Agent State` section) whose next-check-epoch has arrived. Malformed rows
+# are skipped individually: a due reminder for the valid ones is still useful.
+zyz_status_waits_due() {
+    [ -f "${1:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$1" "$(zyz_now)" <<'PY' 2>/dev/null || true
+import re, sys
+p, now = sys.argv[1], int(sys.argv[2])
+row = re.compile(r"^- Waiting On: instance-key=([A-Za-z0-9._-]+); since-epoch=(0|[1-9][0-9]{0,9}); next-check-epoch=(0|[1-9][0-9]{0,9}); reason=(.*)$")
+sections = 0; inside = False; due = []; in_c = False
+try:
+    with open(p, encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            if in_c:
+                if "-->" in line: in_c = False
+                continue
+            if line.lstrip().startswith("<!--"):
+                in_c = "-->" not in line.lstrip()[4:]
+                continue
+            if line == "## Agent State": sections += 1; inside = True; continue
+            if inside and line.startswith("## "): inside = False
+            if inside:
+                m = row.fullmatch(line)
+                if m and 0 < int(m.group(3)) <= now:
+                    due.append((m.group(1), m.group(3), m.group(4).strip()[:200].replace("\t", " ")))
+except OSError:
+    sys.exit(0)
+if sections == 1:
+    for key, nxt, reason in due: print(f"{key}\t{nxt}\t{reason}")
+PY
+}
+
+# Return 0 when status.md declares that the main agent is waiting on the USER
+# (#24): exactly one `## Agent State` section holding exactly one row
+#   - Awaiting-User: since-epoch=<unix>; reason=<single-line text>
+# with 0 < since-epoch <= now and a non-blank reason. The declaration lapses on
+# its own the next time the user speaks: it is valid only while since-epoch is
+# not older than the last UserPromptSubmit (<task-dir>/runtime/user-prompt-epoch,
+# written by main-state.sh). So a forgotten row can never mute the no-executor
+# check for good — after the user answers, the main agent must re-declare if it
+# is still waiting. Anything malformed fails toward alerting (returns 1).
+zyz_status_awaiting_user() {
+    [ -f "${1:-}" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    local prompt_epoch
+    prompt_epoch="$(zyz_epoch_in "${2:-}/runtime/user-prompt-epoch")"
+    python3 - "$1" "$(zyz_now)" "${prompt_epoch:-0}" <<'PY' 2>/dev/null
+import re, sys
+p, now, prompt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+row = re.compile(r"^- Awaiting-User: since-epoch=([1-9][0-9]{0,9}); reason=(.*)$")
+sections = 0; inside = False; rows = []; bad = False; in_c = False
+try:
+    with open(p, encoding="utf-8", errors="strict") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            if in_c:
+                if "-->" in line: in_c = False
+                continue
+            if line.lstrip().startswith("<!--"):
+                in_c = "-->" not in line.lstrip()[4:]
+                continue
+            if line == "## Agent State": sections += 1; inside = True; continue
+            if inside and line.startswith("## "): inside = False
+            if inside and line.startswith("- Awaiting-User:"):
+                m = row.fullmatch(line)
+                if not m: bad = True; continue
+                rows.append(m.groups())
+except (OSError, UnicodeDecodeError):
+    sys.exit(1)
+if sections != 1 or bad or len(rows) != 1: sys.exit(1)
+since, reason = int(rows[0][0]), rows[0][1].strip()
+if not reason or len(reason) > 1024 or since > now or since < prompt: sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# Print `<parsed-count>\t<comma-joined uncommitted ids>` for the `## SubTasks`
+# scoreboard of status.md: either the template's list form (`- SubTask ID: X`
+# followed by `- Committed: <sha|reason>`) or a Markdown table whose header has a
+# SubTask/ID column and a Committed column. A row counts as uncommitted when its
+# Committed value is empty, a placeholder, or a negative word. Best effort and
+# only used to make the no-executor finding specific: `0\t` means "no scoreboard
+# parsed", never "nothing left to do".
+zyz_status_uncommitted() {
+    [ -f "${1:-}" ] || { printf '0\t'; return 0; }
+    command -v python3 >/dev/null 2>&1 || { printf '0\t'; return 0; }
+    python3 - "$1" <<'PY' 2>/dev/null || printf '0\t'
+import re, sys
+SHA = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+def pending(v):
+    # A commit sha anywhere (`<repo>:<sha>` lines, a Markdown link, "local
+    # commit abc1234, push failed") means committed. Otherwise an empty value,
+    # a placeholder or a negative word is pending; any other text (a recorded
+    # commit failure) is not — the template says a failure does not block.
+    if SHA.search(v): return False
+    v = v.strip().strip("`*").strip()
+    low = v.lower()
+    if not v or v[0] in "（(<[": return True
+    if low in {"false", "no", "none", "pending", "todo", "tbd", "-", "—", "n/a", "无", "否"}: return True
+    return low.startswith(("未", "待", "false", "no ", "pending", "not "))
+rows = []; inside = False; cur = None; cols = None; in_c = False
+committed = None  # [id, indent, collected values] while reading a Committed field
+def flush():
+    global committed
+    if committed: rows.append((committed[0], pending(" ".join(committed[2]))))
+    committed = None
+with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
+    for raw in f:
+        line = raw.rstrip("\n")
+        if in_c:
+            if "-->" in line: in_c = False
+            continue
+        if line.lstrip().startswith("<!--"):
+            in_c = "-->" not in line.lstrip()[4:]
+            continue
+        if line.startswith("## "):
+            flush()
+            inside = line.strip().lower().startswith("## subtasks"); cur = None; cols = None; continue
+        if not inside: continue
+        if committed is not None:
+            # Multi-repo values continue on deeper-indented lines (`  - api:<sha>`).
+            if not line.strip(): continue
+            if len(line) - len(line.lstrip()) > committed[1]:
+                committed[2].append(line.strip().lstrip("-*").strip()); continue
+            flush()
+        m = re.match(r"^\s*[-*]\s*SubTask ID\s*[:：]\s*(.*)$", line)
+        if m:
+            sid = m.group(1).strip()
+            cur = sid if sid and sid[0] not in "（(<" else None
+            continue
+        m = re.match(r"^(\s*)[-*]\s*Committed\s*[:：]\s*(.*)$", line)
+        if m and cur:
+            committed = [cur, len(m.group(1)), [m.group(2)]]; cur = None; continue
+        if line.lstrip().startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if cols is None:
+                low = [c.lower() for c in cells]
+                ci = next((i for i, c in enumerate(low) if "committed" in c), None)
+                ii = next((i for i, c in enumerate(low) if "subtask" in c or c in ("id", "st")), None)
+                if ci is not None and ii is not None: cols = (ii, ci)
+                continue
+            if all(re.fullmatch(r":?-{2,}:?", c or "--") for c in cells): continue
+            ii, ci = cols
+            if max(ii, ci) < len(cells) and cells[ii]:
+                rows.append((cells[ii], pending(cells[ci])))
+flush()
+print(f"{len(rows)}\t" + ",".join(sid for sid, p in rows if p), end="")
+PY
+}
+
+# 0 when the task still has work for an executor (#24): an active phase other
+# than delivery, or a delivery phase with an uncommitted SubTask. $1 phase,
+# $2 the zyz_status_uncommitted ids field.
+zyz_task_has_pending_work() {
+    zyz_phase_active "${1:-}" || return 1
+    case "${1:-}" in
+        *deliver*) [ -n "${2:-}" ] ;;
+        *) return 0 ;;
+    esac
+}
+
+# Number of in-flight executors in a Stop/SubagentStop ZYZ_HOOK_INPUT, or
+# `unknown` when the host sent no background_tasks array (Codex, an unreachable
+# task registry) — callers must then fail open. Counts every background task
+# that is not finished (shell incl. Monitor watchers, subagent, teammate,
+# workflow, MCP task, ...) plus every session cron/wakeup (it will wake the
+# session). Plugin monitors are excluded: they live forever under
+# `<plugin>/monitors/` — this very watchdog shows up as a `running` shell task
+# (verified on Claude Code 2.1.251) and would otherwise mask every stall.
+zyz_bg_executor_count() {
+    [ -n "${ZYZ_HOOK_INPUT:-}" ] || { printf 'unknown'; return 0; }
+    command -v python3 >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+    printf '%s' "$ZYZ_HOOK_INPUT" | python3 -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unknown", end=""); sys.exit(0)
+tasks = d.get("background_tasks") if isinstance(d, dict) else None
+if not isinstance(tasks, list):
+    print("unknown", end=""); sys.exit(0)
+n = 0
+for t in tasks:
+    if not isinstance(t, dict):
+        n += 1; continue
+    st = str(t.get("status") or "").lower()
+    if re.search(r"complet|fail|kill|stop|cancel|idle|done|error|exit|finish", st):
+        continue
+    cmd = str(t.get("command") or "")
+    if "/monitors/watchdog.sh" in cmd or ("/plugins/" in cmd and "/monitors/" in cmd):
+        continue
+    n += 1
+crons = d.get("session_crons")
+if isinstance(crons, list):
+    n += len(crons)
+print(n, end="")
+' 2>/dev/null || printf 'unknown'
+}
+
+# Number of non-terminal role instances younger than <horizon> in a
+# zyz_runtime_observe JSON on stdin — dispatched roles that have not ended. A
+# role older than the horizon is ignored, like every other role check. Prints
+# nothing when the observer could not observe (macOS genesis-unavailable); the
+# callers then leave the term out and rely on the harness's own task list.
+zyz_live_role_count() {
+    python3 -c '
+import json, sys
+try:
+    horizon, now = int(sys.argv[1]), int(sys.argv[2]); data = json.load(sys.stdin)
+    if data.get("ok") is not True or data.get("state") != "observed": raise ValueError()
+    n = 0
+    for item in data.get("instances", []):
+        if item.get("terminal"): continue
+        last = item.get("last_liveness_epoch")
+        if not isinstance(last, int): last = item.get("start_epoch")
+        if isinstance(last, int) and now - last >= horizon: continue
+        n += 1
+    print(n, end="")
+except Exception:
+    pass
+' "${1:-21600}" "$(zyz_now)" 2>/dev/null || true
+}
+
+# The no-executor finding (#24), shared by L4 and L3 so both say the same
+# thing. $1 task root, $2 phase, $3 uncommitted SubTask ids (may be empty),
+# $4 `stop` (L4 block) or `watchdog` (L3 line).
+zyz_no_executor_msg() {
+    local root phase pending where task lead
+    root="$1"; phase="$2"; pending="$3"; where="$4"
+    task="$(basename "$root")"
+    lead="任务 ${task} 仍在 ${phase} 阶段"
+    [ -z "$pending" ] || lead="${lead}，SubTask ${pending} 尚未提交"
+    if [ "$where" = stop ]; then
+        lead="${lead}，但你要停下时没有任何执行者：没有在跑的 subagent 或后台任务（插件 monitor 不算），没有排定的唤醒，状态文件里也没有声明在等用户——你一停，就没有任何东西会再推动这个任务。"
+    else
+        lead="${lead}，但主 agent 停下已有一段时间，期间没有任何执行者：停下时没有在跑的 subagent 或后台任务（插件 monitor 不算）、没有排定的唤醒，此后也没有新的工具调用，状态文件里也没有声明在等用户——任务正在静默搁置。"
+    fi
+    printf '%s现在三选一：(1) 派发下一步（或自己接着做）；(2) 如果你认为某条通道还在跑，先核实再说（ps / ListAgents / 后台任务的输出文件）——"以为还在跑、其实早已结束"正是任务被静默搁置的常见原因，以"等待通知"收尾的 subagent 不会再被唤醒；(3) 如果确实在等用户，就在 %s 的 `## Agent State` 里写一行 `- Awaiting-User: since-epoch=<当前 unix 时间>; reason=<在等用户什么>`（用户下次发言后自动失效）。' \
+        "$lead" "$root/status.md"
 }
 
 # Resolve one pointer line against the base dir the pointer lives under: an
