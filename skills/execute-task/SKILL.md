@@ -520,7 +520,8 @@ watchdog 不去猜任务为什么安静——场景是穷举不完的。插件�
 | 一个后台任务（含后台 subagent）会推进任务，但要跑很久 | `set lane-a wait --at +90m --ref <后台任务 id 或 agentId> --reason 全量用例` |
 | 等外部的东西（批跑、部署、别人的回复） | `set batch wait --at 2026-11-19T09:00 --reason 等 T+1 批跑完成` |
 | observing 阶段到点去看 | `set recon wait --at +1d --reason 核对 dws 与源表行数和金额` |
-| 停下来等用户 | `set q user --reason 等用户裁决接口方案`（用户下次发言后自动失效；只压"无执行者"，继续干活时状态文件仍要保持新鲜） |
+| 用自然语言向用户提问后停下 | `set q user --reason 等用户裁决接口方案`（在提问的同一条回复里、结束这一轮之前声明；用户下次发言后自动失效；只压"无执行者"，继续干活时状态文件仍要保持新鲜。用 AskUserQuestion 提问则不需要声明） |
+| 编排模式下等 `answer.md` 异步回复 | 不用 `user`（用户回复不经过对话，声明不会失效）：后台运行 `until [ -f <answer-file> ]; do sleep 30; done`，它就是执行者，回答一到就唤醒你 |
 | 常驻后台任务（开发服务器、`tail -f` Monitor、无关的 cron） | `set srv resident --ref <id> --reason e2e 用的 dev server` |
 | 这个任务本来就慢（长批跑） | `tune status-stale-sec=3600 no-executor-sec=1800 remind-sec=3600` |
 
@@ -566,7 +567,7 @@ watchdog 不去猜任务为什么安静——场景是穷举不完的。插件�
 - **`wait-state` 与 `phase` 相互正交。** 独立于 `phase` 设置 `wait-state`。挂起之前设置 `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource`，并附非空的 `waiting-reason`；恢复后立即设置 `wait-state=none`。
 - **确认会把 worker 推进到 `done`。** 生成最终报告后，worker 进入 `phase=awaiting-confirmation`（自我声明已完成）并**等待**。**只有**在用户确认时它才推进到 `phase=done`——用户可以直接在 worker 窗口/对话中确认，也可以通过 L1 转达、到达 pane 中的确认消息来确认（用户写下 `confirmed` 令牌时，编排器会派发一个带 `intent=relay-confirmation` 的 `orch-driver-agent`）。worker 绝不自行推进到 `done`。用户确认后，worker 写入 `phase=done`（原子写入，frontmatter 有效）；编排器在下一次轮询时把它同步为 `state: completed`。
 - **设计→实现是一道硬性的用户批准闸门。** 进入实现之前，worker **必须**写入 `wait-state=waiting-user`（保持 `phase=design`），并且在明确的用户批准到达之前，**不得**写入 `phase=implementation`，也不得派发 implementation-agent。合法的批准渠道**只有**：用户接入 worker 的 pane，或者一份匹配的 `answer.md`（worker 先向 `ZYZ_QUESTION_FILE` 发出一个带 question-id 的批准请求；只有回答了该 id 的 `answer.md` 才算——过时或无关的答复不算）。编排器从不转达设计批准。worker 在写入 `phase=implementation` **之前**，把批准事件（或事先明确的跳过指令原文）记入磁盘上 `.zyz-worker/tasks/<task-id>/status.md` 的 `## 设计评审 > 设计批准记录`；一个恢复中或重新装载的 worker，**只有**在磁盘上存在该记录时才进入实现——绝不单凭 `phase` 进入。
-- **异步的用户问答走文件。** 用户没有接入 tmux pane 时，使用 `ZYZ_QUESTION_FILE` 和 `ZYZ_ANSWER_FILE`。消费完一份 `answer.md` 后，把它重命名为 `answer.md.consumed.<question-id>`。
+- **异步的用户问答走文件。** 用户没有接入 tmux pane 时，使用 `ZYZ_QUESTION_FILE` 和 `ZYZ_ANSWER_FILE`。写完问题后，在后台轮询回答文件（例如后台 Bash 运行 `until [ -f "$ZYZ_ANSWER_FILE" ]; do sleep 30; done`）：回答写入对话之外，不会有任何东西把你叫醒，这个后台任务就是那个会叫醒你的执行者，它在跑时 watchdog 也不会把任务当成搁置。消费完一份 `answer.md` 后，把它重命名为 `answer.md.consumed.<question-id>`。
 - **两个状态文件，而不是一个。** 编排模式保留现有的 `.zyz-worker/tasks/<task-id>/status.md` 作为 worker 的详细任务状态（供 execute-task 工作流使用），并在 `ZYZ_WORKER_STATUS_FILE` 所指的路径上新增 `worker-status.md`，作为面向编排器的快照。两个文件互不替代。
 - **带内的运行时配置块优先于启动时的环境变量（容器复用约定）。** 当 worker 被派发到一个**复用的**容器上时（编排的 `reuse-dispatch` 路径），它可能会在对话中收到一个带内运行时配置块——一条结构化、人类可读的消息，以 `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` 围起，携带 `task-id`、`worker-status-file`、`question-file`、`answer-file`、`heartbeat-file`，以及——仅对多仓库的复用容器——一行**可选的** `worktrees:`。之所以会这样，是因为一个被复用、仍在运行的 claude 进程看不到新重新导出的环境变量（Bash 子进程继承的是 claude 启动时的环境，而不是之后在 pane 中执行的 `export`）。约定如下：
   - **一旦收到这个块，它的值在整个任务生命周期内都是权威的，并优先于启动时的环境变量。** 用块中的 `task-id` 作为本任务在编排模式下的任务身份，**取代继承来的 `ZYZ_TASK_ID`**；用块中的 `worker-status-file` / `question-file` / `answer-file` / `heartbeat-file` 取代 `ZYZ_WORKER_STATUS_FILE` / `ZYZ_QUESTION_FILE` / `ZYZ_ANSWER_FILE` / `ZYZ_HEARTBEAT_FILE`。

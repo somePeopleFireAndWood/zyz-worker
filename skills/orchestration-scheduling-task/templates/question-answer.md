@@ -57,6 +57,11 @@ answered-at: <iso>
 <!-- 自由文本的回答。 -->
 ```
 
+worker 怎么检测到它：写完 `question.md` 之后，worker 在后台轮询回答文件（例如后台 Bash 运行
+`until [ -f <answer-file> ]; do sleep 30; done`）。回答写在对话之外，不会有任何东西
+把 worker 叫醒；这个后台任务在回答到达时结束，它的结束通知会唤醒 worker，它在跑的
+时候也让 watchdog 知道任务并没有被搁置。
+
 worker 检测到 `answer.md` 时：
 
 1. 读取它。
