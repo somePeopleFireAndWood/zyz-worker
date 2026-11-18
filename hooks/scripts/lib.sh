@@ -66,6 +66,7 @@
 # - zyz_phase_of <status.md>    lowercased "Current Phase" value, or empty.
 # - zyz_phase_terminal <phase>  0 when phase is a terminal spelling (done/
 #                               delivered/completed/closed/... prefix match).
+# - zyz_phase_observing <phase> 0 for the observing phase (#24).
 # - zyz_phase_active <phase>    0 when phase is implementation/testing/
 #                               review/delivery (an active execution phase);
 #                               terminal and design phases are never active.
@@ -98,21 +99,22 @@
 #                               1. Pure string compare (no epoch/TTL). The sole
 #                               main-agent-attributed suppression gate for
 #                               L3/L4/notify.
-# - zyz_status_waits_due <status.md>
-#                               `<key>\t<next>\t<reason>` per Waiting On row
-#                               whose next-check-epoch has arrived (#24).
-# - zyz_status_awaiting_user <status.md> <task-dir>
-#                               0 for one valid `- Awaiting-User:` row written
-#                               since the last user prompt (#24).
+# - zyz_expect_eval <task-dir> <running-ids|unknown>
+#                               the agent's declarations evaluated
+#                               (expect_state.py); zyz_expect_field /
+#                               zyz_expect_tune read its output.
 # - zyz_status_uncommitted <status.md>
 #                               `<parsed>\t<ids>` of uncommitted SubTasks.
 # - zyz_task_has_pending_work <phase> <ids>
 #                               0 when the task still has executor work.
-# - zyz_bg_executor_count       in-flight executors in the Stop input (plugin
-#                               monitors excluded), or `unknown`.
+# - zyz_bg_executor_ids         ids of in-flight executors in the Stop input
+#                               (plugin monitors excluded), or `unknown`.
+# - zyz_executors_left <ids> <residents>
+#                               executor count once residents are removed.
 # - zyz_live_role_count <horizon>
 #                               non-terminal roles in observer JSON on stdin.
 # - zyz_no_executor_msg <root> <phase> <ids> <stop|watchdog>
+# - zyz_observing_msg <root> <stop|watchdog>
 #                               the shared L3/L4 no-executor finding text.
 #
 # ## Failure behavior
@@ -305,83 +307,47 @@ sys.exit(0)
 PY
 }
 
-# Print one `<key>\t<next-check-epoch>\t<reason>` line for every well-formed
-# Waiting On row (same row grammar as zyz_status_waiting, in the single
-# `## Agent State` section) whose next-check-epoch has arrived. Malformed rows
-# are skipped individually: a due reminder for the valid ones is still useful.
-zyz_status_waits_due() {
-    [ -f "${1:-}" ] || return 0
+# Evaluate the agent's declarations in status.md (#24; hooks/scripts/
+# expect_state.py owns the grammar). $1 task dir, $2 the comma-joined running
+# background task ids, `-` for none, or `unknown` (also when empty). Prints tab-separated lines:
+#   mutes\t0|1        a valid wait mutes status-stale (and no-executor)
+#   mutes_noexec\t0|1 a valid wait or user declaration mutes no-executor
+#   next\t0|1         something will bring the main agent back: a wait (future
+#                     or due), a legacy Waiting On row, or a user declaration
+#   residents\t<ids>  declared resident background task ids, comma-joined
+#   tune\t<name>\t<n> per-task thresholds
+#   due\t<key>\t<at>\t<reason>    a wait whose time has come
+#   dead\t<key>\t<ref>\t<reason>  a wait whose ref task is no longer running
+#   error\t<text>     a malformed row (it does nothing)
+# Prints nothing without python3 or on any failure: callers treat a missing
+# `mutes` line as UNKNOWN and skip every check that needs the declarations
+# (fail open), rather than reading it as "nothing declared".
+zyz_expect_eval() {
+    [ -f "${1:-}/status.md" ] || return 0
     command -v python3 >/dev/null 2>&1 || return 0
-    python3 - "$1" "$(zyz_now)" <<'PY' 2>/dev/null || true
-import re, sys
-p, now = sys.argv[1], int(sys.argv[2])
-row = re.compile(r"^- Waiting On: instance-key=([A-Za-z0-9._-]+); since-epoch=(0|[1-9][0-9]{0,9}); next-check-epoch=(0|[1-9][0-9]{0,9}); reason=(.*)$")
-sections = 0; inside = False; due = []; in_c = False
-try:
-    with open(p, encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            if in_c:
-                if "-->" in line: in_c = False
-                continue
-            if line.lstrip().startswith("<!--"):
-                in_c = "-->" not in line.lstrip()[4:]
-                continue
-            if line == "## Agent State": sections += 1; inside = True; continue
-            if inside and line.startswith("## "): inside = False
-            if inside:
-                m = row.fullmatch(line)
-                if m and 0 < int(m.group(3)) <= now:
-                    due.append((m.group(1), m.group(3), m.group(4).strip()[:200].replace("\t", " ")))
-except OSError:
-    sys.exit(0)
-if sections == 1:
-    for key, nxt, reason in due: print(f"{key}\t{nxt}\t{reason}")
-PY
+    local lib_dir prompt
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || return 0
+    prompt="$(zyz_epoch_in "$1/runtime/user-prompt-epoch")"
+    python3 "$lib_dir/expect_state.py" evalsh "$1/status.md" "${prompt:-0}" "${2:-unknown}" 2>/dev/null || true
 }
 
-# Return 0 when status.md declares that the main agent is waiting on the USER
-# (#24): exactly one `## Agent State` section holding exactly one row
-#   - Awaiting-User: since-epoch=<unix>; reason=<single-line text>
-# with 0 < since-epoch <= now and a non-blank reason. The declaration lapses on
-# its own the next time the user speaks: it is valid only while since-epoch is
-# not older than the last UserPromptSubmit (<task-dir>/runtime/user-prompt-epoch,
-# written by main-state.sh). So a forgotten row can never mute the no-executor
-# check for good — after the user answers, the main agent must re-declare if it
-# is still waiting. Anything malformed fails toward alerting (returns 1).
-zyz_status_awaiting_user() {
-    [ -f "${1:-}" ] || return 1
-    command -v python3 >/dev/null 2>&1 || return 1
-    local prompt_epoch
-    prompt_epoch="$(zyz_epoch_in "${2:-}/runtime/user-prompt-epoch")"
-    python3 - "$1" "$(zyz_now)" "${prompt_epoch:-0}" <<'PY' 2>/dev/null
-import re, sys
-p, now, prompt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-row = re.compile(r"^- Awaiting-User: since-epoch=([1-9][0-9]{0,9}); reason=(.*)$")
-sections = 0; inside = False; rows = []; bad = False; in_c = False
-try:
-    with open(p, encoding="utf-8", errors="strict") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            if in_c:
-                if "-->" in line: in_c = False
-                continue
-            if line.lstrip().startswith("<!--"):
-                in_c = "-->" not in line.lstrip()[4:]
-                continue
-            if line == "## Agent State": sections += 1; inside = True; continue
-            if inside and line.startswith("## "): inside = False
-            if inside and line.startswith("- Awaiting-User:"):
-                m = row.fullmatch(line)
-                if not m: bad = True; continue
-                rows.append(m.groups())
-except (OSError, UnicodeDecodeError):
-    sys.exit(1)
-if sections != 1 or bad or len(rows) != 1: sys.exit(1)
-since, reason = int(rows[0][0]), rows[0][1].strip()
-if not reason or len(reason) > 1024 or since > now or since < prompt: sys.exit(1)
-sys.exit(0)
-PY
+# Field of a zyz_expect_eval output ($1) — `mutes` / `next` / `residents`.
+zyz_expect_field() {
+    printf '%s\n' "${1:-}" | awk -F '\t' -v k="$2" '$1 == k { print $2; exit }'
+}
+
+# Per-task threshold: max(the Tune value named $2 in eval output $1, $3). A
+# Tune row can only relax a check, never tighten it, in every layer.
+zyz_expect_tune() {
+    local v
+    v="$(printf '%s\n' "${1:-}" | awk -F '\t' -v k="$2" '$1 == "tune" && $2 == k { print $3; exit }')"
+    case "$v" in ''|*[!0-9]*) printf '%s' "$3"; return 0 ;; esac
+    if [ "$v" -gt "$3" ] 2>/dev/null; then printf '%s' "$v"; else printf '%s' "$3"; fi
+}
+
+# 0 when zyz_expect_eval output $1 is usable (the evaluator ran).
+zyz_expect_known() {
+    printf '%s\n' "${1:-}" | grep -q "^mutes$(printf '\t')"
 }
 
 # Print `<parsed-count>\t<comma-joined uncommitted ids>` for the `## SubTasks`
@@ -469,15 +435,18 @@ zyz_task_has_pending_work() {
     esac
 }
 
-# Number of in-flight executors in a Stop/SubagentStop ZYZ_HOOK_INPUT, or
-# `unknown` when the host sent no background_tasks array (Codex, an unreachable
-# task registry) — callers must then fail open. Counts every background task
-# that is not finished (shell incl. Monitor watchers, subagent, teammate,
-# workflow, MCP task, ...) plus every session cron/wakeup (it will wake the
-# session). Plugin monitors are excluded: they live forever under
-# `<plugin>/monitors/` — this very watchdog shows up as a `running` shell task
-# (verified on Claude Code 2.1.251) and would otherwise mask every stall.
-zyz_bg_executor_count() {
+# Ids of the in-flight executors in a Stop/SubagentStop ZYZ_HOOK_INPUT, comma
+# joined (empty for none), or `unknown` when the host sent no background_tasks
+# array (Codex, an unreachable task registry) — callers must then fail open.
+# Counts every background task that is not finished (shell incl. Monitor
+# watchers, subagent, teammate, workflow, MCP task, ...) plus every session
+# cron/wakeup (it will wake the session). Plugin monitors are excluded: they live
+# forever under `<plugin>/monitors/` — this very watchdog shows up as a
+# `running` shell task (verified on Claude Code 2.1.251) and would otherwise
+# mask every stall. Other long-lived tasks are excluded only when status.md
+# declares them `kind=resident` (expect.sh); an entry without an id is printed
+# as `?`, which no declaration can match.
+zyz_bg_executor_ids() {
     [ -n "${ZYZ_HOOK_INPUT:-}" ] || { printf 'unknown'; return 0; }
     command -v python3 >/dev/null 2>&1 || { printf 'unknown'; return 0; }
     printf '%s' "$ZYZ_HOOK_INPUT" | python3 -c '
@@ -489,22 +458,36 @@ except Exception:
 tasks = d.get("background_tasks") if isinstance(d, dict) else None
 if not isinstance(tasks, list):
     print("unknown", end=""); sys.exit(0)
-n = 0
+def tid(t):
+    v = str(t.get("id") or "") if isinstance(t, dict) else ""
+    return v if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", v) else "?"
+ids = []
 for t in tasks:
-    if not isinstance(t, dict):
-        n += 1; continue
-    st = str(t.get("status") or "").lower()
-    if re.search(r"complet|fail|kill|stop|cancel|idle|done|error|exit|finish", st):
-        continue
-    cmd = str(t.get("command") or "")
-    if "/monitors/watchdog.sh" in cmd or ("/plugins/" in cmd and "/monitors/" in cmd):
-        continue
-    n += 1
+    if isinstance(t, dict):
+        st = str(t.get("status") or "").lower()
+        if re.search(r"complet|fail|kill|stop|cancel|idle|done|error|exit|finish", st):
+            continue
+        cmd = str(t.get("command") or "")
+        if "/monitors/watchdog.sh" in cmd or ("/plugins/" in cmd and "/monitors/" in cmd):
+            continue
+    ids.append(tid(t))
 crons = d.get("session_crons")
 if isinstance(crons, list):
-    n += len(crons)
-print(n, end="")
+    ids += [tid(c) for c in crons]
+print(",".join(ids), end="")
 ' 2>/dev/null || printf 'unknown'
+}
+
+# Number of executor ids left after removing residents. $1 the comma-joined ids
+# (or `unknown`), $2 the comma- or newline-separated resident ids. Prints
+# `unknown` as is.
+zyz_executors_left() {
+    [ "${1:-}" != unknown ] || { printf 'unknown'; return 0; }
+    printf '%s\n' "${1:-}" | tr ',' '\n' \
+        | awk -v res="$(printf '%s' "${2:-}" | tr '\n' ',')" '
+            BEGIN { n = split(res, a, ","); for (i = 1; i <= n; i++) if (a[i] != "") r[a[i]] = 1 }
+            NF && !($0 in r) { c++ }
+            END { printf "%d", c }'
 }
 
 # Number of non-terminal role instances younger than <horizon> in a
@@ -541,12 +524,50 @@ zyz_no_executor_msg() {
     lead="任务 ${task} 仍在 ${phase} 阶段"
     [ -z "$pending" ] || lead="${lead}，SubTask ${pending} 尚未提交"
     if [ "$where" = stop ]; then
-        lead="${lead}，但你要停下时没有任何执行者：没有在跑的 subagent 或后台任务（插件 monitor 不算），没有排定的唤醒，状态文件里也没有声明在等用户——你一停，就没有任何东西会再推动这个任务。"
+        lead="${lead}，但你要停下时没有任何执行者：没有在跑的 subagent 或后台任务（插件 monitor 和声明为 resident 的常驻任务不算），没有排定的唤醒，也没有有效的等待声明——你一停，就没有任何东西会再推动这个任务。"
     else
-        lead="${lead}，但主 agent 停下已有一段时间，期间没有任何执行者：停下时没有在跑的 subagent 或后台任务（插件 monitor 不算）、没有排定的唤醒，此后也没有新的工具调用，状态文件里也没有声明在等用户——任务正在静默搁置。"
+        lead="${lead}，但主 agent 停下已有一段时间，期间没有任何执行者：停下时没有在跑的 subagent 或后台任务（插件 monitor 和 resident 常驻任务不算）、没有排定的唤醒，此后也没有新的工具调用，也没有有效的等待声明——任务正在静默搁置。"
     fi
-    printf '%s现在三选一：(1) 派发下一步（或自己接着做）；(2) 如果你认为某条通道还在跑，先核实再说（ps / ListAgents / 后台任务的输出文件）——"以为还在跑、其实早已结束"正是任务被静默搁置的常见原因，以"等待通知"收尾的 subagent 不会再被唤醒；(3) 如果确实在等用户，就在 %s 的 `## Agent State` 里写一行 `- Awaiting-User: since-epoch=<当前 unix 时间>; reason=<在等用户什么>`（用户下次发言后自动失效）。' \
-        "$lead" "$root/status.md"
+    printf '%s现在选一条：(1) 派发下一步（或自己接着做）；(2) 如果你认为某条通道还在跑，先核实再说（ps / ListAgents / 后台任务的输出文件）——"以为还在跑、其实早已结束"正是任务被静默搁置的常见原因，以"等待通知"收尾的 subagent 不会再被唤醒；(3) 用 %s 声明你在等什么：等用户 `set <key> user --reason …`（用户下次发言后自动失效）；等一个会在某时推进任务的东西 `set <key> wait --at +2h [--ref <后台任务 id>] --reason …`（到点会叫醒你）；还在跑的后台任务其实是常驻的（开发服务器、tail -f）就 `set <key> resident --ref <id> --reason …`。' \
+        "$lead" "$(zyz_expect_cli) --task $root"
+}
+
+# The observing-phase finding (#24): the task's main work is delivered and it
+# is kept open to check on something later, but no wait is scheduled, so nothing
+# will ever bring the main agent back. $1 task root, $2 `stop` or `watchdog`.
+zyz_observing_msg() {
+    local root lead
+    root="$1"
+    lead="任务 $(basename "$root") 处于 observing（观察期）阶段，但没有排定任何下一次检查"
+    if [ "$2" = stop ]; then
+        lead="${lead}——你一停，到了该观察的时间也不会有任何东西叫醒你。"
+    else
+        lead="${lead}，主 agent 已停下——到了该观察的时间不会有任何东西叫醒它。"
+    fi
+    printf '%s用 %s 排定下一次检查：`set <key> wait --at <时间> --reason <到时看什么>`（时间可以是 +6h、+1d 或 ISO 时间，最长 7 天；到点 watchdog 会叫醒你）；如果已经没有后续要观察，就把 Current Phase 改成 done。' \
+        "$lead" "$(zyz_expect_cli) --task $root"
+}
+
+# How to invoke expect.sh from the main agent's shell, for messages.
+zyz_expect_cli() {
+    local lib_dir
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    printf '%s' "${lib_dir:-<plugin-root>/hooks/scripts}/expect.sh"
+}
+
+# Ids of the session crons/wakeups in a Stop ZYZ_HOOK_INPUT, comma-joined.
+zyz_bg_cron_ids() {
+    [ -n "${ZYZ_HOOK_INPUT:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    printf '%s' "$ZYZ_HOOK_INPUT" | python3 -c '
+import json, sys
+try:
+    c = json.load(sys.stdin).get("session_crons")
+    if isinstance(c, list):
+        print(",".join(str(x.get("id") or "?") if isinstance(x, dict) else "?" for x in c), end="")
+except Exception:
+    pass
+' 2>/dev/null || true
 }
 
 # Resolve one pointer line against the base dir the pointer lives under: an
@@ -795,6 +816,18 @@ zyz_phase_terminal() {
     # stripped whitespace).
     case "${1:-}" in
         done*|delivered*|complete*|closed*|finished*|cancel*|abandon*) return 0 ;;
+    esac
+    return 1
+}
+
+zyz_phase_observing() {
+    # $1 = phase string. 0 for the observing phase (#24): main work delivered,
+    # the task kept open only to check on something at scheduled times. Not an
+    # active phase — every "is anyone working?" check is off — but it must have
+    # a scheduled wait (zyz_expect_eval `next`), or L4/L3 report it.
+    zyz_phase_terminal "${1:-}" && return 1
+    case "${1:-}" in
+        observ*|monitor*|watch*) return 0 ;;
     esac
     return 1
 }

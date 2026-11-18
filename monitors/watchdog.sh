@@ -21,6 +21,12 @@
 #        ZYZ_WATCHDOG_COOLDOWN_SEC       min gap per finding    (default 900)
 #        ZYZ_WATCHDOG_NO_EXECUTOR_SEC    stopped-with-no-executor threshold
 #                                        (default 600)
+#        ZYZ_WATCHDOG_REMIND_SEC         re-reminder gap for a due wait
+#                                        (default 1800)
+#        ZYZ_WATCHDOG_OBSERVE_SEC        gap between "observing with nothing
+#                                        scheduled" reports (default 10800)
+#   A task's `- Tune:` row (expect.sh tune) may override status-stale-sec,
+#   no-executor-sec and remind-sec for that task.
 #        ZYZ_HOOKS_DISABLE=1             exit immediately
 #
 # ## Outputs (stdout, one line per event — each line wakes the main agent)
@@ -33,8 +39,11 @@
 # - "[zyz-worker watchdog] task <id> is still in phase <phase> ... but has had
 #    no executor ..." (#24): the main agent stopped with nothing in flight and
 #    no declared wait (see scan_no_executor).
-# - "[zyz-worker watchdog] you declared waiting on <key> ... the re-check time
-#    has arrived" (#24): a Waiting On row's next-check-epoch passed.
+# - "[zyz-worker watchdog] time is up for the wait <key> ..." (#24): a declared
+#    wait (expect.sh, or a legacy Waiting On row) has come due; repeated every
+#    remind-sec while the row is left as is.
+# - "... the background task <id> of wait <key> is no longer running" (#24).
+# - "... task <id> is observing but nothing is scheduled" (#24).
 # Findings are rate-limited per key via runtime/nag/watchdog-<key>.last.
 # The role threshold is deliberately higher than the L4 stop gate's: a
 # healthy role can reason for a while without tool calls, and only L4 can
@@ -89,6 +98,11 @@ STATUS_STALE="${ZYZ_WATCHDOG_STATUS_STALE_SEC:-1800}"
 COOLDOWN="${ZYZ_WATCHDOG_COOLDOWN_SEC:-900}"
 NO_EXECUTOR="${ZYZ_WATCHDOG_NO_EXECUTOR_SEC:-600}"
 case "$NO_EXECUTOR" in ''|*[!0-9]*) NO_EXECUTOR=600 ;; esac
+REMIND="${ZYZ_WATCHDOG_REMIND_SEC:-1800}"
+case "$REMIND" in ''|*[!0-9]*) REMIND=1800 ;; esac
+OBSERVE="${ZYZ_WATCHDOG_OBSERVE_SEC:-10800}"
+case "$OBSERVE" in ''|*[!0-9]*) OBSERVE=10800 ;; esac
+TASK_EXPECT=""
 ONCE="${ZYZ_WATCHDOG_ONCE:-0}"
 
 WATCHDOG_PID_FILE="${ZYZ_WATCHDOG_PID_FILE:-}"
@@ -272,29 +286,15 @@ EOF
     # not working.
     zyz_phase_active "$phase" || return 0
 
-    # (c) Waiting On rows whose next-check-epoch has arrived (#24). A valid row
-    # only mutes the status-stale finding; once it is due nothing else would
-    # wake an idle main agent to re-check. Once per (key, next-check-epoch) —
-    # renewing the row with a new check time re-arms it — and at most once per
-    # cooldown per key. Not gated by main-state: the reminder exists for idle.
-    local wkey wnext wreason wmark
-    while IFS="$(printf '\t')" read -r wkey wnext wreason; do
-        [ -n "$wkey" ] || continue
-        wmark="$root/runtime/nag/watchdog-wait-$wkey.next"
-        [ "$(zyz_epoch_in "$wmark")" = "$wnext" ] && continue
-        zyz_cooldown_ok "$root/runtime/nag/watchdog-wait-$wkey.last" "$COOLDOWN" || continue
-        zyz_write_atomic "$wmark" "$wnext"
-        printf '[zyz-worker watchdog] 你在 %s 里声明在等 %s（%s），复查时间（next-check-epoch=%s）已到。现在就复查：结果到了就收取、记录并删除这一行；还没到就先核实它是否真的还在进行（ps / ListAgents / 后台任务的输出文件），仍在进行才写一条新的有时限 Waiting On 行，已经结束或死亡就按恢复协议处理。\n' \
-            "$status_file" "$wkey" "$wreason" "$wnext"
-    done <<ZYZ_WATCHDOG_WAITS
-$(zyz_status_waits_due "$status_file")
-ZYZ_WATCHDOG_WAITS
-
     suppress="$(zyz_main_state_suppresses "$root" && echo 1 || echo 0)"
     mtime="$(zyz_mtime "$status_file")"
     if [ -n "$mtime" ]; then
         age=$(( $(zyz_now) - mtime ))
-        if [ "$age" -gt "$STATUS_STALE" ] && [ "$suppress" = 0 ] && ! zyz_status_waiting "$status_file"; then
+        # A wait declaration mutes this, judged with the running ids of the
+        # last Stop (a `wait --ref` whose task is gone mutes nothing).
+        if [ "$age" -gt "$(zyz_expect_tune "$TASK_EXPECT" status-stale-sec "$STATUS_STALE")" ] \
+            && [ "$suppress" = 0 ] && ! zyz_status_waiting "$status_file" \
+            && [ "$(zyz_expect_field "$TASK_EXPECT" mutes)" != 1 ]; then
             if zyz_cooldown_ok "$root/runtime/nag/watchdog-status.last" "$COOLDOWN"; then
                 printf '[zyz-worker watchdog] 状态文件 %s 已有 %s 分钟没有更新，当前处于活跃阶段 %s——现在就把当前进度、活跃角色、阻塞项和下一步写进去。\n' \
                     "$status_file" "$((age / 60))" "$phase"
@@ -304,35 +304,119 @@ ZYZ_WATCHDOG_WAITS
     fi
 }
 
-# No-executor scan (#24), the periodic backstop of the L4 clause: this task
-# still has work, the main agent stopped at least NO_EXECUTOR seconds ago and
-# has made no tool call or received no user prompt since (the stop-snapshot
-# still exists), the host reported zero executors at that Stop, no dispatched
-# role is still open (SESSION_LIVE, summed over the session), and status.md
-# declares no wait. Catches what L4 let through — a Stop inside its cooldown,
-# or a lane that ended after the Stop. Deliberately NOT muted by main-state
-# idle/awaiting-user: a Notification marks idle_prompt as awaiting-user a
-# minute after every Stop, so only an explicit declaration may mute it. Its IM
-# uses --origin stall so notify.sh's idle suppression does not drop it either.
-# Silent when the snapshot says `unknown` (no background_tasks: Codex).
-scan_no_executor() {
-    local root status_file phase snap snap_epoch snap_count pending
+# Stop snapshot fields (written by L4 at every Stop, deleted by the next
+# main-agent tool call or user prompt):
+# `<epoch> <executors|unknown> <ids|-|unknown> <non-resident-crons>`.
+read_snapshot() { # <root> -> sets SNAP_EPOCH SNAP_COUNT SNAP_IDS SNAP_CRONS
+    local snap
+    SNAP_EPOCH=""; SNAP_COUNT=""; SNAP_IDS="unknown"; SNAP_CRONS=0
+    snap="$(head -n1 "$1/runtime/stop-snapshot" 2>/dev/null)"
+    [ -n "$snap" ] || return 0
+    set -- $snap
+    case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
+    SNAP_EPOCH="$1"; SNAP_COUNT="${2:-unknown}"
+    # The ids are a fact only for a snapshot that has them; `-` means none ran.
+    case "${3:-}" in '') ;; *) SNAP_IDS="$3" ;; esac
+    case "${4:-}" in ''|*[!0-9]*) ;; *) SNAP_CRONS="$4" ;; esac
+}
+
+# Declaration scan (#24), for every task of the session that is not finished.
+# The agent declares why a task may be quiet (expect.sh); this scan holds it to
+# the declaration and is the only thing that wakes an idle main agent for it:
+#  (1) a `wait` whose time has come: wake the main agent; repeat every
+#      remind-sec (Tune, default ZYZ_WATCHDOG_REMIND_SEC) while the row stays,
+#      and page the user after the second unanswered reminder. Moving the row
+#      (a new --at) or clearing it re-arms / ends this.
+#  (2) a `wait --ref <id>` whose background task is gone from the host's list
+#      at the last Stop (observed facts beat declarations): say so once.
+#  (3) an `observing` task with no scheduled wait: nothing will bring the main
+#      agent back to observe. Long cooldown (ZYZ_WATCHDOG_OBSERVE_SEC).
+#  (4) no executor: the periodic backstop of the L4 clause — this task still has
+#      work, the main agent stopped at least no-executor-sec ago and has done
+#      nothing since (the stop-snapshot still exists), the host reported zero
+#      executors at that Stop (residents excluded), no dispatched role is open
+#      (SESSION_LIVE), and no wait/user declaration mutes it. Catches a Stop
+#      inside L4's cooldown, or a lane that ended after the Stop.
+# None of these is muted by main-state idle/awaiting-user: a Notification
+# marks idle_prompt as awaiting-user a minute after every Stop, so only an
+# explicit declaration may mute them. Their IMs use --origin stall so
+# notify.sh's idle suppression does not drop them either. (4) is silent when
+# the snapshot says `unknown` (no background_tasks: Codex).
+scan_declarations() {
+    local root status_file phase expect pending key at reason ref kind rest
+    local mark remind last now n
     root="$1"
     status_file="$root/status.md"
     [ -f "$status_file" ] || return 0
     phase="$(zyz_phase_of "$status_file")"
-    zyz_phase_active "$phase" || return 0
+    zyz_phase_terminal "$phase" && return 0
+    zyz_phase_active "$phase" || zyz_phase_observing "$phase" || return 0
+    now="$(zyz_now)"
+    read_snapshot "$root"
+    expect="$(zyz_expect_eval "$root" "$SNAP_IDS")"
+    # Unknown declarations (no python3, evaluator failure): fail open.
+    zyz_expect_known "$expect" || return 0
+    remind="$(zyz_expect_tune "$expect" remind-sec "$REMIND")"
+    mkdir -p "$root/runtime/nag" 2>/dev/null
+
+    while IFS="$(printf '\t')" read -r kind key at reason when; do
+        case "$kind" in
+            due)
+                mark="$root/runtime/nag/expect-due-$key"
+                set -- $(head -n1 "$mark" 2>/dev/null)
+                # Marker: `<at> <last-reminder-epoch> <reminders-sent>`.
+                if [ "${1:-}" = "$at" ]; then
+                    last="${2:-0}"; n="${3:-0}"
+                    case "$last$n" in *[!0-9]*) last=0; n=0 ;; esac
+                    [ $((now - last)) -ge "$remind" ] || continue
+                else
+                    n=0
+                fi
+                n=$((n + 1))
+                zyz_write_atomic "$mark" "$at $now $n"
+                if [ "$n" = 1 ]; then
+                    printf '[zyz-worker watchdog] 到点了：你声明的等待 %s 的时间已到（%s）。现在就去看：%s。看完之后用 %s 处理这一行——结果已到就 clear %s 并继续；还要再等就用新的时间重新 set（例如 --at +1h）；任务已无后续就把 Current Phase 改成 done。\n' \
+                        "$key" "${when:-$at}" "$reason" "$(zyz_expect_cli) --task $root" "$key"
+                else
+                    printf '[zyz-worker watchdog] 第 %s 次提醒：等待 %s 早已到点，这一行还没有处理（%s）。现在就去看，然后 clear 它或用新的时间重新 set（%s）。\n' \
+                        "$n" "$key" "$reason" "$(zyz_expect_cli) --task $root"
+                    # Page the user on the 3rd and 5th reminder only.
+                    case "$n" in 3|5) notify_stuck "$root" "等待 ${key} 已到点，主 agent 提醒 $((n - 1)) 次后仍未处理" stall ;; esac
+                fi
+                ;;
+            dead)
+                ref="$at"
+                mark="$root/runtime/nag/expect-dead-$key-$ref"
+                [ -e "$mark" ] && continue
+                zyz_write_atomic "$mark" "$now"
+                printf '[zyz-worker watchdog] 你声明在等的 %s 绑定的后台任务 %s 已经不在运行了（它可能已结束，结束通知也许没送到你这里）。现在就去读它的输出 / 结果并 clear %s；它其实只是被换掉了的话，用新的任务 id 重新 set（%s）。\n' \
+                    "$key" "$ref" "$key" "$(zyz_expect_cli) --task $root"
+                ;;
+        esac
+    done <<ZYZ_EXPECT_EVENTS
+$(printf '%s\n' "$expect" | awk -F '\t' '$1 == "due" || $1 == "dead" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }')
+ZYZ_EXPECT_EVENTS
+
+    if zyz_phase_observing "$phase"; then
+        [ "$(zyz_expect_field "$expect" next)" = 1 ] && return 0
+        # A host-scheduled wakeup (not declared resident) seen at the last Stop.
+        [ "$SNAP_CRONS" = 0 ] || return 0
+        zyz_cooldown_ok "$root/runtime/nag/watchdog-observing.last" "$OBSERVE" || return 0
+        printf '[zyz-worker watchdog] %s\n' "$(zyz_observing_msg "$root" watchdog)"
+        notify_stuck "$root" "任务处于观察期，但没有排定下一次检查" stall
+        return 0
+    fi
+
     [ "$SESSION_LIVE" = 0 ] || return 0
-    snap="$(head -n1 "$root/runtime/stop-snapshot" 2>/dev/null)"
-    snap_epoch="${snap%% *}"; snap_count="${snap#* }"
-    case "$snap_epoch" in ''|*[!0-9]*) return 0 ;; esac
-    [ "$snap_count" = 0 ] || return 0
-    [ $(( $(zyz_now) - snap_epoch )) -ge "$NO_EXECUTOR" ] || return 0
+    # A due wait already has its own, more specific reminder above.
+    printf '%s\n' "$expect" | grep -q "^due$(printf '\t')" && return 0
+    [ -n "$SNAP_EPOCH" ] && [ "$SNAP_COUNT" = 0 ] || return 0
+    [ $((now - SNAP_EPOCH)) -ge "$(zyz_expect_tune "$expect" no-executor-sec "$NO_EXECUTOR")" ] || return 0
     pending="$(zyz_status_uncommitted "$status_file")"
     pending="${pending#*	}"
     zyz_task_has_pending_work "$phase" "$pending" || return 0
     zyz_status_waiting "$status_file" && return 0
-    zyz_status_awaiting_user "$status_file" "$root" && return 0
+    [ "$(zyz_expect_field "$expect" mutes_noexec)" = 1 ] && return 0
     zyz_cooldown_ok "$root/runtime/nag/watchdog-no-executor.last" "$COOLDOWN" || return 0
     printf '[zyz-worker watchdog] %s\n' "$(zyz_no_executor_msg "$root" "$phase" "$pending" watchdog)"
     notify_stuck "$root" "任务仍在 ${phase} 阶段，但已没有任何执行者，正在静默搁置" stall
@@ -352,18 +436,24 @@ while :; do
     if [ -n "$roots" ]; then
         UNARMED_REPORTED="false"
     fi
+    SESSION_LIVE=0
     if [ -n "$roots" ] && zyz_roots_any_active "$roots"; then
         SESSION_STATUS_MTIME="$(zyz_roots_latest_status_mtime "$roots")"
         SESSION_LABEL="$(zyz_roots_label "$roots")"
-        SESSION_LIVE=0
         while IFS= read -r root; do
-            [ -n "$root" ] && scan_task "$root" </dev/null
+            [ -n "$root" ] || continue
+            read_snapshot "$root"
+            TASK_EXPECT="$(zyz_expect_eval "$root" "$SNAP_IDS")"
+            scan_task "$root" </dev/null
         done <<ZYZ_WATCHDOG_ROOTS
 $roots
 ZYZ_WATCHDOG_ROOTS
-        # Needs SESSION_LIVE from every task's scan, so it runs after them.
+    fi
+    # Declarations are honoured in the observing phase too, which is not an
+    # active phase. Needs SESSION_LIVE from every task's scan, so it runs after.
+    if [ -n "$roots" ]; then
         while IFS= read -r root; do
-            [ -n "$root" ] && scan_no_executor "$root" </dev/null
+            [ -n "$root" ] && scan_declarations "$root" </dev/null
         done <<ZYZ_WATCHDOG_ROOTS
 $roots
 ZYZ_WATCHDOG_ROOTS

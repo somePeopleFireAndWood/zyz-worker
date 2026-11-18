@@ -8,6 +8,8 @@
 - 任务名称:
 - 设计文档:
 - Current Phase:
+
+<!-- Current Phase 取值：design / implementation / testing / review / delivery / observing / awaiting-confirmation / done。observing = 主体已交付、窗口保留用于定时观察（例如发布后到点对账），必须用 expect.sh 排定下一次检查。 -->
 - 创建时间:
 - 更新时间:
 
@@ -38,18 +40,21 @@
 - testAgent:
 - reviewAgent:
 
-<!-- 可选的、有时限的独立等待行放在这里，每个实例一行。绝不
-预先创建空行。严格格式：
-- Waiting On: instance-key=<key>; since-epoch=<unix>; next-check-epoch=<unix>; reason=<single-line UTF-8 reason>
-结果到达时，或在一次到期复核之前，删除该行。Waiting On
-只抑制主状态新鲜度检查和"无执行者"检查，绝不抑制角色 / 探针 / 无输出 / 结果刷新检查。
-next-check-epoch 一到，watchdog 会提醒你复查（每个 key 每个复查时间一次）。
-
-主 agent 在活跃阶段停下来等**用户**（裁决、确认、补充信息）时，写一行
-（至多一行，原因写在等用户什么）：
-- Awaiting-User: since-epoch=<unix>; reason=<single-line UTF-8 reason>
-它只在用户下一次发言之前有效；用户回复后如果仍在等，重新写一行。没有这一行、
-也没有在跑的 subagent / 后台任务时停下，会被 watchdog 当作"无执行者"拦下。 -->
+<!-- 声明（由主 agent 用 `<plugin-root>/hooks/scripts/expect.sh` 写入，不要手写）：
+watchdog 不去猜任务为什么安静，而是按你在这里的声明来判断——没有声明、又没有
+执行者的活跃任务会被报警。每条声明都会自然失效（到点、用户下次发言、或它绑定
+的后台任务结束）。expect.sh 写出来的行形如：
+- Expect: key=recon; kind=wait; at=<unix>; ref=-; reason=<到时看什么>
+三种 kind：
+  wait      某样东西会在 at 之前推进任务（后台任务用 --ref 绑定它的 id；外部批跑；
+            observing 阶段的定时检查）。到点之前压住"状态过期"和"无执行者"，
+            到点叫醒你，你不处理就每隔 remind-sec 再提醒，第 3 次通知用户。
+  user      你停下来等用户。用户下次发言后自动失效。只压"无执行者"，不压"状态过期"。
+  resident  永远不会结束、也不推进任务的后台任务（开发服务器、tail -f、无关的
+            cron），不算执行者。
+可选的按任务阈值（expect.sh tune，只能放宽、最多放宽到 4 小时）：
+- Tune: status-stale-sec=<n>; no-executor-sec=<n>; remind-sec=<n>
+旧格式 `- Waiting On:` / `- Awaiting-User:` 行仍然有效。 -->
 
 ## 使用的可选能力
 

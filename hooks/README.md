@@ -20,9 +20,29 @@ DONE 和 FINALIZED 是 fixed-pack 中的逻辑记录。FINALIZED 是可审计的
 
 `probe-ack` 和 `probe-cancel` 会在读取或修改实例状态之前拒绝格式错误的 probe id，以 exit 2 退出并返回 `error.code="invalid-probe-id"`。语法合法的 `probe1-<32 lowercase hex>` id 如果不是当前待处理的那个确切 challenge，则返回 exit 4 和 `error.code="probe-mismatch"`。两种错误都保留规范的 JSON 信封，并且除了有长度上限、仅用于输出的 argv 字段之外，绝不回显或持久化被拒绝的载荷。
 
-有界等待只能写在 `status.md` 中唯一的 `## Agent State` 小节里，格式为 `- Waiting On: instance-key=<key>; since-epoch=<unix>; next-check-epoch=<unix>; reason=<single-line text>`。所有行都必须有效、唯一、未过期，并且不超过 `ZYZ_WAIT_MAX_SEC`。一组有效的等待声明只会压制主 agent 的状态陈旧提醒和“无执行者”检查（#24）。某一行的 `next-check-epoch` 到期后，L3 会提醒主 agent 复查它（每个 key 每个复查时间一次，并受 watchdog 冷却限频）——否则一个空闲的主 agent 不会有任何东西叫它回来复查。
+## 声明（#24）：agent 主导，插件兑现
 
-等**用户**时用另一种声明（#24），同样只能写在唯一的 `## Agent State` 小节里，至多一行：`- Awaiting-User: since-epoch=<unix>; reason=<single-line text>`。它只在用户下一次发言之前有效：`main-state.sh` 在每次 `UserPromptSubmit` 时把当时的 epoch 写进 `<task-dir>/runtime/user-prompt-epoch`，`since-epoch` 早于它的声明自动失效——所以一行被忘掉的声明不可能永久压住“无执行者”检查。格式错误、多于一行、`since-epoch` 在未来或 reason 为空，一律视为没有声明（倾向报警）。
+watchdog 不去猜任务为什么安静——那需要穷举场景。主 agent 用 `hooks/scripts/expect.sh` 在 `status.md` 唯一的 `## Agent State` 小节里**声明**意图；`hooks/scripts/expect_state.py` 是唯一的解析器（hook 通过 `lib.sh zyz_expect_eval` 调用它），解析时跳过 HTML 注释（模板就在注释里写着示例行）。行格式：
+
+```text
+- Expect: key=<k>; kind=wait; at=<epoch>; ref=<后台任务 id|->; reason=<text>
+- Expect: key=<k>; kind=user; since=<epoch>; reason=<text>
+- Expect: key=<k>; kind=resident; ref=<后台任务 id>; reason=<text>
+- Tune: status-stale-sec=<n>; no-executor-sec=<n>; remind-sec=<n>
+```
+
+- **`wait`**：某样东西会在 `at` 之前推进任务。`at` 之前压住状态过期（L1/L3/L4）和无执行者（L3/L4）；只在活跃和 observing 阶段生效（design / awaiting-confirmation 阶段的 wait 到点不会叫醒）；`at` 一到，L3 叫醒主 agent，之后每隔 `remind-sec`（Tune，默认 `ZYZ_WATCHDOG_REMIND_SEC`=1800）再提醒一次，第 3 次起同时发 `--origin stall` 的 IM。标记记在 `runtime/nag/expect-due-<key>`（`<at> <上次提醒> <次数>`），换了 `at` 就重新开始。带 `ref` 时只在那个后台任务还在宿主列表里时有效（L4 看本次 Stop 的列表，L3 看上次 Stop 的快照；没有快照或快照是旧格式时视为未知、照常有效；L1 拿不到列表，一律视为有效）；它消失了，声明不再压制，L3 报一次（`expect-dead-<key>-<ref>`）。后台 subagent 的 id 也与 Agent 工具返回的 agentId 一致（已实测）。`at` 超过 `ZYZ_EXPECT_MAX_SEC`（默认 604800，即 7 天）的行被忽略（`expect.sh` 直接拒写）。
+- **`user`**：主 agent 停下来等用户。它只压住"无执行者"，**不**压住状态过期——设了 user 之后如果还在干活，状态文件照样要保持新鲜。只在用户下一次发言之前有效：`main-state.sh` 在每次 `UserPromptSubmit` 时把 epoch 写进 `runtime/user-prompt-epoch`，`since` 早于它就失效，所以一行被忘掉的声明不可能永久静音。
+- **`resident`**：永不结束、也不推进任务的后台任务。L4 计算执行者时按 id 精确扣除（会话内所有任务的声明都算，后台任务本来就是会话级的）。Bash `run_in_background` / Monitor / CronCreate 返回的 id 与 Stop 输入里 `background_tasks[].id` / `session_crons[].id` 一致——已在 Claude Code 2.1.251 上实测。
+- **`Tune`**：按任务调整阈值。L1/L3/L4 一律取 Tune 与本层默认值中**较大**的那个（`zyz_expect_tune`），所以它只能放宽、不能收紧；上限让它关不掉检查：`status-stale-sec` 600..14400、`no-executor-sec` 60..14400、`remind-sec` 300..86400。L1 的默认 600 就是下限，所以 L1 可以先做便宜的默认阈值检查、过了再解析。Tune 行不会自动失效，不需要了就 `tune --clear`。
+- **评估器不可用时一律放行。** 没有 python3、或 `expect_state.py` 出错时，`zyz_expect_eval` 没有输出，调用方把它当作"未知"而不是"什么都没声明"：observing 检查、声明扫描和无执行者子句都跳过（fail open）。
+- **每一行各自独立。** 格式错误或重复 key 的行什么都不做、也不连累别的行，`expect.sh list` 会把它标成 INVALID。
+- **不变量（agent 不能覆盖）：** 活跃任务既没有执行者、也没有有效声明就报警；每条声明都会失效；宿主报告的事实优先于声明。
+- **兼容旧格式：** `- Waiting On:`（严格语法，仍由 `zyz_status_waiting` 判定压制，1 小时上限 `ZYZ_WAIT_MAX_SEC`；到期提醒走上面的 `wait` 逻辑，epoch 必须为正，`next-check-epoch=0` 的行无效）和 0.29.0 的 `- Awaiting-User:`（等同 `kind=user`）照常有效，`expect.sh clear <key>` 也能删掉它们。
+
+`expect.sh` 写入时持有 `<task-dir>/runtime/expect.lock`（并行调用不会丢行），用解析器给出的位置插入（跳过注释），写完重新解析确认新行确实生效、否则拒写；保留文件原有的换行风格（CRLF 不会被改成 LF）。每次写入都会刷新 status.md 的 mtime，等于重置状态过期计时。用法：`set <key> wait --at <+30m|+2h|+1d|epoch|ISO> [--ref <id>] --reason <text>`、`set <key> user --reason <text>`、`set <key> resident --ref <id> --reason <text>`、`clear <key>|--all`、`tune name=value…|--clear`、`list`；`--task <task-dir>` 指定任务，默认是本会话的主任务。它在写入前校验，非法输入以非零退出并给出一行诊断，原子写入（tmpfile + rename）。只由主 agent 运行。
+
+**observing 阶段（#24）。** `Current Phase: observing`（也认 `monitor*` / `watch*` 前缀）表示主体已交付、窗口留着到点观察。它**不是**活跃阶段：状态过期、无执行者、L1 提醒、idle IM 都不响。但它必须有一个排定的检查（有效或已到点的 `wait`、未到期的旧 `Waiting On`，或有效的 `user`）：没有时 L4 在停下时拦一次（`runtime/nag/stopgate-observing.last`，与 L4 冷却相同），L3 每 `ZYZ_WATCHDOG_OBSERVE_SEC`（默认 10800）提醒一次。
 
 ## 主 agent 状态机（纯信号驱动，无 TTL）
 
@@ -103,9 +123,9 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
 
 - `.snapshot-gc-owned.v1/.catalog-global-pack.v1`——经过认证的 catalog、调度、计数器，以及主 agent 的 `main_heartbeat_epoch` 记录。
 - 固定的逐实例 audit/work pack——逻辑上的 IDENTITY、START、HEARTBEAT、DONE、FINALIZED、probe、诊断、回执、baseline-inventory 和 inflight 记录。记录名不是独立的路径名，只能通过共享解析器读取。
-- `runtime/nag/*.last`——用于限频的冷却时间戳（epoch）。`watchdog-wait-<key>.next` 记录已经提醒过的 `Waiting On` 复查时间；`subagent-waiting-<agent-id>` 是 L2 “以等待收尾”检查的逐实例一次性标记。
-- `runtime/stop-snapshot`——`<epoch> <executor-count|unknown>`，L4 在每次 `Stop` 时写入（不论是否拦截、包括 `stop_hook_active` 时），记录宿主报告的执行者数量；主 agent 的下一次工具调用（`heartbeat.sh`）或下一次用户发言（`main-state.sh`）会删掉它。所以它存在，就说明主 agent 自那次 Stop 之后什么都没做——L3 的“无执行者”扫描只读它，因为 monitor 看不到 `background_tasks`。
-- `runtime/user-prompt-epoch`——最近一次 `UserPromptSubmit` 的 epoch（`Awaiting-User` 的失效点）。
+- `runtime/nag/*.last`——用于限频的冷却时间戳（epoch）。`expect-due-<key>` / `expect-dead-<key>-<ref>` 是声明提醒的标记（见上）；`subagent-waiting-<agent-id>` 是 L2 “以等待收尾”检查的逐实例一次性标记。
+- `runtime/stop-snapshot`——`<epoch> <executor-count|unknown> <running-ids|-|unknown>`，L4 在每次 `Stop` 时写入（不论是否拦截、包括 `stop_hook_active` 时），记录宿主报告的执行者数量（已扣除 resident）和在跑的后台任务 id（L3 据此判断 `wait --ref` 绑定的任务是否已结束）；主 agent 的下一次工具调用（`heartbeat.sh`）或下一次用户发言（`main-state.sh`）会删掉它。所以它存在，就说明主 agent 自那次 Stop 之后什么都没做——L3 的“无执行者”扫描只读它，因为 monitor 看不到 `background_tasks`。
+- `runtime/user-prompt-epoch`——最近一次 `UserPromptSubmit` 的 epoch（`kind=user` 声明的失效点）。
 
 ## scripts/lib.sh
 
@@ -135,7 +155,7 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
 ## scripts/status-freshness.sh — L1
 
 - 触发点：`PostToolUse`，matcher `*`，同步（上下文必须紧挨着工具结果落地）。**当 `tool_name` 为 `Agent` 时让位**——那个时刻归 `post-agent-flush.sh` 负责；它读的是同一个 mtime，否则会在同一轮里再注入一条几乎相同的提醒（两者的冷却相互独立，谁也压不住谁）。
-- 输入：stdin 上的 hook JSON；`ZYZ_STATUS_STALE_SEC`（默认 600）、`ZYZ_STATUS_NAG_COOLDOWN_SEC`（默认 300）。
+- 输入：stdin 上的 hook JSON；`ZYZ_STATUS_STALE_SEC`（默认 600）、`ZYZ_STATUS_NAG_COOLDOWN_SEC`（默认 300）；任务的 `Tune: status-stale-sec` 可以放宽主 agent 的阈值，有效的 `wait` / `user` 声明压住主 agent 的提醒。
 - 输出：当总状态文件在活跃阶段陈旧时，输出 `hookSpecificOutput.additionalContext`，提醒当前上下文（主 agent，或 implementation/test subagent）把进度持久化。按受众通过 `runtime/nag/<audience>.last` 限频。
 - 失败行为：fail open；仅作提醒，绝不阻断。
 - 支持的 agent：主 agent、implementation-agent、test-agent（review-agent 被排除——它不拥有需要刷新的状态文件；它的 Bash 权限只用于只读重跑和必须还原的临时变异，绝不用于写交付物）。
@@ -185,10 +205,10 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
 - 输入：stdin 上的 hook JSON（`stop_hook_active`、`background_tasks`、`session_crons`）；`ZYZ_ROLE_STALE_SEC`（默认 900）、`ZYZ_ROLE_STALE_HORIZON_SEC`（默认 21600）、`ZYZ_STOP_STATUS_STALE_SEC`（默认 1200）、`ZYZ_STOP_GATE_COOLDOWN_SEC`（默认 600）。
 - 输出：在活跃阶段，如果经过认证的观测器报告某个非终止角色的存活信号陈旧或跟踪尚未建立，且它并不在运行中的后台 subagent 任务列表里，或者状态文件严重陈旧，就输出 `{"decision":"block","reason":...}`。理由会列出需要检查的确切角色。通过 `runtime/nag/stopgate.last` 限频。
 - **终止但未收取检查（主层）。** 除了上述理由之外，当某个角色已到达终止状态（按观测器的权威判定，为正常 DONE 或已裁决的 FINALIZED），但主 agent 自它完成以来一直空闲时，L4 也会阻断这次空闲——这是 subagent 完成通知丢失的症状：结果已经落盘，主 agent 却从未处理。判定条件（逐实例，三者同时满足）：`terminal` 为 true，**并且** `main_heartbeat_epoch <= terminal_epoch`（主 agent 最后一次工具调用早于完成时间），**并且** `status.md` 的 mtime `<= terminal_epoch`（此后没有写过状态）。用 `<=` 是有意为之：恰好相等时倾向于报出。每个 epoch 都有 `isinstance(int)` 守卫——缺少顶层 `main_heartbeat_epoch` 时退出过滤，缺少某个实例的 `terminal_epoch` 时跳过该实例——所以不可用的 epoch 绝不会抛异常。阻断理由会写明已完成的角色以及它的结果在哪里（它的 subtask 状态文件 / 持久日志），并指示：先读取结果并记录下来，再进入空闲。它**可以被满足且会自行解除**——读取结果再加上任意一次状态写入，都会把 `main_heartbeat_epoch`/mtime 推进到 `terminal_epoch` 之后，于是下一次停止时条件不再成立，阻断随之消失；它遵守 `stop_hook_active`，并与 角色陈旧阻断共用同一个 `runtime/nag/stopgate.last` 600 秒冷却令牌（在同一个窗口内，两者可能互相压制——这是被接受的）。这是作为**主层**的 L4：一次同步的 Stop-hook 检查，不依赖不可靠的完成通知通道，所以能确定地捕获常见情况（角色已结束、通知丢失、主 agent 想进入空闲）。它是一项**缓解措施**——减少主 agent 对已丢失的完成路径的依赖，而不是从根本上修复 harness 的投递层。和所有基于观测器的检查一样，它**在 macOS 上失效**（观测器返回 `genesis-capability-unavailable`），在 Linux 上生效——与死亡角色扫描的边界相同。
-- **无执行者检查（#24）。** 前面每一条都只看**某个角色**有没有异常，于是有一种整体状态谁都不管：任务还有活，却没有任何执行者。真实事故：implementation-agent 在后台启动 60 分钟的全量用例后以“等待通知”收尾、被记为 DONE；用例跑绿时没有任何东西唤醒它；主 agent 一直在处理别的通道，所以“已完成未收取”不成立、状态文件也是新的；最后主 agent 说“数仓还在跑”然后停下，Stop 门放行，任务空等约 30 分钟。判定（逐任务，同时满足）：本任务处于活跃阶段且**还有活**（非 delivery 阶段，或 `## SubTasks` 记分板里还有 `Committed` 为空 / 占位 / 否定的行——列表和表格两种写法都解析）；宿主报告的 `background_tasks` 里没有未结束的任务、`session_crons` 为空（插件 monitor 不算执行者：本 watchdog 自己就以一个 `running` 的 shell 任务出现在列表里，已在 Claude Code 2.1.251 上实测；判据是命令路径含 `/monitors/watchdog.sh`，或同时含 `/plugins/` 和 `/monitors/`）；观察器看不到任何未结束、且在 horizon 内的已派发角色（会话级求和；观察器不可用时这一项不参与）；状态文件里没有有效的 `Waiting On` 行，也没有有效的 `Awaiting-User` 行。**不**受 main-state 门控——空闲正是症状，不能当豁免。输入里没有 `background_tasks` 数组（Codex、任务注册表不可达）时视为未知，fail open。阻断理由点名未提交的 SubTask，并给出三条出路：派发下一步；核实你以为在跑的通道（ps / ListAgents / 后台任务输出）；或者写 `Awaiting-User` 声明。与其它子句共用 `stopgate.last` 冷却。三个 `## Agent State` 解析器都跳过 HTML 注释里的行——状态模板就在这个小节的注释里写着两种声明的示例行，否则它们会被当成格式错误的声明，让真实声明全部失效（这一点同样修正了 `Waiting On` 的旧问题）。记分板解析：`Committed` 的值里出现 commit sha（7–40 位十六进制，含多仓库写法里缩进的 `<repo>:<sha>` 续行、Markdown 链接、"本地 commit xxx"）就算已提交；空值、模板占位和否定词算未提交；其它文字（记录下来的提交失败）不算未提交。
-- **无执行者检查的已知局限（如实说明）。** (1) 只会**漏报**的常驻条目：主 agent 自己的 `tail -f` 类 Monitor、`run_in_background` 起的开发服务器、路径里不含 `/plugins/` 加 `/monitors/` 的其它插件 monitor、用户自己的循环 cron——它们一直在 `background_tasks` / `session_crons` 里，检查因此一直不会触发。(2) 已结束的后台 subagent / shell 会从 `background_tasks` 里**消失**（已实测）；状态词表（`complet|fail|kill|stop|cancel|idle|done|error|exit|finish`）只是兜底。agent teams 中常驻、空闲的 teammate 在列表里如何呈现没能复现，未经验证。(3) `Awaiting-User` 的失效依赖 `UserPromptSubmit` 只在用户发言时触发；如果别的唤醒也触发它，声明会被提前作废，代价是多拦一次（会自愈）。(4) 被本门拦下的那次 Stop，`main-state.sh` 仍会照常写 `idle` 并可能发 idle IM（两个 hook 并行运行）。
+- **无执行者检查（#24）。** 前面每一条都只看**某个角色**有没有异常，于是有一种整体状态谁都不管：任务还有活，却没有任何执行者。真实事故：implementation-agent 在后台启动 60 分钟的全量用例后以“等待通知”收尾、被记为 DONE；用例跑绿时没有任何东西唤醒它；主 agent 一直在处理别的通道，所以“已完成未收取”不成立、状态文件也是新的；最后主 agent 说“数仓还在跑”然后停下，Stop 门放行，任务空等约 30 分钟。判定（逐任务，同时满足）：本任务处于活跃阶段且**还有活**（非 delivery 阶段，或 `## SubTasks` 记分板里还有 `Committed` 为空 / 占位 / 否定的行——列表和表格两种写法都解析）；宿主报告的 `background_tasks` 里没有未结束的任务、`session_crons` 为空（插件 monitor 不算执行者：本 watchdog 自己就以一个 `running` 的 shell 任务出现在列表里，已在 Claude Code 2.1.251 上实测；判据是命令路径含 `/monitors/watchdog.sh`，或同时含 `/plugins/` 和 `/monitors/`）；观察器看不到任何未结束、且在 horizon 内的已派发角色（会话级求和；观察器不可用时这一项不参与）；状态文件里没有有效的 `wait` / `user` 声明（见 `## 声明`）；声明为 `resident` 的后台任务不算执行者。**不**受 main-state 门控——空闲正是症状，不能当豁免。输入里没有 `background_tasks` 数组（Codex、任务注册表不可达）时视为未知，fail open。阻断理由点名未提交的 SubTask，并给出三条出路：派发下一步；核实你以为在跑的通道（ps / ListAgents / 后台任务输出）；或者用 `expect.sh` 声明在等什么。与其它子句共用 `stopgate.last` 冷却。三个 `## Agent State` 解析器都跳过 HTML 注释里的行——状态模板就在这个小节的注释里写着两种声明的示例行，否则它们会被当成格式错误的声明，让真实声明全部失效（这一点同样修正了 `Waiting On` 的旧问题）。记分板解析：`Committed` 的值里出现 commit sha（7–40 位十六进制，含多仓库写法里缩进的 `<repo>:<sha>` 续行、Markdown 链接、"本地 commit xxx"）就算已提交；空值、模板占位和否定词算未提交；其它文字（记录下来的提交失败）不算未提交。
+- **无执行者检查的已知局限（如实说明）。** (1) **没有声明为 `resident` 的**常驻条目（主 agent 自己的 `tail -f` 类 Monitor、`run_in_background` 起的开发服务器、路径里不含 `/plugins/` 加 `/monitors/` 的其它插件 monitor、无关的循环 cron）一直在 `background_tasks` / `session_crons` 里，检查因此不会触发——只会漏报；声明之后就按 id 扣除。(2) 已结束的后台 subagent / shell 会从 `background_tasks` 里**消失**（已实测）；状态词表（`complet|fail|kill|stop|cancel|idle|done|error|exit|finish`）只是兜底。agent teams 中常驻、空闲的 teammate 在列表里如何呈现没能复现，未经验证。(3) `Awaiting-User` 的失效依赖 `UserPromptSubmit` 只在用户发言时触发；如果别的唤醒也触发它，声明会被提前作废，代价是多拦一次（会自愈）。(4) 被本门拦下的那次 Stop，`main-state.sh` 仍会照常写 `idle` 并可能发 idle IM（两个 hook 并行运行）。
 - **"活跃阶段"排除任何带有 `design` 字样的阶段。** 单用 `*review*` 会匹配上 `design review`，导致这个门在 §2 第 8 步阻止主 agent 进入空闲——那是工作流唯一要求无限期等待人工批准的闸门——而提示词承诺在设计期间保持安静。`zyz_phase_active` 会先应用 `design` 排除。
-- **状态陈旧受双重门控（主 agent 状态机）。** 状态陈旧归因子句只有在手动 `Waiting On:` 守卫（`zyz_status_waiting`）和信号驱动的 main-state 压制（`zyz_main_state_suppresses`，主 agent 处于 `awaiting-user` / `idle` 时为 true）都未生效时才会触发——所以这个门绝不会仅仅因为主 agent 正当地停下来等用户或交还控制权而阻止空闲。角色陈旧子句和未收取子句归因于 subagent，**不**受门控：即使处于压制状态，L4 仍会阻断并点名死亡/未收取的 subagent（A 方案）。L4 只读 main-state；main-state.sh（同样挂在 `Stop` 上）只写它，所以两者与执行顺序无关；又因为 `idle` 和 `awaiting-user` 对 状态陈旧 的压制完全相同，无论哪个先运行，阻断理由都一样。
+- **状态陈旧受双重门控（主 agent 状态机）。** 状态陈旧归因子句只有在 agent 的声明（旧 `Waiting On:` 行，或有效的 `wait` / `user` 声明）和信号驱动的 main-state 压制（`zyz_main_state_suppresses`，主 agent 处于 `awaiting-user` / `idle` 时为 true）都未生效时才会触发——所以这个门绝不会仅仅因为主 agent 正当地停下来等用户或交还控制权而阻止空闲。角色陈旧子句和未收取子句归因于 subagent，**不**受门控：即使处于压制状态，L4 仍会阻断并点名死亡/未收取的 subagent（A 方案）。L4 只读 main-state；main-state.sh（同样挂在 `Stop` 上）只写它，所以两者与执行顺序无关；又因为 `idle` 和 `awaiting-user` 对 状态陈旧 的压制完全相同，无论哪个先运行，阻断理由都一样。
 - **阻断必须能通过遵守规则来解除。** 这个门绝不要求调用方手工编辑 runtime。正常结束的角色通过 SubagentStop 提交 DONE；经平台/probe 证据确认死亡的角色，在重新派发之前用受支持的辅助命令 finalize；持久化的 start/stop 诊断只能通过它确切的 `reconcile-*` 事件 token 来处理。
 - 失败行为：fail open（允许停止）。
 - 支持的 agent：主 agent。
@@ -230,9 +250,7 @@ IM 停止通知器。把"agent 停下来了"这类事件转发给用户配置的
 
 实例循环不再盲目跳过终止实例：非终止实例走现有的存活信号陈旧、跟踪未建立、probe 逾期、无输出这几个分支，终止实例则走新的**终止但未收取扫描（备份层）**。当某个角色已到达终止状态、但主 agent 此后一直空闲时触发——判定条件与 L4 相同（`terminal` **并且** `main_heartbeat_epoch <= terminal_epoch` **并且** `status.md` mtime `<= terminal_epoch`，相同的 `isinstance(int)` 守卫，相同的有意使用的 `<=` 边界）。由于新的终止分支与循环共用同一个 `try/except`，这些 epoch 守卫是承重的：没有它们，`None <= int` 会抛异常并中止整个循环，丢掉其它所有实例的事件——所以缺少 epoch 时只会对该实例 `continue`，其余实例不受影响。命中时，它输出一行 `unharvested` 通知，点名已完成的角色及其结果位置，并通过按键区分的 `runtime/nag/watchdog-unharvested-<key>.last` 限频（它有自己的冷却，独立于 watchdog 的其它键）。这是 L4 的**备份**：它覆盖 L4 覆盖不到的情况——角色是在主 agent **已经**进入空闲*之后*才进入终止状态的（L4 已经放行了那次停止），这时只有定时器能把主 agent 唤醒。消息会说明这是一个备份信号；检测走的是 watchdog 通知路径，本会话的观察表明它比完成通知路径更可靠，但并不保证（因此同步的 L4 才是主层）。和死亡角色扫描一样，它**在 macOS 上失效**，在 Linux 上生效。
 
-**无执行者扫描（#24，L4 的定时兜底）。** 每轮扫描完所有任务之后，对每个任务检查：它处于活跃阶段且还有活（判据同 L4）；`runtime/stop-snapshot` 存在（主 agent 自上次 Stop 以来没有任何工具调用、用户也没有发言）、记录的执行者数为 0、且已过去至少 `ZYZ_WATCHDOG_NO_EXECUTOR_SEC`（默认 600）秒；本会话没有未结束的已派发角色；状态文件里没有有效的 `Waiting On` / `Awaiting-User` 声明。命中时输出一行通知（唤醒主 agent，措辞同 L4），按 `runtime/nag/watchdog-no-executor.last` 冷却限频，并发一条 `--origin stall` 的 `stuck` IM。它覆盖 L4 漏掉的情况：Stop 落在 L4 冷却期内，或者 Stop 时还有执行者、之后才结束（结束会唤醒主 agent，它再停下时又会留下一份新快照）。它**不**看 main-state：每次 Stop 后约一分钟，`idle_prompt` Notification 就会把状态记成 `awaiting-user`，用它压制等于永不报警，所以只有显式声明能让它安静。快照记为 `unknown`（Codex）时保持安静。已知盲区：Stop 时执行者数 ≥1，而那个执行者结束后的完成通知又没有送达主 agent（完成通知丢失），快照会停在非零值，L3 不会报——在 Linux 上"已完成未收取"检查兜住 subagent 这一半，macOS 上没有兜底。
-
-**`Waiting On` 到期提醒（#24）。** 活跃阶段中，`Waiting On` 行的 `next-check-epoch` 到期后输出一行提醒：你在等 `<key>`，复查时间已到——收取结果并删行，或核实它是否仍在进行后再写一条新的有时限行。每个（key，复查时间）只提醒一次（`watchdog-wait-<key>.next`），同一个 key 还受 watchdog 冷却限频；不受 main-state 门控。
+**声明扫描（#24，`scan_declarations`）。** 每轮对本会话每个活跃或 observing 的任务：(1) 到点的 `wait`：叫醒主 agent，之后按 `remind-sec` 再提醒，第 3 次起发 stall IM；(2) `wait --ref` 绑定的后台任务在上次 Stop 的列表里已经没有了：报一次；(3) observing 却没有排定检查：每 `ZYZ_WATCHDOG_OBSERVE_SEC` 提醒一次；(4) **无执行者**（L4 的定时兜底）：任务处于活跃阶段且还有活（判据同 L4）；`runtime/stop-snapshot` 存在（主 agent 自上次 Stop 以来没有任何工具调用、用户也没有发言）、记录的执行者数为 0、且已过去至少 `no-executor-sec`（Tune，默认 `ZYZ_WATCHDOG_NO_EXECUTOR_SEC`=600）秒；本会话没有未结束的已派发角色；没有有效的 `wait` / `user` 声明；也没有已到点的 `wait`（它已有更具体的提醒）。命中时输出一行通知（措辞同 L4），按 `runtime/nag/watchdog-no-executor.last` 冷却限频。到点提醒的 IM 只在第 3 次和第 5 次发，不会无限发。它覆盖 L4 漏掉的情况：Stop 落在 L4 冷却期内，或者 Stop 时还有执行者、之后才结束。这四项都**不**看 main-state：每次 Stop 后约一分钟，`idle_prompt` Notification 就会把状态记成 `awaiting-user`，用它压制等于永不报警，所以只有声明能让它安静；它们的 IM 都用 `--origin stall`，绕过 notify.sh 的空闲压制。快照记为 `unknown`（Codex）时 (4) 保持安静。已知盲区：Stop 时执行者数 ≥1，而那个执行者结束后的完成通知又没有送达主 agent，快照会停在非零值，(4) 不会报——在 Linux 上"已完成未收取"检查兜住 subagent 这一半。(2) 也兜不住：快照只在 Stop 时写一次，只能发现"Stop 时就已经不在了"的任务；那个执行者结束后的完成通知本身会唤醒主 agent，丢失时才会落进这个盲区。
 
 ## 降级环境
 

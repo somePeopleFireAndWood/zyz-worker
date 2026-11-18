@@ -97,7 +97,7 @@ apply_state() {
     zyz_main_state_set "$root" "$state"
 
     # The user just spoke (#24): record when, so an Awaiting-User declaration
-    # written before this moment lapses (zyz_status_awaiting_user), and end the
+    # written before this moment lapses (expect_state.py kind=user), and end the
     # L3 no-executor window opened by the previous Stop.
     if [ "$hook_event" = UserPromptSubmit ]; then
         mkdir -p "$root/runtime" 2>/dev/null \

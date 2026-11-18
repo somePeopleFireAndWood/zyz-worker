@@ -88,7 +88,7 @@ now="$(zyz_now)"
 
 # Prints the reminder for one task root, or nothing.
 freshness_msg() {
-    local root status_file phase mtime age mins
+    local root status_file phase mtime age mins expect
     root="$1"
     status_file="$root/status.md"
     [ -f "$status_file" ] || return 0
@@ -99,10 +99,20 @@ freshness_msg() {
     age=$((now - mtime))
     [ "$age" -gt "$stale_sec" ] || return 0
 
-    # A valid bounded wait declaration only suppresses the MAIN audience's
-    # generic status-stale reminder. Role liveness and post-result flushing are
+    # A valid wait/user declaration (legacy Waiting On, or expect.sh) only
+    # suppresses the MAIN audience's generic status-stale reminder, and a
+    # per-task `Tune: status-stale-sec` may raise its threshold. Parsed only
+    # once the cheap default-threshold check above has passed (Tune cannot go
+    # below the default). Role liveness and post-result flushing are
     # orthogonal.
-    [ "$audience" != main ] || ! zyz_status_waiting "$status_file" || return 0
+    if [ "$audience" = main ]; then
+        zyz_status_waiting "$status_file" && return 0
+        # L1 sees no background task list, so a `wait --ref` counts here
+        # until its time even if its task has ended (L3/L4 do check the ref).
+        expect="$(zyz_expect_eval "$root" unknown)"
+        [ "$(zyz_expect_field "$expect" mutes)" = 1 ] && return 0
+        [ "$age" -gt "$(zyz_expect_tune "$expect" status-stale-sec "$stale_sec")" ] || return 0
+    fi
 
     zyz_cooldown_ok "$root/runtime/nag/$audience.last" "$cooldown" || return 0
 
