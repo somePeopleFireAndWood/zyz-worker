@@ -58,7 +58,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.30.1"
+EXPECTED_VERSION="0.31.0"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -864,6 +864,16 @@ if grep -qF '优先于下文"默认不询问用户"' skills/execute-task/SKILL.m
     pass "T6 design-authority outranks the no-ask default"
 else
     fail "T6 design-authority outranks the no-ask default"
+fi
+# Environment prep (build env / deps / images / containers) needs no approval;
+# the agent only chooses local vs container, then executes.
+if grep -qF '环境准备默认无需批准' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qF '环境准备默认无需批准' skills/execute-task/prompts/main-agent.md 2>/dev/null \
+    && grep -qF '本地直接构建运行还是在容器中执行更合适' subagents/implementation-agent.md 2>/dev/null \
+    && grep -qF '本地直接构建运行还是在容器中执行更合适' agents/implementation-agent.md 2>/dev/null; then
+    pass "T6 environment prep runs without asking (local vs container)"
+else
+    fail "T6 environment prep runs without asking (local vs container)"
 fi
 # Design phase: the main agent organizes, it does not originate the design.
 if grep -qF '不自己发起设计' skills/execute-task/SKILL.md 2>/dev/null \
