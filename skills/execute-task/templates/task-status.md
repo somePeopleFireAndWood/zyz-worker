@@ -42,18 +42,19 @@
 
 <!-- 声明（由主 agent 用 `<plugin-root>/hooks/scripts/expect.sh` 写入，不要手写）：
 watchdog 不去猜任务为什么安静，而是按你在这里的声明来判断——没有声明、又没有
-执行者的活跃任务会被报警。每条声明都会自然失效（到点、用户下次发言、或它绑定
+执行者（或整个会话长时间没有任何动静）的活跃任务会被报警。每条声明都会自然失效（到点、用户下次发言、或它绑定
 的后台任务结束）。expect.sh 写出来的行形如：
 - Expect: key=recon; kind=wait; at=<unix>; ref=-; reason=<到时看什么>
 三种 kind：
   wait      某样东西会在 at 之前推进任务（后台任务用 --ref 绑定它的 id；外部批跑；
-            observing 阶段的定时检查）。到点之前压住"状态过期"和"无执行者"，
-            到点叫醒你，你不处理就每隔 remind-sec 再提醒，第 3 次通知用户。
-  user      你停下来等用户。用户下次发言后自动失效。只压"无执行者"，不压"状态过期"。
+            observing 阶段的定时检查）。到点之前压住"状态过期""无执行者"和"会话静默"，
+            到点叫醒你，你不处理就每隔 remind-sec 再提醒，提醒后仍无动作才通知用户。
+  user      你用自然语言提问、停下来等用户；会给用户发 IM。用户下次发言后自动失效。只压"无执行者"和"会话静默"，
+            不压"状态过期"；带 --watch（watch=yes）时什么都不压（问题挂着、你继续推进别的）。
   resident  永远不会结束、也不推进任务的后台任务（开发服务器、tail -f、无关的
             cron），不算执行者。
-可选的按任务阈值（expect.sh tune，只能放宽、最多放宽到 4 小时）：
-- Tune: status-stale-sec=<n>; no-executor-sec=<n>; remind-sec=<n>
+可选的按任务阈值（expect.sh tune，只能放宽；status-stale / no-executor 最多 4 小时，silence-sec / remind-sec 最多 24 小时）：
+- Tune: status-stale-sec=<n>; no-executor-sec=<n>; remind-sec=<n>; silence-sec=<n>
 旧格式 `- Waiting On:` / `- Awaiting-User:` 行仍然有效。 -->
 
 ## 使用的可选能力

@@ -43,6 +43,10 @@
 # Usage:  bash scripts/test-no-executor.sh   (exit 0 iff every check passed)
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 set -o pipefail
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 unset ZYZ_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CLAUDE_PID
@@ -249,12 +253,17 @@ out="$(run_wd)"
 if [ -z "$out" ]; then pass "N5h explicit Awaiting-User -> silent"; else fail "N5h Awaiting-User" "out=[$out]"; fi
 
 # stall-origin IM survives the idle suppression that drops main-origin stuck.
+# 0.32.0: it is an escalation — the first report wakes the main agent, the
+# same finding unanswered on a later scan pages (ESCALATE=0 here).
 CAP="$SB/cap.txt"
 printf '{"enabled":true,"command":"{ printf %s $ZYZ_NOTIFY_EVENT; } >> %s","cooldown_sec":0}\n' "'EV=%s '" "$CAP" > "$SB/notify.json"
 write_status implementation "" "$LIST_ST"; reset_runtime
 ( . "$LIB"; zyz_main_state_set "$ROOT" idle )
 set_snap "$((NOW - 700))" 0
-ZYZ_NOTIFY_CONFIG="$SB/notify.json" run_wd >/dev/null
+ZYZ_WATCHDOG_ESCALATE_SEC=0 ZYZ_NOTIFY_CONFIG="$SB/notify.json" run_wd 600 0 >/dev/null
+sleep 0.5
+if [ -s "$CAP" ]; then fail "N5i0 the first no-executor report pages nobody" "cap=[$(cat "$CAP")]"; else pass "N5i0 the first no-executor report pages nobody"; fi
+ZYZ_WATCHDOG_ESCALATE_SEC=0 ZYZ_NOTIFY_CONFIG="$SB/notify.json" run_wd 600 0 >/dev/null
 i=0; while [ ! -s "$CAP" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 if grep -q 'EV=stuck' "$CAP" 2>/dev/null; then pass "N5i stuck IM sent while main-state is idle (origin stall)"; else fail "N5i stall IM" "cap=[$(cat "$CAP" 2>/dev/null)]"; fi
 
@@ -643,10 +652,15 @@ if [ -z "$out" ]; then pass "N15i2 a due (not yet handled) wait still counts as 
 out="$(ZYZ_NOTIFY_CONFIG="$SB/notify2.json" run_wd)"
 if [ -z "$out" ]; then pass "N15j silent until remind-sec"; else fail "N15j quiet after wake" "out=[$out]"; fi
 age_mark() { set -- $(cat "$ROOT/runtime/nag/expect-due-recon"); printf '%s %s %s\n' "$1" "$(( $2 - 1900 ))" "$3" > "$ROOT/runtime/nag/expect-due-recon"; }
-age_mark; out="$(ZYZ_NOTIFY_CONFIG="$SB/notify2.json" run_wd)"
-age_mark; out3="$(ZYZ_NOTIFY_CONFIG="$SB/notify2.json" run_wd)"
+sleep 0.5
+if [ ! -s "$CAP2" ]; then pass "N15k0 the first due wake-up pages nobody"; else fail "N15k0 first wake" "cap=[$(cat "$CAP2")]"; fi
+age_mark; out="$(ZYZ_WATCHDOG_ESCALATE_SEC=0 ZYZ_NOTIFY_CONFIG="$SB/notify2.json" run_wd)"
 i=0; while [ ! -s "$CAP2" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-if printf '%s' "$out3" | grep -q '第 3 次提醒' && grep -q 'EV=stuck' "$CAP2"; then pass "N15k the 3rd reminder also pages the user"; else fail "N15k page" "out=[$out3] cap=[$(cat "$CAP2")]"; fi
+if printf '%s' "$out" | grep -q '第 2 次提醒' && grep -q 'EV=stuck' "$CAP2"; then pass "N15k an unanswered reminder pages the user (escalation)"; else fail "N15k page" "out=[$out] cap=[$(cat "$CAP2")]"; fi
+: > "$CAP2"
+age_mark; out3="$(ZYZ_WATCHDOG_ESCALATE_SEC=0 ZYZ_NOTIFY_CONFIG="$SB/notify2.json" run_wd)"
+sleep 0.5
+if printf '%s' "$out3" | grep -q '第 3 次提醒' && [ ! -s "$CAP2" ]; then pass "N15k2 ... once per silent stretch (the 3rd reminder still wakes, pages nobody)"; else fail "N15k2 once" "out=[$out3] cap=[$(cat "$CAP2")]"; fi
 exp tune remind-sec=7200 >/dev/null
 age_mark; out="$(run_wd)"
 if [ -z "$out" ]; then pass "N15l Tune remind-sec=7200 spaces reminders out"; else fail "N15l tune remind" "out=[$out]"; fi

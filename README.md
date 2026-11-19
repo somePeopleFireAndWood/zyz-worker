@@ -6,8 +6,8 @@ pack 承载逻辑上的 START、HEARTBEAT、DONE、FINALIZED、探测、诊断�
 而死亡的角色用 `agent-runtime-state.sh finalize` 收尾，重连走显式的
 质询/确认，主 agent 用 `expect.sh` 声明等待、常驻任务和观察期的检查时间（watchdog 按声明行事，不去猜），有界清理用
 `gc-step`。**平台说明：** 固定 pack 跟踪层依赖 Linux（`statx` 挂载标识）；在
-macOS 上它以 `genesis-capability-unavailable` fail-closed，死角色检测随之停用
-——见 [hooks/README.md](hooks/README.md) `## 降级环境`。
+macOS 上它以 `genesis-capability-unavailable` fail-closed，逐角色的死角色检测随之停用
+（与平台无关的会话静默与 API 错误中断两条底线不受影响）——见 [hooks/README.md](hooks/README.md) `## 降级环境`。
 
 我是周钰喆，一名光荣的工人，隶属于伟大的工人阶级。我会和同志们一起解放全人类，最后解放我自己。
 
@@ -35,8 +35,9 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 跨 harness 交叉评审脚本位于 `scripts/cross-review.sh`（execute-task 每个评审点在 review-agent 之外，再为本机装着的其它 agent 产品各起一个只读评审会话——见下方 *跨 harness 交叉评审*）
 - 提示词式 SubAgent 定义位于 `subagents/`
 - Watchdog hooks（execute-task 确定性监督层：心跳、状态新鲜度、退出/停止门禁）位于 `hooks/hooks.json` 与 `hooks/scripts/`，详见 `hooks/README.md`
-- Watchdog 后台监视器位于 `monitors/monitors.json` 与 `monitors/watchdog.sh`（execute-task 触发时启动，发现角色静默/状态过期/任务无执行者、或声明的等待到点时唤醒主 agent）
-- IM 停止通知（agent 需要你回答、任务完成、异常中断、卡死时经自定义命令推送到飞书/Telegram/任意 webhook）位于 `hooks/scripts/notify.sh`，配置在 `~/.zyz-worker/notify.json`，用法与飞书/Telegram 示例见 [docs/notify.md](docs/notify.md)
+- Watchdog 后台监视器位于 `monitors/monitors.json` 与 `monitors/watchdog.sh`（execute-task 触发时启动，发现角色静默/状态过期/任务无执行者/整个会话长时间无动静/subagent 或 teammate 因 API 错误中断、或声明的等待到点时唤醒主 agent）
+- Watchdog 总体设计（agent 主导、插件做工具与保障者；告警目录与每条告警的清除办法）位于 `docs/design/watchdog-design.md`
+- IM 通知（只在需要你时发：agent 在问你、任务交付、主 agent 因 API 错误中断、卡住且叫不醒；任务正常执行中不发；每条带会话名称；经自定义命令推送到飞书/Telegram/任意 webhook）位于 `hooks/scripts/notify.sh`，配置在 `~/.zyz-worker/notify.json`，用法与飞书/Telegram 示例见 [docs/notify.md](docs/notify.md)
 - 整体架构说明位于 `docs/architecture.md`（各 skill / subAgent / 脚本 / hook 的职责与主体原理）
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
@@ -319,7 +320,8 @@ subagents/
 │   │   └── project-structure.md
 │   └── design/
 │       ├── execute-task-skill-design.md
-│       └── initial-design.md
+│       ├── initial-design.md
+│       └── watchdog-design.md
 ├── hooks/
 │   ├── README.md
 │   ├── hooks.json
@@ -332,7 +334,17 @@ subagents/
 │       ├── dispatch-scope-guard.sh
 │       ├── checkout-guard.sh
 │       ├── stop-gate-subagent.sh
-│       └── stop-gate-main.sh
+│       ├── stop-gate-main.sh
+│       ├── main-state.sh
+│       ├── notify.sh
+│       ├── api-failure.sh
+│       ├── expect.sh
+│       ├── expect_state.py
+│       ├── task-pointer.sh
+│       ├── start-watchdog.sh
+│       ├── agent-runtime-state.sh
+│       ├── runtime_state.py
+│       └── runtime_native.py
 ├── monitors/
 │   ├── monitors.json
 │   └── watchdog.sh

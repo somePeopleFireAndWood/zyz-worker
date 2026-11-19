@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-11-19
+
+- **watchdog 新增两条与平台、角色类型无关的底线：会话静默与 API 错误中断。** 真实事故（11-19，macOS）：一个评审 teammate 04:14 因上游 402 中断，宿主后台任务列表里还挂着 16 条，整个会话 6.5 小时没有任何工具调用，直到用户早上回来。没有一层发声：macOS 上 fixed-pack 不可用，逐角色检查全部停用；用 `name` 派发的 teammate，`agent_type` 是它的名字，匹配不上三种角色名的 matcher，即使在 Linux 上也不被跟踪；「无执行者」只信 Stop 时宿主列出的 16 条；「状态过期」在主 agent 停下后被 `idle` 静音。宿主其实在 04:14 触发了 StopFailure，但插件只用它发了一条 IM。
+  - **会话静默。** `heartbeat.sh` 在主 agent、subagent、teammate 的每次工具调用时写 `runtime/activity`。活跃任务还有活、整个会话 `silence-sec`（默认 1 小时，`ZYZ_WATCHDOG_SILENCE_SEC`；静默多久叫醒、之后多久再叫由主 agent 用 `tune silence-sec= remind-sec=` 自己定，各最多 24 小时）没有任何工具调用、用户没有发言、状态文件也没写，又没有有效的 `wait` / `user` 声明或打开着的对话框时，L3 叫醒主 agent，之后每 `remind-sec` 最多一次。上次 Stop 时宿主排着唤醒（ScheduleWakeup / CronCreate / loop）的，在 `silence-sec` 之后再宽限 1 小时。它不看宿主后台任务列表、不看 `idle`，与「无执行者」共用同一组压制，无执行者条件成立时（含冷却中）不报。
+  - **API 错误中断。** 新 hook `hooks/scripts/api-failure.sh`（StopFailure）把每次因 API 错误结束的一轮落成 `runtime/api-failures/` 下的一条记录。L3 扫描本会话所有任务下的记录，把 subagent / teammate 的记录合并成一行告诉主 agent（谁、几点、什么错误、先核实是否已处理过），每条只报一次；格式不对的记录只归档；超过 7 天的记录被清理；冷却（`ZYZ_WATCHDOG_FAILURE_COOLDOWN_SEC`，默认 600 秒）内的新记录留到下次合并，持续的上游错误不会变成「重派 → 又死 → 立刻叫醒」的快速循环。主 agent 自己那一轮的失败不单独叫醒（持续错误时会以轮询间隔反复失败），由会话静默按 `remind-sec` 的节奏带出；它同时把 main-state 记为 `idle`（这一轮已结束）。
+  - **IM 只在需要人的时候发。** 过去主 agent 每次停下都发一条 `idle`，watchdog 的每条发现也同时发 IM，于是 subagent 走一步、主 agent 收到结果正常推进，用户也会被打扰。现在任务还在执行时一律不发 IM，由 watchdog 叫醒主 agent；只在这几种时刻通知用户：
+    - **在问你**（`needs_input`）：权限确认 / elicitation；主 agent 调用 AskUserQuestion；主 agent 用自然语言提问后 `expect.sh set <key> user`。提问类延迟 60 秒（`ZYZ_NOTIFY_ASK_DELAY_SEC`），期间用户已回答就不发。兜底：主 agent 在 design 阶段停下、宿主报告没有执行者、也没有 `user` 声明（多半停在设计批准闸门却忘了声明）。
+    - **交给你了**（`completed`）：任务进入 `awaiting-confirmation` / `observing` / 终态，每次进入只发一次。
+    - **主 agent 处理不了**：主 agent 自己这一轮因 API 错误中断（`failed`；subagent 的失败不再发，由 watchdog 告诉主 agent）；或 watchdog 叫醒主 agent 至少 `ZYZ_WATCHDOG_ESCALATE_SEC`（默认 600）秒后再报时，会话里仍没有任何动作（`stuck`，升级，同一段停摆每个任务一次，取代原来散落各处的「第 3、5 次」「第 1、3、5 次」计数）。
+    - 新声明参数 `expect.sh set <key> user --watch`（行内 `watch=yes`）：有问题要问用户、但还有能独立推进的活——发 IM，但什么都不压，watchdog 照常监控。
+    - `idle` 类别删除（配置里写了也不会发）；`idle_prompt` / `agent_completed` 通知不再发 IM。
+    - **每条 IM 带会话名称**：标题前缀 `【<会话名>】`，以及新字段 `ZYZ_NOTIFY_SESSION_NAME` / `session_name`。Claude Code 取 `/rename` 的名字，没有就取 AI 标题，再没有就取会话注册表名；Codex 取线程名。随 `include_message` 关闭，关闭时改用会话 id 前 8 位。
+    - 所有测试套件都把 `ZYZ_NOTIFY_CONFIG` 指向不存在的文件，原先有两个套件中途 `unset` 它、会退回读取用户真实的 `~/.zyz-worker/notify.json`。
+  - **修正 main-state 的语义冲突。** `awaiting-user` 现在只表示「一个用户对话框正打开着」：`idle_prompt`（「停下约一分钟、用户没有操作」，不是对话框）记 `idle` 而不是 `awaiting-user`；Stop 一律记 `idle`，删除了「已有 awaiting-user 时 Stop 不覆盖」的豁免（它会在权限被拒后留下一个过期的「对话框开着」）及只服务于它的 `zyz_main_state_awaiting`。状态过期的压制不受影响（`idle` 与 `awaiting-user` 同样压制）。`awaiting-user` 行记下对话框的归属者（主 agent，或通知带 `agent_id` 的 subagent / teammate），只有归属者自己的下一步才关闭它：subagent 的权限确认被批准后它的下一次工具调用就关闭对话框，所以不会让会话永久静音；后台角色照常干活也不会把主 agent 正打开着的 AskUserQuestion 误判为已关闭。主 agent 回答完 AskUserQuestion 记为用户发言，`user` 声明随之失效。
+  - **设计文档。** 新增 `docs/design/watchdog-design.md`，写下长期方向「agent 主导，插件做工具与保障者」：判断任务为什么安静的权交给主 agent（阶段 + 声明），插件提供工具，并作为监测者与保障者观察事实、守住不变量；允许误报，但每条告警都必须写明怎么确认、怎么用声明清掉；新的正当安静场景先扩展声明，不加硬编码豁免。文中给出告警目录（触发、压制、清除办法、重复节奏）、平台能力矩阵，以及对 0.25～0.31 累积机制的冲突与重复梳理：旧格式 `Waiting On` 的独立严格校验器是已知重复，冻结不再扩展，待老任务目录不再需要时删除。
+  - 提示词：`SKILL.md` `## Watchdog 强制层`、主 agent 提示词新增对两条新告警的处理方式（核实通道、续做重派、正当等待要声明、同一 API 错误反复出现时先告诉用户再 `wait`）；声明用法表新增「在等一个长时间不调用工具的东西」一行。`docs/architecture.md`、`hooks/README.md`、`README.md`、状态模板同步；架构文档的测试套件表补齐了此前漏列的 5 个 watchdog 套件。
+  - 新增 `scripts/test-session-silence.sh`（118 项；与 `test-main-state.sh` 一起跑的定向变异全部被杀，见套件头部记录）：活动记录、会话静默的触发与每一种压制（含正对照，含排定唤醒的有界压制）、冷却与 IM 升级、IM 策略与会话名称、24 小时静默上限、多任务会话、StopFailure 记录的字段、坏记录、清理与 fail-open、一次性报告与合并、对话框归属语义，以及 11-19 事故形态的回放；每次 watchdog 扫描都断言 stderr 为空。既有套件中针对被删除豁免与 `idle_prompt` 旧映射的断言改为新语义。
+
 ## [0.31.0] — 2026-11-19
 
 - **提示词：环境准备默认无需向用户请求批准。** 过去 agent 在开发或测试时，常会停下来问用户是否同意构建环境、安装依赖、拉取镜像、运行容器。现在 `SKILL.md` `## 自动执行策略`、主 agent 提示词和 implementation-agent（`subagents/` 与 `agents/` 两份镜像）都写明：这些都属于例行执行，默认不请求批准；agent 只需权衡本地直接构建运行还是在容器中执行更合适（项目已有约定、本机工具链、隔离需要、可复现性），选定后直接执行，并用一行记下选择和理由。边界不变：删除或覆盖不是本任务创建的容器 / 卷 / 数据、改动生产或共享的远程环境，仍按「数据丢失 / 不可逆变更」升级给用户；宿主权限模式拦下的命令视为用户的决定，换做法而不是原样重试。`scripts/test-watchdog-hooks.sh` T6 新增对应锚点。

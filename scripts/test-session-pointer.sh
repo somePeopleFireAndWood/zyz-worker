@@ -28,6 +28,10 @@
 # Exits 0 when every check passes, 1 otherwise. macOS bash 3.2 + Linux bash.
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 # Keep the invoking session's identity and project dir out of the resolver.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR ZYZ_SESSION_ID CLAUDE_CODE_SESSION_ID \
     CODEX_THREAD_ID CLAUDE_PID ZYZ_TASK_DIR
@@ -157,7 +161,7 @@ hook main-state.sh "{\"cwd\":\"$D\",\"session_id\":\"$SB\",\"hook_event_name\":\
 check "S2 Stop of session B idles B's task" "$([ "$(state_of "$TB")" = idle ]; echo $?)" "B=[$(state_of "$TB")]"
 check "S2 Stop of session B leaves A's task working" "$([ "$(state_of "$TA")" = working ]; echo $?)" "A=[$(state_of "$TA")]"
 
-hook notify.sh "{\"cwd\":\"$D\",\"session_id\":\"$SA\",\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\"}" >/dev/null
+hook notify.sh "{\"cwd\":\"$D\",\"session_id\":\"$SA\",\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\"}" >/dev/null
 check "S2 Notification of session A records awaiting-user on A's task" "$([ "$(state_of "$TA")" = awaiting-user ]; echo $?)" "A=[$(state_of "$TA")]"
 check "S2 Notification of session A leaves B's task idle" "$([ "$(state_of "$TB")" = idle ]; echo $?)" "B=[$(state_of "$TB")]"
 
@@ -396,6 +400,10 @@ check "S8 multi-task note names where the runtime records live (for finalize)" \
     "$(printf '%s\n' "$out" | grep '已静默' | grep -qF "运行时记录在 $T1 下"; echo $?)" "got [$out]"
 check "S8 multi-task unharvested finding points at the owning task, not the primary's files" \
     "$(printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -q '所属任务的 subtasks/' && ! printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -qF "$T1/subtasks"; echo $?)" "got [$out]"
+# The page is an escalation (0.32.0): the same findings, unanswered, on the
+# next scan (ESCALATE=0 here).
+m_wd "$D" CLAUDE_CODE_SESSION_ID="$SA" ZYZ_WATCHDOG_ESCALATE_SEC=0 >/dev/null
+i=0; while ! grep -q -- '--origin subagent' "$TMP/s8-notify.log" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 check "S8 multi-task subagent IM is labeled with every task" \
     "$(grep -- '--origin subagent' "$TMP/s8-notify.log" | grep -q -- '--task-id t1,t2'; echo $?)" "log=[$(cat "$TMP/s8-notify.log")]"
 check "S8 the design-phase primary gets no status-stale finding" "$(! printf '%s' "$out" | grep -qF "$T1/status.md 已有"; echo $?)" "got [$out]"

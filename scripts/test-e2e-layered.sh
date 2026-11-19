@@ -86,6 +86,10 @@
 #     3   a required dependency (tmux / git / claude) is missing from PATH
 #
 set -uo pipefail
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 # Keep the invoking session's project dir out of zyz_task_root's fallback.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 # ...and its session identity out of the per-session pointer lookup (#23).

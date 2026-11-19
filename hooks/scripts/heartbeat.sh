@@ -17,7 +17,10 @@
 #
 # - None on stdout.
 # - Side effect: advances a fixed HEARTBEAT A/B record for a role instance, or
-#   the fixed catalog PACK_HEADER heartbeat record for main.
+#   the fixed catalog PACK_HEADER heartbeat record for main; and, for every
+#   caller (main agent, subagent, agent-team teammate), stamps
+#   <task-dir>/runtime/activity — the session-silence floor (0.32.0), which
+#   needs neither the fixed-pack capability nor a role-name match.
 #
 # ## Failure behavior
 #
@@ -71,6 +74,16 @@ key="main"
 # the persistent instance lock; this shell layer intentionally performs no
 # pathname existence test for new-format control records.
 if [ "$key" != main ]; then
+    # Any agent's tool call moves the session (read by the L3 session-silence
+    # scan). Recorded under the primary task, where every subagent record lives.
+    zyz_activity_mark "$root" "$agent_id"
+    # A subagent moving on after its own permission prompt closes that dialog
+    # (it is recorded with this agent as owner); any other dialog stays open.
+    while IFS= read -r state_root; do
+        [ -n "$state_root" ] && zyz_dialog_close_by "$state_root" "$agent_id"
+    done <<ZYZ_HB_ROOTS
+$roots
+ZYZ_HB_ROOTS
     # Claude Code names the per-call correlation field tool_use_id; Codex
     # payloads use tool_call_id/call_id. Read them in that order — the
     # INFLIGHT table is keyed by whichever the host actually sends.
@@ -98,8 +111,35 @@ fi
 # cooldown for the whole wait. The matching PostToolUse (the user answered)
 # falls through to `working` below.
 main_state=working
-if [ "$(zyz_get hook_event_name)" = PreToolUse ] && [ "$(zyz_get tool_name)" = AskUserQuestion ]; then
+hook_event="$(zyz_get hook_event_name)"
+tool_name="$(zyz_get tool_name)"
+if [ "$hook_event" = PreToolUse ] && [ "$tool_name" = AskUserQuestion ]; then
     main_state=awaiting-user
+fi
+# The user answering an AskUserQuestion is the user speaking: it lapses a
+# `kind=user` declaration exactly like a typed prompt (UserPromptSubmit), or a
+# declaration written before asking would keep muting no-executor and
+# session silence after the answer, until the user next typed.
+answered=0
+[ "$hook_event" = PostToolUse ] && [ "$tool_name" = AskUserQuestion ] && answered=1
+# The main agent asking the user is one of the two moments the user is paged
+# (notify.sh Policy). Deferred and dropped if answered by then, so a user at
+# the keyboard is not pinged for a question already on their screen.
+if [ "$main_state" = awaiting-user ]; then
+    question="$(printf '%s' "$ZYZ_HOOK_INPUT" | python3 -c '
+import json, sys
+try:
+    q = json.load(sys.stdin)["tool_input"]["questions"]
+    print(" / ".join(" ".join(str(x.get("question") or "").split()) for x in q if isinstance(x, dict))[:300], end="")
+except Exception:
+    pass
+' 2>/dev/null)"
+    sid="$(zyz_get session_id)"
+    ZYZ_SESSION_ID="${sid:-${ZYZ_SESSION_ID:-}}" "$SCRIPT_DIR/notify.sh" --event needs_input --base "$base" \
+        --session-id "$sid" --transcript "$(zyz_get transcript_path)" \
+        --message "主 agent 在问你：${question:-（见会话）}" \
+        --delay "${ZYZ_NOTIFY_ASK_DELAY_SEC:-60}" --unless-user-since "$(zyz_now)" \
+        </dev/null >/dev/null 2>&1 &
 fi
 
 while IFS= read -r root; do
@@ -108,7 +148,9 @@ while IFS= read -r root; do
         python3 "$SCRIPT_DIR/runtime_state.py" hook-main-heartbeat "$root" \
             "${agent_type:-main}" >/dev/null 2>&1 || true
     fi
-    zyz_main_state_set "$root" "$main_state"
+    zyz_activity_mark "$root" main
+    zyz_main_state_set "$root" "$main_state" main
+    [ "$answered" = 0 ] || zyz_write_atomic "$root/runtime/user-prompt-epoch" "$(zyz_now)"
     # Any main-agent tool call ends the "stopped since the last Stop" window
     # the L3 no-executor scan reads (#24).
     rm -f "$root/runtime/stop-snapshot" 2>/dev/null

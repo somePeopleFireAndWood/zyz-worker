@@ -31,6 +31,10 @@
 #     exempt (nothing can follow the match).
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 set -o pipefail
 
 # ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
-EXPECTED_VERSION="0.31.0"
+EXPECTED_VERSION="0.32.0"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns. Derived so a version bump only requires editing EXPECTED_VERSION above.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"

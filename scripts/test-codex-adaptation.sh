@@ -11,6 +11,10 @@
 # not which exact event produced it or how many hooks ran.  Do not read a green
 # --real run as those broader claims.
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/zyz-codex-test.XXXXXX")"
@@ -19,7 +23,7 @@ trap 'tmux kill-session -t "$TEST_SESSION" >/dev/null 2>&1 || true; rm -rf "$TMP
 pass=0
 fail=0
 skipped=0
-EXPECTED_VERSION="0.31.0"
+EXPECTED_VERSION="0.32.0"
 # Release-specific mutation sentinel: a base-version bump alone also changes
 # the cache path, but the approved candidate-install procedure explicitly
 # requires a fresh cachebuster so a stale same-base cache can never be reused.

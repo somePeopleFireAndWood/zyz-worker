@@ -40,6 +40,10 @@
 # test) — there is deliberately NO repo-wide `git ls-files | xargs grep`.
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 set -o pipefail
 
 # ---------------------------------------------------------------------------
@@ -66,7 +70,7 @@ SKIPPED=0
 
 # Single source of truth for the expected release version (design §5).  A
 # future bump is one edit here.
-EXPECTED_VERSION="0.31.0"
+EXPECTED_VERSION="0.32.0"
 # Regex-escaped form of EXPECTED_VERSION (dots escaped) for use inside `grep -E`
 # patterns.  Derived so a version bump only requires editing EXPECTED_VERSION.
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"

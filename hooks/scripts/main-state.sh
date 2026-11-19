@@ -6,10 +6,18 @@
 # ## Trigger point
 #
 # Registered in hooks/hooks.json for UserPromptSubmit (write `working`), Stop
-# (write `idle`, with awaiting-user overwrite immunity), and SessionEnd (write
-# `ended`). All three fire only in the main session, so this only ever records
-# main-agent state. Runs alongside stop-gate-main.sh (Stop) and notify.sh
-# (SessionEnd) without depending on their order — it only writes, they only read.
+# (write `idle`), and SessionEnd (write `ended`). All three fire only in the
+# main session, so this only ever records main-agent state. Runs alongside
+# stop-gate-main.sh (Stop) and notify.sh (SessionEnd) without depending on
+# their order — it only writes, they only read.
+#
+# `awaiting-user` means a dialog is open right now (AskUserQuestion, a
+# permission prompt, an MCP elicitation). A Stop means the turn has ended, so
+# any such dialog is closed: Stop always writes `idle`. (Before 0.32.0 a Stop
+# left an existing awaiting-user in place; that kept a stale "dialog open"
+# after a denied permission prompt, and idle_prompt — "stopped ~60 s ago, user
+# away", no dialog involved — made awaiting-user mean nothing more than
+# "stopped".)
 #
 # ## Inputs
 #
@@ -20,8 +28,9 @@
 #
 # - None on stdout.
 # - Side effect: atomically writes `<state> <epoch>` to
-#   <task-root>/runtime/main-state. On a Stop that actually wrote `idle` during
-#   an active phase, also fires notify.sh --event idle in the background (F4).
+#   <task-root>/runtime/main-state. On a Stop, also fires notify.sh --event
+#   completed in the background when the task has just been handed to the user
+#   (see below) — never for an ordinary stop of an executing task.
 #   On UserPromptSubmit, also writes <task-root>/runtime/user-prompt-epoch (the
 #   lapse point of Awaiting-User declarations) and deletes the L3 no-executor
 #   stop-snapshot (#24).
@@ -78,15 +87,6 @@ apply_state() {
             state=working
             ;;
         Stop)
-            # Stop overwrite immunity: if the state is already awaiting-user, do
-            # NOT overwrite it to idle and do NOT fire the idle IM — the user is
-            # still being waited on (a needs_input round that then hit Stop),
-            # which is not "stopped and handed back". Leaving awaiting-user in
-            # place keeps the suppression correct and avoids a misleading idle
-            # IM. Only working->idle and no-state->idle actually write idle.
-            if zyz_main_state_awaiting "$root"; then
-                return 0
-            fi
             state=idle
             ;;
         SessionEnd)
@@ -105,21 +105,51 @@ apply_state() {
         rm -f "$root/runtime/stop-snapshot" 2>/dev/null
     fi
 
-    # F4: when a Stop actually wrote idle during an active execution phase, fire
-    # an independent `idle` IM in the background so the user learns the main
-    # agent stopped and handed control back. The active-phase filter lives here
-    # (not in notify.sh) because only this script holds both "the event was
-    # Stop" and "idle was actually written (not immunity-skipped)". Non-active
-    # phases (design / terminal) do not fire — matching the watchdog's
-    # active-phase scope. notify.sh then applies its own config gate +
-    # per-category cooldown. Backgrounded and fully redirected so it never
-    # blocks Stop.
-    if [ "$hook_event" = Stop ] && [ "$state" = idle ]; then
-        phase="$(zyz_phase_of "$root/status.md")"
-        if zyz_phase_active "$phase"; then
-            "$SCRIPT_DIR/notify.sh" --event idle --task-root "$root" >/dev/null 2>&1 &
+    [ "$hook_event" = Stop ] && stop_notify "$root"
+}
+
+# The user is paged when the task is handed to them, not on every stop (0.32.0;
+# before, every Stop of an active task sent an `idle` IM, so each step of a
+# subagent the main agent merely relayed paged the user). Two shapes:
+#   - the task entered a hand-off phase (awaiting-confirmation, observing,
+#     done): once per entry — runtime/nag/handoff-phase remembers the phase
+#     announced, and any non-hand-off phase forgets it;
+#   - (needs_input) the main agent stopped in the design phase with no executor and no valid
+#     user declaration: most likely at the approval gate, undeclared. The
+#     design phase has no stop gate (it promises to idle there), so this is
+#     the only guard that tells the user. Unknown executors (no
+#     background_tasks, Codex) fail closed to silence.
+# A question asked while executing pages through AskUserQuestion / expect.sh
+# user instead. Backgrounded and fully redirected so it never blocks Stop.
+stop_notify() {
+    local root phase mark expect left msg="" event=completed
+    root="$1"
+    phase="$(zyz_phase_of "$root/status.md")"
+    mark="$root/runtime/nag/handoff-phase"
+    if zyz_phase_handoff "$phase"; then
+        [ "$(head -n1 "$mark" 2>/dev/null)" != "$phase" ] || return 0
+        mkdir -p "$root/runtime/nag" 2>/dev/null && zyz_write_atomic "$mark" "$phase"
+        if zyz_phase_terminal "$phase"; then
+            msg="任务已完成（${phase}）"
+        elif zyz_phase_observing "$phase"; then
+            msg="主体已交付，进入观察期（${phase}），之后按排定的时间复查"
+        else
+            msg="任务已交付，等你确认（${phase}）"
         fi
+    else
+        rm -f "$mark" 2>/dev/null
+        case "$phase" in *design*) ;; *) return 0 ;; esac
+        expect="$(zyz_expect_eval "$root" unknown)"
+        zyz_expect_known "$expect" || return 0
+        [ "$(zyz_expect_field "$expect" users)" = 0 ] || return 0
+        left="$(zyz_executors_left "$(zyz_bg_executor_ids)" "$(zyz_expect_field "$expect" residents)")"
+        [ "$left" = 0 ] || return 0
+        event=needs_input
+        msg="主 agent 在设计阶段停下了，没有在跑的执行者——多半在等你批准设计或回答问题"
     fi
+    "$SCRIPT_DIR/notify.sh" --event "$event" --task-root "$root" --message "$msg" \
+        --session-id "$(zyz_get session_id)" --transcript "$(zyz_get transcript_path)" \
+        </dev/null >/dev/null 2>&1 &
 }
 
 while IFS= read -r root; do

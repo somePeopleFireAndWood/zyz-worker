@@ -9,9 +9,9 @@ the agent calls the ``expect.sh`` wrapper (set / clear / list / tune).
 Rows live in the single ``## Agent State`` section of ``status.md``:
 
     - Expect: key=<k>; kind=wait; at=<epoch>; ref=<id|->; reason=<text>
-    - Expect: key=<k>; kind=user; since=<epoch>; reason=<text>
+    - Expect: key=<k>; kind=user; since=<epoch>[; watch=yes]; reason=<text>
     - Expect: key=<k>; kind=resident; ref=<id>; reason=<text>
-    - Tune: status-stale-sec=<n>; no-executor-sec=<n>; remind-sec=<n>
+    - Tune: status-stale-sec=<n>; no-executor-sec=<n>; remind-sec=<n>; silence-sec=<n>
 
 ``wait``     something will move the task by ``at`` (a role or background run,
              an outside batch job, a scheduled re-check). Before ``at`` it
@@ -22,7 +22,9 @@ Rows live in the single ``## Agent State`` section of ``status.md``:
              observed facts beat declarations.
 ``user``     the main agent waits on the user. Valid only until the user next
              speaks (``runtime/user-prompt-epoch``), so it can never mute the
-             checks for good.
+             checks for good. ``watch=yes``: the question is open but other
+             work goes on meanwhile — the user is still notified, nothing is
+             muted.
 ``resident`` a long-lived background task (dev server, ``tail -f`` Monitor,
              unrelated cron) that never ends and never moves the task; it is
              not counted as an executor.
@@ -62,7 +64,7 @@ LEGACY_WAIT_RE = re.compile(
 LEGACY_USER_RE = re.compile(r"^- Awaiting-User: since-epoch=(" + EPOCH_RE + r"); reason=(.*)$")
 
 KINDS = ("wait", "user", "resident")
-FIELDS = {"wait": ("at", "ref"), "user": ("since",), "resident": ("ref",)}
+FIELDS = {"wait": ("at", "ref"), "user": ("since", "watch"), "resident": ("ref",)}
 TUNE_BOUNDS = {
     # status-stale-sec never goes below L1's 600s default, so L1 can keep its
     # cheap "older than the default?" pre-check before parsing anything. Every
@@ -70,6 +72,10 @@ TUNE_BOUNDS = {
     "status-stale-sec": (600, 14400),
     "no-executor-sec": (60, 14400),
     "remind-sec": (300, 86400),
+    # The session-silence scan (0.32.0). Floor = its own default's order of
+    # magnitude, so a task cannot tune the floor check away; the cap is the
+    # longest single quiet stretch the main agent may choose (24 h).
+    "silence-sec": (600, 86400),
 }
 
 
@@ -176,6 +182,9 @@ def parse_expect(body):
         if not re.fullmatch(EPOCH_RE, f.get("since", "")):
             raise ValueError("user needs since=<epoch>")
         row["since"] = int(f["since"])
+        if f.get("watch", "yes") != "yes":
+            raise ValueError("watch must be yes when present")
+        row["watch"] = "watch" in f
     else:
         if not re.fullmatch(ID_RE, f.get("ref", "")):
             raise ValueError("resident needs ref=<background task id>")
@@ -254,13 +263,15 @@ def evaluate(text, now, prompt_epoch, running):
     unknown (the host sent no list / the watchdog has no Stop snapshot)."""
     rows, errors, tune = read_rows(text)
     horizon = max_horizon()
-    users_ok, waits_ok, waits_due, dead_refs, residents, notes = [], [], [], [], [], []
+    users_ok, users_watch, waits_ok, waits_due, dead_refs, residents, notes = [], [], [], [], [], [], []
     for r in rows:
         if r["kind"] == "user":
             if r["since"] > now:
                 notes.append("%s: since is in the future" % r["key"])
             elif r["since"] < prompt_epoch:
                 notes.append("%s: lapsed — the user has spoken since it was written" % r["key"])
+            elif r.get("watch"):
+                users_watch.append(r)
             else:
                 users_ok.append(r)
         elif r["kind"] == "resident":
@@ -285,19 +296,20 @@ def evaluate(text, now, prompt_epoch, running):
         "errors": errors,
         "notes": notes,
         "tune": tune,
-        "users_valid": [r["key"] for r in users_ok],
+        "users_valid": [r["key"] for r in users_ok + users_watch],
         "waits_valid": [r["key"] for r in waits_ok],
         "waits_due": [{"key": r["key"], "at": r["at"], "reason": r["reason"], "ref": r["ref"]} for r in waits_due],
         "dead_refs": [{"key": r["key"], "ref": r["ref"], "reason": r["reason"]} for r in dead_refs],
         # Something will bring the main agent back: a wait (future or due), a
         # legacy Waiting On row not yet due, or a user declaration (the user's
         # reply wakes the session).
-        "has_next_check": bool(waits_ok or waits_due or users_ok) or any(
+        "has_next_check": bool(waits_ok or waits_due or users_ok or users_watch) or any(
             r["kind"] == "wait" and r["source"] == "waiting-on" and r["at"] > now for r in rows),
         "residents": residents,
         # A wait mutes status-stale AND no-executor until it is due. A user
         # declaration only mutes no-executor: if the main agent keeps working
-        # after declaring it, it must still keep the status file fresh.
+        # after declaring it, it must still keep the status file fresh. A
+        # watch=yes user declaration mutes nothing: other work is going on.
         "mutes": bool(waits_ok),
         "mutes_noexec": bool(users_ok or waits_ok),
     }
@@ -435,11 +447,16 @@ def one_line(s):
 
 def cmd_set(path, args, now):
     if len(args) < 2:
-        raise SystemExit("usage: expect.sh set <key> wait|user|resident [--at T] [--ref ID] --reason TEXT")
+        raise SystemExit("usage: expect.sh set <key> wait|user|resident [--at T] [--ref ID] [--watch] --reason TEXT")
     key, kind, opts = args[0], args[1], {}
     rest = args[2:]
     while rest:
         flag = rest.pop(0)
+        if flag == "--watch":
+            if kind != "user":
+                raise SystemExit("expect: --watch only applies to kind user")
+            opts["watch"] = "yes"
+            continue
         if flag not in ("--at", "--ref", "--reason") or not rest:
             raise SystemExit("expect: unexpected argument %r" % flag)
         opts[flag[2:]] = rest.pop(0)
@@ -454,7 +471,8 @@ def cmd_set(path, args, now):
             raise SystemExit("expect: --at is more than %ds ahead (ZYZ_EXPECT_MAX_SEC); schedule an earlier check and re-set it then" % max_horizon())
         line = "- Expect: key=%s; kind=wait; at=%d; ref=%s; reason=%s" % (key, at, opts.get("ref") or "-", reason)
     elif kind == "user":
-        line = "- Expect: key=%s; kind=user; since=%d; reason=%s" % (key, now, reason)
+        line = "- Expect: key=%s; kind=user; since=%d;%s reason=%s" % (
+            key, now, " watch=yes;" if opts.get("watch") else "", reason)
     elif kind == "resident":
         line = "- Expect: key=%s; kind=resident; ref=%s; reason=%s" % (key, opts.get("ref", ""), reason)
     else:
@@ -523,7 +541,8 @@ def cmd_list(path, now, prompt_epoch):
             extra = "at %s (%+dm)%s" % (when, (r["at"] - now) // 60, " ref=" + r["ref"] if r["ref"] else "")
         elif r["kind"] == "user":
             state = "valid" if r["key"] in ev["users_valid"] else "lapsed"
-            extra = "since %s" % _dt.datetime.fromtimestamp(r["since"]).strftime("%Y-%m-%d %H:%M")
+            extra = "since %s%s" % (_dt.datetime.fromtimestamp(r["since"]).strftime("%Y-%m-%d %H:%M"),
+                                    " (watch: mutes nothing)" if r.get("watch") else "")
         else:
             state, extra = "active", "ref=" + r["ref"]
         src = "" if r["source"] == "expect" else " [legacy %s row]" % r["source"]
@@ -557,6 +576,7 @@ def main(argv):
         print("mutes\t%d" % (1 if ev["mutes"] else 0))
         print("mutes_noexec\t%d" % (1 if ev["mutes_noexec"] else 0))
         print("next\t%d" % (1 if ev["has_next_check"] else 0))
+        print("users\t%d" % len(ev["users_valid"]))
         print("residents\t" + ",".join(ev["residents"]))
         for k, v in sorted(ev["tune"].items()):
             print("tune\t%s\t%d" % (k, v))

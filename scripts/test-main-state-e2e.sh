@@ -41,6 +41,10 @@
 # ---------------------------------------------------------------------------
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 # Keep the invoking session's project dir out of zyz_task_root's fallback.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 # ...and its session identity out of the per-session pointer lookup (#23).
@@ -199,9 +203,13 @@ echo "--- E2E 14: recovery positive control ---"
 # user answers: UserPromptSubmit -> working, status.md STILL old
 ms "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$PROJ\"}"
 [ "$(read_state)" = working ] && pass "14 recovery: UserPromptSubmit -> working" || fail "14 recovery -> working" "got [$(read_state)]"
-run_wd
+# 0.32.0: the first report only wakes the main agent; the page is the
+# escalation of a report left unanswered (ZYZ_WATCHDOG_ESCALATE_SEC=0 here).
+ZYZ_WATCHDOG_ESCALATE_SEC=0 run_wd
 if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then pass "14 status-stale stdout REAPPEARS under working (gate not vacuous)"; else fail "14 status-stale reappears under working" "gate may be vacuous: [$WD_OUT]"; fi
-if grep -q -- '--origin main' "$NOTIFY_LOG" 2>/dev/null; then pass "14 main-origin notify_stuck recorded under working (positive control)"; else fail "14 main-origin stuck recorded under working" "log=[$(cat "$NOTIFY_LOG")]"; fi
+if grep -q -- '--event stuck' "$NOTIFY_LOG" 2>/dev/null; then fail "14 the first report pages nobody" "log=[$(cat "$NOTIFY_LOG")]"; else pass "14 the first report pages nobody (the main agent is woken first)"; fi
+ZYZ_WATCHDOG_ESCALATE_SEC=0 run_wd
+if grep -q -- '--origin main' "$NOTIFY_LOG" 2>/dev/null; then pass "14 main-origin stuck escalated under working once unanswered (positive control)"; else fail "14 main-origin stuck recorded under working" "log=[$(cat "$NOTIFY_LOG")]"; fi
 
 # ===========================================================================
 # 9 / 10 / 15 / 15b — subagent death still reported under suppression;
@@ -242,66 +250,51 @@ else
 fi
 
 # ===========================================================================
-# 16 — Stop overwrite immunity e2e
+# 16 — Stop after an open dialog (0.32.0: no overwrite immunity)
 # ===========================================================================
-echo "--- E2E 16: Stop overwrite immunity ---"
+echo "--- E2E 16: Stop after an open dialog records idle ---"
 set_phase_old implementation
 age_state awaiting-user 54000
 : > "$NOTIFY_LOG"
 ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-[ "$(read_state)" = awaiting-user ] && pass "16 Stop keeps awaiting-user (immunity)" || fail "16 Stop keeps awaiting-user" "got [$(read_state)]"
-if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then fail "16 no idle IM on immunity" "unexpected: [$(cat "$NOTIFY_LOG")]"; else pass "16 no idle IM fired on immunity"; fi
+[ "$(read_state)" = idle ] && pass "16 Stop after awaiting-user records idle (the turn ended, the dialog is closed)" || fail "16 Stop after awaiting-user records idle" "got [$(read_state)]"
+if [ -s "$NOTIFY_LOG" ]; then fail "16 an executing task's Stop pages nobody" "log=[$(cat "$NOTIFY_LOG")]"; else pass "16 an executing task's Stop pages nobody (0.32.0: no idle IM)"; fi
 run_wd
-if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "16 still no status-stale after immune Stop" "$WD_OUT"; else pass "16 still no status-stale after immune Stop"; fi
-# Positive control (mirrors test 14 discipline): the SAME recorder DOES capture
-# an idle IM when one should fire (working+Stop, active) — proves the "no idle
-# IM on immunity" negative above is NON-vacuous (recorder + idle-IM path live).
-set_phase_old implementation
-age_state working 54000
-: > "$NOTIFY_LOG"
-ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then pass "16 control: recorder DOES capture idle IM when fired (16 immunity negative non-vacuous)"; else fail "16 control: recorder captures idle IM when fired" "recorder dead -> 16 negative vacuous: [$(cat "$NOTIFY_LOG")]"; fi
+if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "16 still no status-stale after the Stop (idle suppresses it)" "$WD_OUT"; else pass "16 still no status-stale after the Stop (idle suppresses it)"; fi
 
 # ===========================================================================
-# 17 — idle IM e2e (F4)
+# 17 — hand-off IM e2e (0.32.0: replaces the per-Stop idle IM)
 # ===========================================================================
-echo "--- E2E 17: idle IM (F4) ---"
-# (a) working + Stop (active) -> idle + idle IM recorded
-set_phase_old implementation
+echo "--- E2E 17: hand-off IM ---"
+# Positive control first: the same recorder DOES capture the hand-off IM, so
+# the negatives above (16) and below (design) are not vacuous.
+set_phase_old awaiting-confirmation
 age_state working 54000
 : > "$NOTIFY_LOG"
 ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-[ "$(read_state)" = idle ] && pass "17a working+Stop(active) -> idle" || fail "17a -> idle" "got [$(read_state)]"
-if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null && grep -qF -- "--task-root $ROOT" "$NOTIFY_LOG" 2>/dev/null; then
-    pass "17a idle IM recorded: notify.sh --event idle --task-root <root>"
+[ "$(read_state)" = idle ] && pass "17a Stop(awaiting-confirmation) -> idle" || fail "17a -> idle" "got [$(read_state)]"
+if grep -q -- '--event completed' "$NOTIFY_LOG" 2>/dev/null && grep -qF -- "--task-root $ROOT" "$NOTIFY_LOG" 2>/dev/null; then
+    pass "17a hand-off IM recorded: notify.sh --event completed --task-root <root>"
 else
-    fail "17a idle IM recorded" "log=[$(cat "$NOTIFY_LOG")]"
+    fail "17a hand-off IM recorded" "log=[$(cat "$NOTIFY_LOG")]"
 fi
-# (b) watchdog with old status -> status-stale suppressed (idle suppresses, F4)
-run_wd
-if printf '%s' "$WD_OUT" | grep -q '分钟没有更新'; then fail "17b idle suppresses status-stale" "$WD_OUT"; else pass "17b idle suppresses status-stale stdout (F4)"; fi
-# (c) real notify.sh idle send path with a minimal enabled notify.json incl idle
+: > "$NOTIFY_LOG"
+ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
+if [ -s "$NOTIFY_LOG" ]; then fail "17a' a second Stop in the same phase -> no repeat" "log=[$(cat "$NOTIFY_LOG")]"; else pass "17a' a second Stop in the same phase -> no repeat"; fi
+# (c) real notify.sh completed send path
 CAP17="$SB/cap17.txt"; CFG17="$SB/notify17.json"; : > "$CAP17"
 CMD17="{ printf 'EV=%s ' \$ZYZ_NOTIFY_EVENT; cat; echo; } >> $CAP17"
-printf '{"enabled":true,"command":"%s","cooldown_sec":0,"events":["idle"]}\n' "$CMD17" > "$CFG17"
-rm -f "$ROOT"/runtime/nag/notify-idle.last 2>/dev/null || true
-ZYZ_NOTIFY_CONFIG="$CFG17" bash "$NOTIFY" --event idle --task-root "$ROOT" 2>/dev/null
-if grep -q 'EV=idle ' "$CAP17" 2>/dev/null; then pass "17c real notify.sh idle send path fires user command"; else fail "17c idle send path" "cap=[$(cat "$CAP17")]"; fi
-# design phase + Stop -> NO idle IM. Paired positive control FIRST (mirrors
-# test 14 discipline): an active-phase Stop on the SAME recorder must record the
-# idle IM, proving the design-phase negative below is non-vacuous.
-set_phase_old implementation
-age_state working 54000
-: > "$NOTIFY_LOG"
-ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then pass "17 control: active-phase Stop records idle IM (design-phase negative non-vacuous)"; else fail "17 control: active-phase Stop records idle IM" "recorder dead -> design negative vacuous: [$(cat "$NOTIFY_LOG")]"; fi
+printf '{"enabled":true,"command":"%s","cooldown_sec":0,"events":["completed"]}\n' "$CMD17" > "$CFG17"
+ZYZ_NOTIFY_CONFIG="$CFG17" bash "$NOTIFY" --event completed --task-root "$ROOT" --message "任务已交付，等你确认" 2>/dev/null
+if grep -q 'EV=completed ' "$CAP17" 2>/dev/null && grep -q '"session_name":' "$CAP17"; then pass "17c real notify.sh completed send path fires the user command (payload has session_name)"; else fail "17c completed send path" "cap=[$(cat "$CAP17")]"; fi
+# design phase, executors unknown (no background_tasks) -> no IM
 set_phase_old design
 age_state working 54000
 : > "$NOTIFY_LOG"
 ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then fail "17 design phase -> no idle IM" "unexpected: [$(cat "$NOTIFY_LOG")]"; else pass "17 design (non-active) phase Stop -> NO idle IM"; fi
+if [ -s "$NOTIFY_LOG" ]; then fail "17 design Stop with unknown executors -> no IM" "unexpected: [$(cat "$NOTIFY_LOG")]"; else pass "17 design Stop with unknown executors -> no IM"; fi
 
-unset ZYZ_NOTIFY_CONFIG 2>/dev/null || true
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

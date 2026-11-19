@@ -36,6 +36,10 @@
 # ---------------------------------------------------------------------------
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 set -o pipefail
 # zyz_task_root falls back to the session project dir; never let the invoking
 # session's own dir leak a real task into this sandbox.
@@ -92,7 +96,7 @@ if [ -f "$LIB" ]; then
     # doc lines literally say "no epoch / no-TTL" — scanning raw text would
     # match that prose and false-positive. We assert on CODE only: no epoch
     # reference, no zyz_now, no now-minus arithmetic on the main-state read.
-    gate_body="$(awk '/^zyz_main_state_(suppresses|awaiting)\(\)/{g=1} g{print} g&&/^}/{g=0}' "$LIB" | sed 's/#.*//')"
+    gate_body="$(awk '/^zyz_main_state_suppresses\(\)/{g=1} g{print} g&&/^}/{g=0}' "$LIB" | sed 's/#.*//')"
     if printf '%s' "$gate_body" | grep -Eq 'epoch|zyz_now|\$\(\(|[0-9][[:space:]]*-[[:space:]]*[0-9]'; then
         fail "S0 no-TTL: suppression/immunity gate does time math" "gate must be pure string compare (design §Important Details)"
     else
@@ -203,19 +207,48 @@ clear_state
 # ===========================================================================
 # UNIT 3 / 3b — awaiting + suppresses truth tables
 # ===========================================================================
-echo "--- UNIT 3/3b: awaiting + suppresses ---"
-# 3: awaiting exactly awaiting-user
-for s in awaiting-user working idle ended; do
-    set_state "$s"
-    if ( . "$LIB" 2>/dev/null; zyz_main_state_awaiting "$ROOT" ); then r=0; else r=1; fi
-    if [ "$s" = awaiting-user ]; then
-        [ "$r" -eq 0 ] && pass "3 awaiting($s) rc0" || fail "3 awaiting($s) rc0" "rc=$r"
-    else
-        [ "$r" -eq 1 ] && pass "3 awaiting($s) rc1" || fail "3 awaiting($s) rc1" "rc=$r"
-    fi
+echo "--- UNIT 3/3b: dialog-open + suppresses ---"
+# 3 (0.32.0): zyz_user_dialog_open — awaiting-user means a dialog is open, every
+# other state (and a missing one) means none; no epoch is read (not a TTL).
+# The line names the dialog's owner; zyz_dialog_close_by closes it only for
+# that owner, so another agent's activity never reads as "the user answered".
+dialog_open() { ( . "$LIB" 2>/dev/null; zyz_user_dialog_open "$ROOT" ); }
+close_by() { ( . "$LIB" 2>/dev/null; zyz_dialog_close_by "$ROOT" "$1" ); }
+state_line() { cat "$STATE_FILE" 2>/dev/null; }
+for line in 'awaiting-user 1700000100 main' 'awaiting-user 1700000100 a1b2' 'awaiting-user 1700000100'; do
+    printf '%s\n' "$line" > "$STATE_FILE"
+    dialog_open && pass "3 dialog: [$line] -> open" || fail "3 dialog: [$line] -> open"
+done
+for st in working idle ended; do
+    printf '%s 1700000100\n' "$st" > "$STATE_FILE"
+    if dialog_open; then fail "3 dialog: $st is never an open dialog" "returned 0"; else pass "3 dialog: $st is never an open dialog"; fi
 done
 clear_state
-if ( . "$LIB" 2>/dev/null; zyz_main_state_awaiting "$ROOT" ); then fail "3 awaiting(empty) rc1" "returned 0"; else pass "3 awaiting(empty) rc1"; fi
+if dialog_open; then fail "3 dialog: missing state -> closed" "returned 0"; else pass "3 dialog: missing state -> closed"; fi
+( . "$LIB" 2>/dev/null; zyz_main_state_set "$ROOT" awaiting-user )
+[ "$(awk '{print $1, $3}' "$STATE_FILE")" = "awaiting-user main" ] && pass "3 owner: awaiting-user defaults to owner main" || fail "3 owner default" "line=[$(state_line)]"
+( . "$LIB" 2>/dev/null; zyz_main_state_set "$ROOT" awaiting-user 'a b;c' )
+[ "$(awk '{print $3}' "$STATE_FILE")" = "a_b_c" ] && [ "$(awk '{print NF}' "$STATE_FILE")" = 3 ] && pass "3 owner: sanitized to one field" || fail "3 owner sanitize" "line=[$(state_line)]"
+( . "$LIB" 2>/dev/null; zyz_main_state_set "$ROOT" idle a1b2 )
+[ "$(awk '{print NF}' "$STATE_FILE")" = 2 ] && pass "3 owner: only awaiting-user carries one" || fail "3 owner idle" "line=[$(state_line)]"
+printf 'awaiting-user 1700000100 a1b2\n' > "$STATE_FILE"
+close_by c3d4
+[ "$(state_line)" = "awaiting-user 1700000100 a1b2" ] && pass "3 close_by: another agent leaves the dialog open" || fail "3 close_by other" "line=[$(state_line)]"
+close_by ""
+[ "$(state_line)" = "awaiting-user 1700000100 a1b2" ] && pass "3 close_by: empty id is a no-op" || fail "3 close_by empty" "line=[$(state_line)]"
+close_by a1b2
+[ "$(awk '{print $1}' "$STATE_FILE")" = idle ] && pass "3 close_by: the owner closes it (idle)" || fail "3 close_by owner" "line=[$(state_line)]"
+printf 'awaiting-user 1700000100 main\n' > "$STATE_FILE"
+close_by a1b2
+[ "$(awk '{print $1}' "$STATE_FILE")" = awaiting-user ] && pass "3 close_by: a subagent never closes the main agent's dialog" || fail "3 close_by main" "line=[$(state_line)]"
+printf 'awaiting-user 1700000100\n' > "$STATE_FILE"
+close_by a1b2
+[ "$(awk '{print $1}' "$STATE_FILE")" = awaiting-user ] && pass "3 close_by: an ownerless (pre-0.32.0) dialog is the main agent's" || fail "3 close_by legacy" "line=[$(state_line)]"
+printf 'working 1700000100\n' > "$STATE_FILE"
+close_by a1b2
+[ "$(state_line)" = "working 1700000100" ] && pass "3 close_by: no dialog -> untouched" || fail "3 close_by working" "line=[$(state_line)]"
+clear_state
+if ( . "$LIB" 2>/dev/null; type zyz_main_state_awaiting >/dev/null 2>&1 ); then fail "3 zyz_main_state_awaiting removed with the Stop immunity" "still defined"; else pass "3 zyz_main_state_awaiting removed with the Stop immunity"; fi
 # 3b: suppresses on {awaiting-user, idle}
 for s in awaiting-user idle; do
     set_state "$s"
@@ -233,7 +266,7 @@ if ( . "$LIB" 2>/dev/null; zyz_main_state_suppresses "$ROOT" ); then fail "3b su
 clear_state
 
 # ===========================================================================
-# UNIT 4 — main-state.sh event mapping + Stop overwrite immunity
+# UNIT 4 — main-state.sh event mapping (Stop always writes idle since 0.32.0)
 # ===========================================================================
 echo "--- UNIT 4: main-state.sh event mapping ---"
 run_ms() { # $1 = stdin JSON ; runs the (sandbox-independent) real main-state.sh
@@ -254,10 +287,11 @@ else
     clear_state
     run_ms "{\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$PROJ\",\"tool_name\":\"Bash\"}"
     [ ! -f "$STATE_FILE" ] && pass "4 other event -> no write" || fail "4 other event -> no write" "wrote [$(read_state)]"
-    # Stop overwrite immunity: current awaiting-user + Stop -> stays awaiting-user
+    # 0.32.0: no Stop immunity. A Stop ends the turn, so any dialog is closed:
+    # awaiting-user + Stop -> idle.
     set_state awaiting-user
     run_ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-    [ "$(read_state)" = awaiting-user ] && pass "4 Stop immunity: awaiting-user preserved" || fail "4 Stop immunity: awaiting-user preserved" "got [$(read_state)]"
+    [ "$(read_state)" = idle ] && pass "4 Stop: awaiting-user -> idle (the turn ended, so the dialog is closed)" || fail "4 Stop: awaiting-user -> idle" "got [$(read_state)]"
     # current working + Stop -> idle
     set_state working
     run_ms "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
@@ -303,36 +337,48 @@ run_ms_mirror() { printf '%s' "$1" | bash "$MIRROR_MS" 2>/dev/null; sleep 1; }
 if [ ! -x "$MIRROR_MS" ]; then
     fail "4b idle IM trigger (REQUIRED)" "$MIRROR_MS missing — implement main-state.sh"
 else
-    # active phase (implementation) + working->idle -> idle IM call recorded
-    : > "$NOTIFY_LOG"
+    # 0.32.0 policy: an ordinary stop of an executing task pages nobody; the
+    # user is paged when the task is handed to them (once per hand-off phase
+    # entry) or the main agent stops at the design gate with nothing running.
+    for ph in implementation review delivery; do
+        : > "$NOTIFY_LOG"
+        printf '# Status\n- Current Phase: %s\n' "$ph" > "$ROOT/status.md"
+        set_state working
+        run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
+        if [ -s "$NOTIFY_LOG" ]; then fail "4b $ph Stop pages nobody" "log=[$(cat "$NOTIFY_LOG")]"; else pass "4b $ph Stop pages nobody (no idle IM)"; fi
+    done
+    for ph in awaiting-confirmation observing done; do
+        : > "$NOTIFY_LOG"
+        printf '# Status\n- Current Phase: %s\n' "$ph" > "$ROOT/status.md"
+        run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
+        if grep -q -- '--event completed' "$NOTIFY_LOG" && grep -qF -- "--task-root $ROOT" "$NOTIFY_LOG"; then
+            pass "4b entering $ph -> completed IM"
+        else
+            fail "4b entering $ph -> completed IM" "log=[$(cat "$NOTIFY_LOG")]"
+        fi
+        : > "$NOTIFY_LOG"
+        run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
+        if [ -s "$NOTIFY_LOG" ]; then fail "4b a second Stop in $ph -> no repeat" "log=[$(cat "$NOTIFY_LOG")]"; else pass "4b a second Stop in $ph -> no repeat (once per entry)"; fi
+    done
     printf '# Status\n- Current Phase: implementation\n' > "$ROOT/status.md"
-    set_state working
     run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-    if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null && grep -qF -- "--task-root $ROOT" "$NOTIFY_LOG" 2>/dev/null; then
-        pass "4b active-phase Stop(working->idle) calls notify.sh --event idle --task-root <root>"
-    else
-        fail "4b active-phase Stop calls notify.sh --event idle" "log=[$(cat "$NOTIFY_LOG" 2>/dev/null)]"
-    fi
-    # non-active phase (design) -> NO idle IM
+    printf '# Status\n- Current Phase: done\n' > "$ROOT/status.md"; : > "$NOTIFY_LOG"
+    run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
+    if grep -q -- '--event completed' "$NOTIFY_LOG"; then pass "4b reopened then done again -> announced again"; else fail "4b re-entry" "log=[$(cat "$NOTIFY_LOG")]"; fi
+    # design gate: nothing running, nothing declared -> needs_input
+    printf '# Status\n- Current Phase: design\n\n## Agent State\n\n- 主 agent: x\n' > "$ROOT/status.md"; : > "$NOTIFY_LOG"
+    run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\",\"background_tasks\":[],\"session_crons\":[]}"
+    if grep -q -- '--event needs_input' "$NOTIFY_LOG"; then pass "4b design Stop with no executor and no declaration -> needs_input IM"; else fail "4b design gate" "log=[$(cat "$NOTIFY_LOG")]"; fi
     : > "$NOTIFY_LOG"
-    printf '# Status\n- Current Phase: design\n' > "$ROOT/status.md"
-    set_state working
-    run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-    if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then
-        fail "4b design phase -> no idle IM" "unexpected call: [$(cat "$NOTIFY_LOG")]"
-    else
-        pass "4b design (non-active) phase Stop -> NO idle IM"
-    fi
-    # immunity-triggered (current awaiting-user) -> NO idle IM even in active phase
+    run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\",\"background_tasks\":[{\"id\":\"r1\",\"type\":\"subagent\",\"status\":\"running\"}],\"session_crons\":[]}"
+    if [ -s "$NOTIFY_LOG" ]; then fail "4b design Stop with a running reviewer -> no IM" "log=[$(cat "$NOTIFY_LOG")]"; else pass "4b design Stop with a running reviewer -> no IM"; fi
     : > "$NOTIFY_LOG"
-    printf '# Status\n- Current Phase: implementation\n' > "$ROOT/status.md"
-    set_state awaiting-user
     run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\"}"
-    if grep -q -- '--event idle' "$NOTIFY_LOG" 2>/dev/null; then
-        fail "4b immunity (awaiting-user) -> no idle IM" "unexpected call: [$(cat "$NOTIFY_LOG")]"
-    else
-        pass "4b immunity (awaiting-user + Stop) -> NO idle IM"
-    fi
+    if [ -s "$NOTIFY_LOG" ]; then fail "4b design Stop, executors unknown -> no IM" "log=[$(cat "$NOTIFY_LOG")]"; else pass "4b design Stop, executors unknown (no background_tasks) -> no IM"; fi
+    ( cd "$PROJ" && bash "$REPO_ROOT/hooks/scripts/expect.sh" --task "$ROOT" set gate user --reason "等批准设计" >/dev/null 2>&1 )
+    : > "$NOTIFY_LOG"
+    run_ms_mirror "{\"hook_event_name\":\"Stop\",\"cwd\":\"$PROJ\",\"background_tasks\":[],\"session_crons\":[]}"
+    if [ -s "$NOTIFY_LOG" ]; then fail "4b design Stop with a user declaration -> no second IM" "log=[$(cat "$NOTIFY_LOG")]"; else pass "4b design Stop with a user declaration -> no fallback IM (the declaration paged)"; fi
 fi
 # restore active phase for later tests
 printf '# Status\n- Current Phase: implementation\n' > "$ROOT/status.md"
@@ -350,11 +396,17 @@ else
     export ZYZ_NOTIFY_CONFIG="$SB/does-not-exist.json"
     rm -f "$ZYZ_NOTIFY_CONFIG"
     feed_notify() { printf '%s' "$1" | bash "$NOTIFY" 2>/dev/null; }
-    for nt in permission_prompt agent_needs_input elicitation_dialog elicitation_url_dialog idle_prompt; do
+    for nt in permission_prompt agent_needs_input elicitation_dialog elicitation_url_dialog; do
         clear_state
         feed_notify "{\"hook_event_name\":\"Notification\",\"notification_type\":\"$nt\",\"cwd\":\"$PROJ\"}"
         if [ "$(read_state)" = awaiting-user ]; then pass "5 $nt -> awaiting-user"; else fail "5 $nt -> awaiting-user" "got [$(read_state)] (write must precede config gate)"; fi
     done
+    # 0.32.0: idle_prompt ("finished ~60 s ago, you haven't typed") follows EVERY
+    # Stop; it is not a dialog, so it records idle — even over a stale
+    # awaiting-user — and never awaiting-user.
+    set_state awaiting-user
+    feed_notify "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$PROJ\"}"
+    if [ "$(read_state)" = idle ]; then pass "5 idle_prompt -> idle (not a dialog)"; else fail "5 idle_prompt -> idle" "got [$(read_state)] (write must precede config gate)"; fi
     # agent_completed -> NOT awaiting-user (pre-seed working, must stay working)
     set_state working
     feed_notify "{\"hook_event_name\":\"Notification\",\"notification_type\":\"agent_completed\",\"cwd\":\"$PROJ\"}"
@@ -365,7 +417,7 @@ else
         feed_notify "{\"hook_event_name\":\"Notification\",\"notification_type\":\"$nt\",\"cwd\":\"$PROJ\"}"
         if [ "$(read_state)" = working ]; then pass "5 $nt -> NOT awaiting-user"; else fail "5 $nt -> NOT awaiting-user" "got [$(read_state)]"; fi
     done
-    unset ZYZ_NOTIFY_CONFIG
+    export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 fi
 clear_state
 
@@ -426,22 +478,21 @@ else
         fail "6b set -u direct stuck no crash" "rc=$rc err=[$(cat "$ERRF")]"
     fi
 
-    # 6c: --event idle — in category whitelist + default event set (no "events"
-    # key present -> must still be enabled) + non-empty default title + per-
-    # category cooldown marker notify-idle.last (2nd call within window exits 0).
-    write_cfg "{\"enabled\":true,\"command\":\"$CMD\",\"cooldown_sec\":3600}"
+    # 6c (0.32.0): the per-Stop `idle` IM is retired — the category is no
+    # longer accepted, even when a config lists it.
+    write_cfg "{\"enabled\":true,\"command\":\"$CMD\",\"cooldown_sec\":0,\"events\":[\"idle\",\"stuck\"]}"
     set_state idle; reset_cap
     bash "$NOTIFY" --event idle --task-root "$ROOT" 2>/dev/null
-    if grep -q 'EV=idle ' "$CAP" 2>/dev/null; then pass "6c idle in default event set (no events key) -> sent"; else fail "6c idle default event set sent" "cap=[$(cat "$CAP")]"; fi
-    # non-empty default title in the emitted payload
-    if grep -q '"title":"' "$CAP" 2>/dev/null && ! grep -q '"title":""' "$CAP" 2>/dev/null; then pass "6c idle default title non-empty"; else fail "6c idle default title non-empty" "cap=[$(cat "$CAP")]"; fi
-    # cooldown marker created
-    if [ -f "$ROOT/runtime/nag/notify-idle.last" ]; then pass "6c idle per-category cooldown marker notify-idle.last"; else fail "6c idle cooldown marker notify-idle.last" "marker missing"; fi
-    # second call within cooldown window -> exit 0, no new capture
-    before="$(wc -c < "$CAP")"
-    bash "$NOTIFY" --event idle --task-root "$ROOT" 2>/dev/null
-    after="$(wc -c < "$CAP")"
-    if [ "$before" = "$after" ]; then pass "6c idle 2nd call within cooldown suppressed"; else fail "6c idle cooldown suppresses 2nd" "before=$before after=$after"; fi
+    if [ -s "$CAP" ]; then fail "6c --event idle is retired" "cap=[$(cat "$CAP")]"; else pass "6c --event idle is retired (nothing sent)"; fi
+    write_cfg "{\"enabled\":true,\"command\":\"$CMD\",\"cooldown_sec\":0}"
+    reset_cap
+    printf '{"hook_event_name":"Notification","notification_type":"idle_prompt","cwd":"%s"}' "$PROJ" | bash "$NOTIFY" 2>/dev/null
+    sleep 0.3
+    if [ -s "$CAP" ]; then fail "6c idle_prompt pages nobody" "cap=[$(cat "$CAP")]"; else pass "6c idle_prompt pages nobody (it only moves main-state)"; fi
+    printf '{"hook_event_name":"StopFailure","agent_id":"a1","error":"rate_limit","cwd":"%s"}' "$PROJ" | bash "$NOTIFY" 2>/dev/null
+    if [ -s "$CAP" ]; then fail "6c a subagent StopFailure pages nobody" "cap=[$(cat "$CAP")]"; else pass "6c a subagent StopFailure pages nobody (the watchdog tells the main agent)"; fi
+    printf '{"hook_event_name":"StopFailure","error":"billing_error","cwd":"%s"}' "$PROJ" | bash "$NOTIFY" 2>/dev/null
+    if grep -q 'EV=failed ' "$CAP" 2>/dev/null; then pass "6c the main agent's StopFailure pages (nothing will resume it)"; else fail "6c main StopFailure" "cap=[$(cat "$CAP")]"; fi
 
     # 12b: backward compat — a caller that passes NO --origin, non-suppress
     # state, still sends stuck exactly as before the origin change.
@@ -450,7 +501,7 @@ else
     bash "$NOTIFY" --event stuck --task-root "$ROOT" --message "legacy caller" 2>/dev/null
     if grep -q 'EV=stuck ' "$CAP" 2>/dev/null; then pass "12b no --origin + working -> stuck sent (backward compat)"; else fail "12b backward compat stuck sent" "cap=[$(cat "$CAP")]"; fi
 
-    unset ZYZ_NOTIFY_CONFIG
+    export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 fi
 clear_state
 
@@ -602,7 +653,7 @@ else
     export ZYZ_NOTIFY_CONFIG="$SB/does-not-exist.json"
     printf '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"%s"}' "$PROJ" | ZYZ_HOOKS_DISABLE=1 bash "$NOTIFY" 2>/dev/null
     [ ! -f "$STATE_FILE" ] && pass "12 notify.sh disabled -> no awaiting-user write" || fail "12 notify disabled no write" "wrote [$(read_state)]"
-    unset ZYZ_NOTIFY_CONFIG
+    export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
     # main-state.sh
     if [ -x "$MAIN_STATE" ]; then
         clear_state

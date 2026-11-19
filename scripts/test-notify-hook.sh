@@ -16,6 +16,10 @@
 # Compatibility: macOS bash 3.2 + Linux bash. Smoke tests SKIP without jq/python3.
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 # Keep the invoking session's project dir out of zyz_task_root's fallback.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 # ...and its session identity out of the per-session pointer lookup (#23).
@@ -216,7 +220,7 @@ else
     ZYZ_NOTIFY_DISABLE=1 run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"cwd\":\"$PROJ\"}"
     if [ ! -s "$CAP" ]; then pass "N3 ZYZ_NOTIFY_DISABLE=1 → no fire"; else fail "N3 ZYZ_NOTIFY_DISABLE=1 → no fire" "$(cat "$CAP")"; fi
 
-    unset ZYZ_NOTIFY_CONFIG
+    export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
     rm -rf "$SB"
 fi
 

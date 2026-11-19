@@ -43,6 +43,10 @@
 # checks as proof of host injection behavior or historical-host compatibility.
 
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 # Keep the invoking session's project dir out of zyz_task_root's fallback.
 unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR
 # ...and its session identity out of the per-session pointer lookup (#23).
@@ -58,7 +62,7 @@ fi
 cd "$REPO_ROOT" || { echo "FATAL: cannot cd into '$REPO_ROOT'" >&2; exit 2; }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-EXPECTED_VERSION="0.31.0"
+EXPECTED_VERSION="0.32.0"
 EXPECTED_VERSION_RE="$(printf '%s' "$EXPECTED_VERSION" | sed 's/\./\\./g')"
 
 pass() { TOTAL=$((TOTAL+1)); PASSED=$((PASSED+1)); echo "PASS  $1"; }
@@ -174,6 +178,9 @@ expected_by_id = {
     "Stop[0].hooks[1]": "main-state.sh",
     "Notification[0].hooks[0]": "notify.sh",
     "StopFailure[0].hooks[0]": "notify.sh",
+    # 0.32.0: StopFailure also records the failure as a fact the L3 watchdog
+    # turns into a wake-up (its output is ignored by the host).
+    "StopFailure[0].hooks[1]": "api-failure.sh",
     "SessionEnd[0].hooks[0]": "notify.sh",
     "SessionEnd[0].hooks[1]": "main-state.sh",
     "SessionStart[0].hooks[0]": "start-watchdog.sh",
@@ -213,13 +220,13 @@ for command_id, command in commands:
 
 actual_targets = collections.Counter(targets)
 actual_by_id = {command_id: target for (command_id, _), target in zip(commands, targets)}
-if len(commands) == 16 and actual_by_id == expected_by_id and actual_targets == expected_targets:
+if len(commands) == 17 and actual_by_id == expected_by_id and actual_targets == expected_targets:
     emit("PASS", "T2R_static_exact_thirteen_commands_and_targets")
 else:
     emit("FAIL", "T2R_static_exact_thirteen_commands_and_targets",
          f"count={len(commands)} targets={dict(actual_targets)} shape={shape_errors}")
 
-if len(prefixes) == 16 and len(set(prefixes)) == 1:
+if len(prefixes) == 17 and len(set(prefixes)) == 1:
     emit("PASS", "T2R_static_uniform_resolution_prefix_all_thirteen")
 else:
     emit("FAIL", "T2R_static_uniform_resolution_prefix_all_thirteen",
@@ -236,7 +243,7 @@ for command_id, command in commands:
         shape_errors.append(f"{command_id}: resolution is not assigned to a private zyz plugin-root variable")
     else:
         private_assignments.append(match.group(1))
-if len(private_assignments) == 16 and len(set(private_assignments)) == 1:
+if len(private_assignments) == 17 and len(set(private_assignments)) == 1:
     emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen")
 else:
     emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen", "; ".join(shape_errors))

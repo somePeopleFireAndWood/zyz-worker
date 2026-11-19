@@ -22,6 +22,10 @@
 # Intentionally NOT using `set -e`: every check must run regardless of any
 # single failure so the operator sees the full picture.
 set -u
+# Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
+# exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
+ZYZ_TEST_NO_NOTIFY="/nonexistent/zyz-worker-test/notify.json"
+export ZYZ_NOTIFY_CONFIG="$ZYZ_TEST_NO_NOTIFY"
 set -o pipefail
 
 # ---------------------------------------------------------------------------

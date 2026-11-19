@@ -18,7 +18,8 @@ implementation/test 启动时通过固定的 LIVE_INVENTORY 权威发布一份�
 mount 实例），因此 Darwin 上所有 tracked-state 操作 fail-closed 为
 `genesis-capability-unavailable`：L0 不写实例状态，L3/L4 没有角色观测，
 **死角色检测与「终态但未收割」检测在 macOS 上均不可用**（状态文件过期分支、L2 退出门与
-prompt 纪律仍然有效，全部保持 fail-open）。详见 hooks/README.md `## 降级环境`。
+prompt 纪律仍然有效，全部保持 fail-open；0.32.0 起，与平台无关的会话静默与 API 错误中断
+两条底线在 macOS 上同样报告被 API 错误杀死的角色）。详见 hooks/README.md `## 降级环境`。
 
 本文讲整体架构与主体原理：插件由哪些部件组成、各自的职责边界、以及它们如何协作。不追求逐行细节——具体契约看各文件自身的 in-file contract 块与对应 SKILL.md。
 
@@ -118,14 +119,16 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 所以 0.13.0 加了一层确定性兜底。**原则：提示词纪律仍是主行为，watchdog 只是兜底**；整层缺失（策略禁用 hooks、平台不支持 monitors）工作流也照常跑。
 
+**长期设计方向：agent 主导，插件做工具与保障者。** 正当的安静场景穷举不完，0.25～0.31 每补一种就硬编码一条豁免，规则互相叠加、彼此冲突。所以判断「任务为什么安静」的权交给主 agent——它用阶段和声明（`expect.sh`）表达意图；插件提供这些工具，同时作为监测者与保障者观察主 agent 改不了的事实、守住它覆盖不了的不变量。允许误报，但每条告警都必须能被正确清除。遇到新场景先问「主 agent 能不能声明它」，再考虑写代码。完整论述、告警目录、平台能力与现状梳理见 [design/watchdog-design.md](design/watchdog-design.md)。
+
 ### 4.2 七层
 
 | 层 | 载体 | 触发点 | 干什么 |
 |---|---|---|---|
-| **L0 心跳** | `heartbeat.sh` + `subagent-track.sh` | 每次工具调用（Pre/PostToolUse，同步）；SubagentStart | 把「存活」变成干活的**副作用**，而不是需要记得做的事。主角色更新固定 PACK_HEADER；动态角色更新固定 START/HEARTBEAT 逻辑记录 |
+| **L0 心跳** | `heartbeat.sh` + `subagent-track.sh` + `api-failure.sh` | 每次工具调用（Pre/PostToolUse，同步）；SubagentStart；StopFailure | 把「存活」变成干活的**副作用**，而不是需要记得做的事。任何 agent（含 teammate）的工具调用都写会话活动 `runtime/activity`；主角色更新固定 PACK_HEADER；动态角色更新固定 START/HEARTBEAT 逻辑记录；API 错误中断落成 `runtime/api-failures/` 记录 |
 | **L1 新鲜度提醒** | `status-freshness.sh`、`post-agent-flush.sh` | PostToolUse | 状态文件在活跃阶段过期时注入提醒；收到 subagent 结果后提醒先落盘再派下一个。纯建议，带冷却。**每次工具调用只出一条**：Agent 返回归 `post-agent-flush`（措辞更具体、阈值更紧），其余归 `status-freshness` |
 | **L2 子 agent 退出门** | `stop-gate-subagent.sh` | SubagentStop | 最终消息过短就拦一次，要求先给正式报告（主 agent 才有东西可落盘）。最多拦一次，不会循环 |
-| **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层。**兜底**再加一支「终态但未收割」扫描：某角色已到终态（DONE/FINALIZED）但主 agent 自那以后一直空闲（完成通知被丢），定时唤醒它去读结果——补 L4 抓不到的「角色在主 agent 空闲之后才终态」一例 |
+| **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层。**兜底**再加一支「终态但未收割」扫描：某角色已到终态（DONE/FINALIZED）但主 agent 自那以后一直空闲（完成通知被丢），定时唤醒它去读结果——补 L4 抓不到的「角色在主 agent 空闲之后才终态」一例。0.32.0 起再加两条与平台、角色类型无关的**底线**：会话静默（活跃任务整个会话 `silence-sec` 没有任何工具调用且无声明）与 API 错误中断（subagent / teammate 的 StopFailure 记录，每条报一次） |
 | **L4 主 agent 停止门** | `stop-gate-main.sh` | Stop | 派出的角色看起来死了、或状态文件严重过期时，阻止主 agent 就这么闲下来。**主层**再加「终态但未收割」拦截：角色已终态、结果已落盘，但主 agent 自完成起零动作（`main_heartbeat_epoch<=terminal_epoch` 且 `status.md` mtime`<=terminal_epoch`）时拦一次，点名结果所在，逼它先读再落盘——同步、不依赖会丢的完成通知，故为主层 |
 | **L5 派发范围守卫** | `dispatch-scope-guard.sh` | PreToolUse (`^Agent$`) | 唯一**事前**层：检查派发提示词是否在压缩角色交付范围，是则 deny（除非同一提示词承诺了补齐剩余部分）。启发式匹配，三重防过度拦截：否决式表述免疫、引号内容不算下达指令、上限必须挂在评审交付物名词上 |
 | **L6 共享树回退守卫** | `checkout-guard.sh` | PreToolUse (`^Bash$`) | 拦截会摧毁**他人未提交成果**的 git 回退：`checkout/restore` 指向有未提交改动的文件、以及移动状态的 `stash` 形态。deny 消息里给出安全替代（改前 cp 备份、`git show HEAD:<file>` 只读、`git apply -R`）。源自真实事故：变异测试回退用 checkout 连带删掉另一 agent 约 5000 字符守卫代码，且 build 全绿 |
@@ -140,6 +143,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
 - **输出形状按事件类型区分。** `PostToolUse` / `PreToolUse` 这类注入或拦截，输出 `hookSpecificOutput` 且其中 `hookEventName` 必须与注册的事件一致（前者带 `additionalContext`，后者带 `permissionDecision`）；而 Stop / SubagentStop 两个停止门禁输出的是**不带**事件名的 `{decision:"block",reason}`——这是该事件族的约定，不是漏写。
 - **四个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5、`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关 L6（两者的匹配都是启发式的——用 shell 解析 shell 无法完美——必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。
+- **底线检查只依赖所有平台都有的事实（0.32.0）。** 逐角色检查要 fixed-pack（macOS 不可用）和角色名 matcher（用 `name` 派发的 teammate 匹配不上）；「无执行者」只信 Stop 时宿主的后台任务列表，列表里挂着死掉的 teammate 时永远不响。11-19 的真实事故就是这三者同时失效：一个评审 teammate 撞 402 死掉，列表里挂着 16 条，整个会话 6.5 小时没有一次工具调用，没有一层发声。所以加了会话静默（看 `runtime/activity`，任何 agent 的工具调用都会写）和 API 错误中断（StopFailure 落盘——宿主忽略该 hook 的输出，之前它只发了 IM）。顺带修正了 main-state 的语义冲突：`idle_prompt` 每次停下后都会来，不再记成 `awaiting-user`；Stop 一律记 `idle`。
 - **阈值分层且可调。** L3 的角色静默阈值（1200s）刻意高于 L4（900s），因为 L3 无法交叉验证 `background_tasks`，而健康角色可能长时间只思考不调工具——所以 L3 的措辞是「请核实」而不是「立即重启」。全部通过 `ZYZ_*` 环境变量可调，`ZYZ_HOOKS_DISABLE=1` 关掉整层。
 - **多层管同一条不变量不是冗余，是递进升级阶梯。** 状态文件新鲜度有三层管：600s 注入提醒（纯建议）→ 1200s 停止门禁（拦住 idle）→ 1800s 后台监视器（唤醒会话）。角色存活有两层：900s 停止门禁 → 1200s 监视器。每层阈值不同、触发点不同、手段强度不同（提醒 < 阻止 < 唤醒），后一层只在前一层已经失效时才够到。看起来重复的地方，实际是「先轻后重」。
 - **两个停止门禁都不会死锁。** 二者都先检查 `stop_hook_active`：该标志为真意味着本次停止已经被拦过一次，此时直接放行。所以每次停止最多拦一次，不存在反复阻止的活锁；再叠加冷却戳限流。
@@ -264,11 +268,17 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 
 ## 七、测试策略
 
-八个可执行套件，全部是「跑完不早退」的风格，最后汇总通过数。除 `test-e2e-layered.sh` 外的默认模式是纯静态/单元或本地 smoke，不需要模型 API 配额，可随时全跑：
+下列可执行套件全部是「跑完不早退」的风格，最后汇总通过数。除 `test-e2e-layered.sh` 外的默认模式是纯静态/单元或本地 smoke，不需要模型 API 配额，可随时全跑：
 
 | 套件 | 覆盖 |
 |---|---|
 | `test-orchestration-helpers.sh` | 最大的一份。helper 的退出码契约、`dispatch.md` 字段集、复用前置校验与**退出码优先级**、多仓 merge、文档关键串、`agents/`↔`subagents/` 四对镜像逐字节相等 |
+| `test-no-executor.sh` | #24 的声明驱动 watchdog：无执行者（L3/L4）、`expect.sh` 的每种声明与拒写、observing 阶段、Tune、L2「以等待收尾」 |
+| `test-main-state.sh` / `test-main-state-e2e.sh` | 主 agent 状态机：事件映射、压制门是纯字符串比较（无 TTL）、notify 的 origin 分流、交付 IM 与设计闸门兜底；e2e 版驱动真实 hook 链 |
+| `test-session-pointer.sh` | #23 按会话区分的任务指针：同目录两个会话互不串扰、回落顺序、多任务会话的告警措辞 |
+| `test-notify-hook.sh` | IM 通知器：注册项、事件映射、配置门、冷却、`include_message` |
+| `test-unharvested-role.sh` | 「终态但未收割」检测（L4 主层 + L3 备份）及其 epoch 守卫，含变异清单 |
+| `test-session-silence.sh` | 0.32.0 的底线：活动记录、会话静默的触发与每一种压制、StopFailure 记录与一次性报告、对话框归属语义、IM 策略（提问延迟发送、`user --watch`、升级、会话名称）、24 小时静默上限，以及 11-19 事故形态的回放 |
 | `test-watchdog-hooks.sh` | hook 布局与语法、`hooks.json`/`monitors.json` 注册项、各 hook 行为烟测、L5 的应拦/应放行措辞矩阵（含否决与计数上限族）、三份清单版本一致 |
 | `test-rename-and-conventions.sh` | 命名与目录约定：不留旧名残留、slash command 别名正文等价、long-running-state 约束块在各角色文件就位 |
 | `test-release-0-5-0.sh` | 发布门禁：三份清单版本一致、打包产物内容、tag 内容 |
@@ -291,7 +301,8 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改设计文档 `## 快速审阅`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`SKILL.md` 的 `## 快速审阅` 定义（含「正文为准 + 冲突时从正文重新生成」三条）、§2 步骤 1/6/8、`prompts/main-agent.md` 的维护职责、review-agent 两份镜像的一致性核对、以及 T6 断言。注意：摘要腐烂的机制与正文相同——**用追加代替改写**（在一句已过时的话旁边补「(现在是 5 个模块)」），不是「存在第二份描述」本身。所以规则是「改动时重写受影响的整块，冲突时按正文重新生成」，而非「保持同步」。
 - **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## 设计文档编辑纪律` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
 - **改跨 harness 交叉评审**（§3.3 d2）：`scripts/cross-review.sh`、`skills/execute-task/templates/cross-review-prompt.md`、`SKILL.md` 的 `## 跨 harness 交叉评审` 及 §2/§3.A/§3.B/§3.C/§4 的挂点、`prompts/main-agent.md` 的同名节与设计工作流、实现工作流两节、implementation/test 两个角色提示词两份镜像的 cross-harness 段、`templates/task-status.md` 的 `## 跨 harness 交叉评审` 记录位、`templates/final-report.md` 与 `templates/review-report.md` 的 `评审者:` 字段、以及 `test-cross-review.sh`。新增一种 harness 时改脚本的 `KNOWN_HARNESSES`、`build_cmd` 与该 harness 的只读/隔离参数。
-- **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog 强制层` 三处口径要一致。
+- **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog 强制层` 三处口径要一致；告警、事实来源、声明有增减时，同步 `docs/design/watchdog-design.md` 的 §3 / §5 表格。
+- **新增一种正当的安静场景**：先看能不能用一种声明表达（扩展 `expect_state.py` 的 kind / 参数 + `expect.sh` + 模板 + 文档），不要在 hook 里加针对该场景的硬编码豁免（`docs/design/watchdog-design.md` §2）。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。
 
 **已知的复制粘贴面。** helper 之间没有共享库（刻意的：每个脚本要能被单独调用、单独读懂），代价是几个小函数在多个脚本里各存一份——`fm_field`（frontmatter 取值，6 份）与 tilde 展开（9 处内联）。这些副本**必须保持行为一致**：`fm_field` 曾出现过分歧（一部分副本缺少「文件不存在则返回空」的守卫，在 `set -e` 下会直接杀掉调用者），已统一。改其中任一份时，同步改全部。

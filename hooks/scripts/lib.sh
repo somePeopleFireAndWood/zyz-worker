@@ -67,6 +67,8 @@
 # - zyz_phase_terminal <phase>  0 when phase is a terminal spelling (done/
 #                               delivered/completed/closed/... prefix match).
 # - zyz_phase_observing <phase> 0 for the observing phase (#24).
+# - zyz_phase_handoff <phase>   0 when the task is handed to the user:
+#                               terminal, observing or awaiting-confirmation.
 # - zyz_phase_active <phase>    0 when phase is implementation/testing/
 #                               review/delivery (an active execution phase);
 #                               terminal and design phases are never active.
@@ -81,7 +83,7 @@
 # - zyz_runtime_observe <task-dir> <true|false>
 #                               authenticated fixed-pack observer JSON; the
 #                               boolean selects bounded no-output comparison.
-# - zyz_main_state_set <task-dir> <state>
+# - zyz_main_state_set <task-dir> <state> [owner]
 #                               atomically write `<state> <epoch>` to
 #                               <task-dir>/runtime/main-state; <state> must be
 #                               one of working/awaiting-user/idle/ended, else
@@ -90,10 +92,6 @@
 #                               print the current main-state string (first
 #                               field), or empty when missing/corrupt/non-
 #                               whitelisted (fail-open).
-# - zyz_main_state_awaiting <task-dir>
-#                               0 when the state is exactly awaiting-user, else
-#                               1. Pure string compare (no epoch/TTL). Used only
-#                               by main-state.sh Stop overwrite immunity.
 # - zyz_main_state_suppresses <task-dir>
 #                               0 when the state is awaiting-user OR idle, else
 #                               1. Pure string compare (no epoch/TTL). The sole
@@ -116,6 +114,26 @@
 # - zyz_no_executor_msg <root> <phase> <ids> <stop|watchdog>
 # - zyz_observing_msg <root> <stop|watchdog>
 #                               the shared L3/L4 no-executor finding text.
+# - zyz_activity_mark <task-dir> <who>
+#                               record a tool call (by `main` or an agent id)
+#                               in <task-dir>/runtime/activity.
+# - zyz_roots_last_progress <roots>
+#                               newest of: any task's runtime/activity, its
+#                               runtime/user-prompt-epoch and its status.md
+#                               mtime — the last moment anyone moved the
+#                               session; empty when none is known.
+# - zyz_user_dialog_open <task-dir>
+#                               0 when main-state is awaiting-user: a dialog is
+#                               open now (see the function for who closes it).
+# - zyz_dialog_close_by <task-dir> <agent-id>
+#                               a subagent's tool call: closes the dialog it
+#                               owns (its permission prompt), if any.
+# - zyz_silence_msg <root> <phase> <ids> <minutes> <failure-note>
+#                               the L3 session-silence finding text.
+# - zyz_session_name <session-id> [transcript]
+#                               the name the user sees for a session (Claude
+#                               Code /rename title, else its AI title, else
+#                               the registry name; Codex thread_name), or empty.
 #
 # ## Failure behavior
 #
@@ -548,6 +566,129 @@ zyz_observing_msg() {
         "$lead" "$(zyz_expect_cli) --task $root"
 }
 
+# ---- session activity: the platform-independent liveness floor (0.32.0) ----
+#
+# Every tool call by anyone in the session (main agent, subagent, agent-team
+# teammate — tool hooks fire inside all of them, carrying agent_id) stamps
+# `<epoch> <who>` here. It needs no fixed-pack capability and no role-name
+# matcher, so it is the one liveness fact that holds on macOS and for teammates
+# dispatched by name. The L3 session-silence scan reads it: an active task whose
+# whole session has not moved for silence-sec, with nothing declared, is
+# stalled no matter what the host's background task list still shows (the
+# 11-19 incident: 16 listed "executors", zero tool calls for 6.5 hours).
+zyz_activity_mark() {
+    [ -n "${1:-}" ] || return 0
+    mkdir -p "$1/runtime" 2>/dev/null || return 0
+    zyz_write_atomic "$1/runtime/activity" "$(zyz_now) $(zyz_sanitize "${2:-main}")"
+}
+
+zyz_roots_last_progress() {
+    local r v best=""
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        for v in "$(head -n1 "$r/runtime/activity" 2>/dev/null | awk '{print $1}')" \
+                 "$(zyz_epoch_in "$r/runtime/user-prompt-epoch")" \
+                 "$(zyz_mtime "$r/status.md")"; do
+            v="${v%%[!0-9]*}"
+            [ -n "$v" ] || continue
+            if [ -z "$best" ] || [ "$v" -gt "$best" ]; then best="$v"; fi
+        done
+    done <<ZYZ_ROOTS
+${1:-}
+ZYZ_ROOTS
+    printf '%s' "$best"
+}
+
+zyz_user_dialog_open() {
+    # Ownership, not time. awaiting-user is written when a dialog opens
+    # (AskUserQuestion PreToolUse; a permission / elicitation Notification),
+    # with its owner as the third field: `main`, or the agent_id of the
+    # subagent whose tool call raised the prompt. Only the owner's own next step
+    # closes it: a main-agent tool call, Stop or user prompt rewrites main-state
+    # (heartbeat.sh / main-state.sh); a subagent's next tool call closes the
+    # dialog it owns (zyz_dialog_close_by). Another agent's activity does not —
+    # a background lane working on while the main agent waits on an
+    # AskUserQuestion is the normal case. Comparing epochs instead (0.32.0
+    # draft) both closed such a dialog on any lane's tool call and misread a
+    # dialog whose roots were stamped across a second boundary. The epoch is
+    # still never read.
+    [ "$(zyz_main_state_get "${1:-}")" = awaiting-user ]
+}
+
+zyz_dialog_close_by() {
+    local line
+    [ -n "${2:-}" ] || return 0
+    line="$(head -n1 "${1:-}/runtime/main-state" 2>/dev/null)"
+    set -- "$1" "$2" $line
+    [ "${3:-}" = awaiting-user ] && [ "${5:-}" = "$(zyz_sanitize "$2")" ] || return 0
+    zyz_main_state_set "$1" idle
+}
+
+zyz_silence_msg() {
+    local root phase pending minutes note lead
+    root="$1"; phase="$2"; pending="$3"; minutes="$4"; note="${5:-}"
+    lead="任务 $(basename "$root") 仍在 ${phase} 阶段"
+    [ -z "$pending" ] || lead="${lead}，SubTask ${pending} 尚未提交"
+    printf '%s，但整个会话已经 %s 分钟没有任何动静：主 agent、subagent、teammate 都没有调用过工具，用户没有发言，状态文件也没有写过，也没有有效的等待声明——任务很可能已经停摆（宿主后台任务列表里挂着的条目不一定还在推进它）。%s现在选一条：(1) 逐条核实你在等的通道（ListAgents、后台任务的输出文件、ps、角色的会话记录）——被 API 错误杀死、以"等待通知"收尾、或结束通知没送到的角色不会再回来，按"续做而非重做"重新派发它；(2) 确实在等一个不调用工具的东西（长跑的后台任务、外部批跑、长时间推理的 teammate），用 %s 声明 `set <key> wait --at <预计时间> [--ref <后台任务 id>] --reason …`（到点叫醒你），等用户就 `set <key> user --reason …`；这个任务本来就会长时间安静，可以自己定静默时长：`tune silence-sec=<秒> remind-sec=<秒>`（各最多 86400，即 24 小时）；(3) 任务其实已交付，就把 Current Phase 改成 awaiting-confirmation（或用户确认后的 done）。' \
+        "$lead" "$minutes" "$note" "$(zyz_expect_cli) --task $root"
+}
+
+# The session's display name, so an IM says which session to open. Claude
+# Code: the last `custom-title` (/rename) in the transcript, else the last
+# `ai-title`, else the `name` of its ~/.claude/sessions/<pid>.json entry.
+# Codex: the last thread_name of ~/.codex/session_index.jsonl. Best effort,
+# one line, at most 80 characters; empty when nothing is known.
+zyz_session_name() {
+    [ -n "${1:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    ZYZ_SN_SID="$1" ZYZ_SN_TRANSCRIPT="${2:-}" python3 -c '
+import glob, json, os, re
+sid = os.environ["ZYZ_SN_SID"]
+if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", sid):
+    raise SystemExit(0)
+claude = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+codex = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+def last(path, pred):
+    out = None
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                if b"title" not in raw and b"thread_name" not in raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except Exception:
+                    continue
+                v = pred(d) if isinstance(d, dict) else None
+                if v:
+                    out = v
+    except OSError:
+        pass
+    return out
+name = None
+tr = os.environ.get("ZYZ_SN_TRANSCRIPT") or ""
+if not os.path.isfile(tr):
+    hits = glob.glob(os.path.join(claude, "projects", "*", sid + ".jsonl"))
+    tr = hits[0] if hits else ""
+if tr:
+    name = last(tr, lambda d: d.get("customTitle") if d.get("type") == "custom-title" else None) \
+        or last(tr, lambda d: d.get("aiTitle") if d.get("type") == "ai-title" else None)
+if not name:
+    for p in glob.glob(os.path.join(claude, "sessions", "*.json")):
+        try:
+            d = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(d, dict) and d.get("sessionId") == sid and d.get("name"):
+            name = d["name"]
+if not name:
+    name = last(os.path.join(codex, "session_index.jsonl"),
+                lambda d: d.get("thread_name") if d.get("id") == sid else None)
+if name:
+    print(" ".join(str(name).split())[:80], end="")
+' 2>/dev/null || true
+}
+
 # How to invoke expect.sh from the main agent's shell, for messages.
 zyz_expect_cli() {
     local lib_dir
@@ -828,6 +969,18 @@ zyz_phase_observing() {
     zyz_phase_terminal "${1:-}" && return 1
     case "${1:-}" in
         observ*|monitor*|watch*) return 0 ;;
+    esac
+    return 1
+}
+
+zyz_phase_handoff() {
+    # $1 = phase string. 0 when the main work is over and the task waits on
+    # the user or the clock: a terminal phase, observing, or awaiting a
+    # confirmation. The `completed` IM fires once on entering one of them.
+    zyz_phase_terminal "${1:-}" && return 0
+    zyz_phase_observing "${1:-}" && return 0
+    case "${1:-}" in
+        *confirm*) return 0 ;;
     esac
     return 1
 }
@@ -1204,17 +1357,19 @@ zyz_runtime_observe() {
 # the epoch, so there is no time-based expiry anywhere (the no-TTL guarantee).
 
 zyz_main_state_set() {
-    # $1 = task dir, $2 = state (working|awaiting-user|idle|ended).
+    # $1 = task dir, $2 = state (working|awaiting-user|idle|ended), $3 = for
+    # awaiting-user, the dialog's owner (`main` or an agent id; default main).
     # Illegal state or unwritable runtime dir -> silent no-op (fail-open).
-    local dir state
+    local dir state owner=""
     dir="${1:-}"; state="${2:-}"
     [ -n "$dir" ] || return 0
     case "$state" in
-        working|awaiting-user|idle|ended) ;;
+        working|idle|ended) ;;
+        awaiting-user) owner=" $(zyz_sanitize "${3:-main}")" ;;
         *) return 0 ;;
     esac
     mkdir -p "$dir/runtime" 2>/dev/null || return 0
-    zyz_write_atomic "$dir/runtime/main-state" "$state $(zyz_now)"
+    zyz_write_atomic "$dir/runtime/main-state" "$state $(zyz_now)$owner"
 }
 
 zyz_main_state_get() {
@@ -1227,12 +1382,6 @@ zyz_main_state_get() {
     case "$first" in
         working|awaiting-user|idle|ended) printf '%s' "$first" ;;
     esac
-}
-
-zyz_main_state_awaiting() {
-    # 0 when the state is exactly awaiting-user. Pure string compare, no epoch.
-    # Used only by main-state.sh Stop overwrite immunity — NOT a suppression gate.
-    [ "$(zyz_main_state_get "${1:-}")" = "awaiting-user" ]
 }
 
 zyz_main_state_suppresses() {
