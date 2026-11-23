@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] — 2026-11-23
+
+- **提示词：向用户提问一律用自然语言，不使用 AskUserQuestion 工具。** 即使工具可用、即使是让用户在几个选项里做选择（把选项编号列在回复里），也用自然语言提问，并照旧在同一条回复里、结束这一轮之前 `expect.sh set <key> user`。主 agent 提示词删除了「用 AskUserQuestion 提问什么都不用做、做选择时优先用它」一条；`SKILL.md` 的 L7 IM 通知说明和声明用法表同步改写。watchdog 对 AskUserQuestion 的处理（`awaiting-user`、延迟 `needs_input` IM、回答记为用户发言）保留不变，作为工具仍被调用时的兜底。
+
 ## [0.32.0] — 2026-11-19
 
 - **watchdog 新增两条与平台、角色类型无关的底线：会话静默与 API 错误中断。** 真实事故（11-19，macOS）：一个评审 teammate 04:14 因上游 402 中断，宿主后台任务列表里还挂着 16 条，整个会话 6.5 小时没有任何工具调用，直到用户早上回来。没有一层发声：macOS 上 fixed-pack 不可用，逐角色检查全部停用；用 `name` 派发的 teammate，`agent_type` 是它的名字，匹配不上三种角色名的 matcher，即使在 Linux 上也不被跟踪；「无执行者」只信 Stop 时宿主列出的 16 条；「状态过期」在主 agent 停下后被 `idle` 静音。宿主其实在 04:14 触发了 StopFailure，但插件只用它发了一条 IM。
