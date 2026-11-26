@@ -339,3 +339,18 @@ tree-stable 的指纹计算要排除 `.zyz-worker/` 和 `--task-dir` 所在目�
 7. **"关键机制"由主 agent 在设计文档的 `## 关键机制` 小节里列出**，依据是用户的设计，加上安全、权限、数据完整性这类机制，以及用户点名的机制。这一节同时列入 `### 需要你关注的细节`，随设计一起批准。用户可以增删。快速档没有关键机制清单，只做负对照。评审者认为有遗漏时，提一条 `non-blocking:normal` 建议，不作为 blocking。
 8. **声明域条款**：主 agent 在审批闸门前重新生成快速审阅时，把用户没有亲口说过的范围边界条款（首先是威胁模型）列进 `### 需要你关注的细节`。评审方面，涉及安全或数据的改动缺少声明域、或者声明域含糊时，算 blocking 的"设计缺失"，并标 `requires-user-decision`。
 9. **单个评审点升档**：`open <point> --stage … [--kind …] [--tier standard|strict]`。`--tier` 只能比任务级 `- Tier:` 更严；写入时在该评审点的 `Review` 行加 `tier=<t>` 字段，上限、`mode`、`cross-harness` 都按这个评审点自己的档位算。改已经打开的评审点的档位，用 `open <point> --tier …` 重新打开（只能升）。降回任务档位要求 `--by user`。review-gate 比对的 `Tier:` 行取评审点的生效档位。
+
+### 10.8 最终评审后的修正（2026-11-26，独立评审 + 跨 harness 评审）
+
+1. **被拒绝的 blocking 要由独立方复核。**
+   - 命令改为 `result <point> --blocking N [--rejected R] [--behavior M]`。`N` 是本轮被接受的 blocking 条数；`R` 是评审者报告为 blocking、但被裁决者拒绝或降级的条数。`Review` 行新增 `rejected=<n|->` 字段。
+   - `close --outcome passed` 要求最近一轮 `blocking=0` 且 `rejected=0`。
+   - 下一轮（增量）的输入在"被接受的 blocking 清单 + 修复 diff"之外，还要附上"被拒绝的 blocking 及理由"。评审者对每一条二选一：在 `## 已复核的被拒绝建议` 里认可这次拒绝，或者重新提出为 blocking。
+   - 拒绝一直僵持到上限时，按 §4.4 交用户三选一。
+2. **review-gate 只放行尚未出结果的那一轮。** 最新一轮已经 `result`，就拒绝用同一标记再派发。
+3. **每一轮评审都重新派发 review-agent。** 不能把评审者留作常驻 teammate、下一轮用 SendMessage 续用，因为那样会绕开闸门。
+4. **严格档：非关键机制的变异由作者 lane 自己写、自己执行。** 关键机制仍按 test-agent 写、implementation-agent 执行。
+5. **严格档收口检查只认刚完成的这一组三轮：** 要开第 n 轮（n = 4, 7, 10…），必须有一条 `round == n-1` 的 `Review-Check`。`escalate` 结论在任何轮次都挡住下一轮，直到用户 `grant`。
+6. **重开已关闭的评审点时，保留原来的单点档位。** 降档无论走哪条路径，都要求 `--by user`。
+7. **aggregate 只有第 1 轮 `cross-harness=yes`。** 用 `--full` 开的 aggregate 轮也是 `no`。
+8. **编排模式定档。** worker 把所选档位和一句理由写进第一份交给用户的确认问题里（快速档是改法确认，标准档和严格档是设计批准），由用户确认或改档。主条目不新增字段。
