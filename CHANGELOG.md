@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **后台任务通知不再被当成用户发言；teammate 的结果只送一次。** 复盘（11-09～11-12，tipsy-ab-config，CC 2.1.251）：主 agent 一共收到 74 轮、80 条 teammate 消息，其中 40 条是 teammate 主动用 SendMessage 发来的报告，另外 40 条是宿主自动发的 idle 通知（`result` 就是 teammate 这一轮的最终文本，超过约 4000 字会被截断）。teammate 在同一轮里先用 SendMessage 发报告，再把同样的内容写成最终消息，主 agent 于是收到两份，其中至少 18 次专门回复「这条是重复的，没有新内容」。插件的 hook 在这些 teammate 里一次都没有注入过：L1 跳过非三种角色名的 `agent_type`，L2 的 matcher 也匹配不上按 `name` 派发的 teammate。所以重复本身是平台行为，这里只做提示词层的缓解。
+  - **`main-state.sh`：`<task-notification>` 轮次不写 `runtime/user-prompt-epoch`。** 调查中实测：宿主把后台任务通知（后台 subagent / Bash 结束、monitor 的一行输出，watchdog 自己的唤醒也在内）作为一轮送给主 agent 时，也会触发 `UserPromptSubmit`；teammate 消息则不会触发。之前每一条这样的通知都被记成「用户刚发过言」，造成两个后果：`user` 声明提前失效，下一次 Stop 被「无执行者」拦下，主 agent 只好重新声明，用户又收到一条 IM；延迟 60 秒的提问 IM 只要这期间来一条通知就被丢掉。这类轮次照常记 `working`、照常删除 stop-snapshot，只是不再算作用户发言。测试见 `scripts/test-no-executor.sh` N4h–N4k，套件头部记录了变异测试。
+  - **提示词：用 `name` 派发 teammate 时，结果只送一次。** `prompts/main-agent.md` 要求在派发里写明以下几点：完整报告写进报告文件；最终消息就是汇报，只写结论和路径；不要再用 SendMessage 重发同样的内容；SendMessage 只用来在本轮中途提出需要主 agent 答复的问题或阻塞。主 agent 收到只是重复内容的 idle 通知时，不回复，也不向用户复述。
+
 ## [0.32.1] — 2026-11-23
 
 - **提示词：向用户提问一律用自然语言，不使用 AskUserQuestion 工具。** 即使工具可用、即使是让用户在几个选项里做选择（把选项编号列在回复里），也用自然语言提问，并照旧在同一条回复里、结束这一轮之前 `expect.sh set <key> user`。主 agent 提示词删除了「用 AskUserQuestion 提问什么都不用做、做选择时优先用它」一条；`SKILL.md` 的 L7 IM 通知说明和声明用法表同步改写。watchdog 对 AskUserQuestion 的处理（`awaiting-user`、延迟 `needs_input` IM、回答记为用户发言）保留不变，作为工具仍被调用时的兜底。

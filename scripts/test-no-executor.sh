@@ -40,6 +40,16 @@
 #  - edit_rows' verify(): defence in depth behind a placement that is correct
 #    by construction, so no input reaches it.
 #
+# Mutation record (task-notification is not the user speaking, N4h–N4k; each
+# mutant applied in place to main-state.sh, restored from a backup copy): 6
+# mutants, all red — never take the skip branch (N4h/N4i/N4k), drop the
+# user_spoke guard on the epoch write (N4h/N4i/N4k), no indentation strip
+# (N4i), look only at the first line (N4i), substring instead of prefix match
+# (N4j), also skip the stop-snapshot delete (N4h). That the host fires
+# UserPromptSubmit for `<task-notification>` turns and NOT for agent-team
+# teammate messages was probed on Claude Code 2.1.251 (interactive, team mode);
+# this suite only pins the plugin's reaction to that prompt shape.
+#
 # Usage:  bash scripts/test-no-executor.sh   (exit 0 iff every check passed)
 
 set -u
@@ -218,6 +228,29 @@ printf '{"cwd":"%s","hook_event_name":"UserPromptSubmit"}' "$PROJ" | bash "$MAIN
 upe="$(cat "$ROOT/runtime/user-prompt-epoch" 2>/dev/null)"
 if [ ! -e "$ROOT/runtime/stop-snapshot" ] && [ -n "$upe" ] && [ "$upe" -ge "$NOW" ]; then
     pass "N4g UserPromptSubmit deletes the snapshot and stamps user-prompt-epoch"; else fail "N4g user prompt" "upe=[$upe]"; fi
+# A host task-notification turn (background subagent / Bash finished, a monitor
+# line) also fires UserPromptSubmit (verified, Claude Code 2.1.251) — it is not
+# the user speaking, so the epoch stays and a `user` declaration stays valid.
+tn_prompt() { printf '{"cwd":"%s","hook_event_name":"UserPromptSubmit","prompt":"%s"}' "$PROJ" "$1" | bash "$MAIN_STATE" >/dev/null 2>&1; }
+printf '%s\n' "$((NOW - 50))" > "$ROOT/runtime/user-prompt-epoch"
+run_stop '[]' >/dev/null
+tn_prompt '<task-notification>\n<task-id>bx1</task-id>\n<status>completed</status>\n</task-notification>'
+upe="$(cat "$ROOT/runtime/user-prompt-epoch" 2>/dev/null)"
+if [ "$upe" = "$((NOW - 50))" ] && [ ! -e "$ROOT/runtime/stop-snapshot" ] \
+    && [ "$(awk '{print $1}' "$ROOT/runtime/main-state")" = working ]; then
+    pass "N4h a task-notification turn: working, snapshot deleted, user-prompt-epoch NOT stamped"; else fail "N4h task-notification" "upe=[$upe] state=[$(cat "$ROOT/runtime/main-state")]"; fi
+tn_prompt '  \n  <task-notification>\n<summary>Monitor event</summary>\n</task-notification>'
+upe="$(cat "$ROOT/runtime/user-prompt-epoch" 2>/dev/null)"
+if [ "$upe" = "$((NOW - 50))" ]; then pass "N4i ... also after leading blank lines and indentation"; else fail "N4i leading whitespace" "upe=[$upe]"; fi
+tn_prompt 'please look at <task-notification> handling'
+upe="$(cat "$ROOT/runtime/user-prompt-epoch" 2>/dev/null)"
+if [ -n "$upe" ] && [ "$upe" -ge "$NOW" ]; then pass "N4j a human prompt merely mentioning the tag still counts as the user speaking"; else fail "N4j human prompt" "upe=[$upe]"; fi
+write_status implementation "- Awaiting-User: since-epoch=$((NOW - 10)); reason=等用户裁决 ST4 的接口方案" "$LIST_ST"
+reset_runtime
+tn_prompt '<task-notification>\n<task-id>bx2</task-id>\n</task-notification>'
+out="$(run_stop '[]')"
+if [ -z "$out" ]; then pass "N4k a task-notification arriving while waiting on the user keeps Awaiting-User valid"; else fail "N4k declaration lapsed on a notification" "out=[$out]"; fi
+write_status implementation "" "$LIST_ST"
 
 # ===========================================================================
 echo "--- N5: L3 no-executor scan ---"
