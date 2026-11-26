@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **跨 harness 评审：超时加下限，超时给出诊断。** 实战（11-15）：主 agent 跑在 Codex 时，自己用 `ZYZ_CROSS_REVIEW_TIMEOUT=180`（一次 300）调用 `cross-review.sh`，5 次 Claude 评审全部 `status=timeout rc=143`，报告只有 0–69 字节（其中一份全文是「Now GetPublic in full.」）。评审者其实没卡住：stderr 为空，事件流 340–900 KB，每次 17–46 次工具调用，被杀时还在读代码；rc=143 是脚本自己的超时发出的 SIGTERM，Codex 的 `exec_command`（`yield_time_ms=1000`）并没有杀它。400 次真实 Codex 评审中只有 9 次在 180 秒内、38 次在 300 秒内跑完，中位数 567 秒。Claude 宿主一侧从未调小过超时（都用 2400 以上），所以没出过问题。
+  - `ZYZ_CROSS_REVIEW_TIMEOUT` 低于下限 1200 秒（400 次中 97% 在此之内跑完）时提升到 1200，在 stderr 告警，并在 `.meta` 记 `timeout=` / `timeout-requested=` / `timeout-raised=yes`。默认值 2400 不变。下限可用 `ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR` 调整，只供测试套件使用。
+  - 超时的摘要行新增 `diagnosis=<still-working|stalled|no-output> timeout=<秒>`，`.meta` 新增 `timeout-diagnosis`、`last-output-age`、`log-bytes`、`report-partial`。判据是被杀前事件流最后一次增长的时间：`still-working` 表示超时设短了；`stalled` 表示事件流已安静 `ZYZ_CROSS_REVIEW_STALL_SEC`（默认 300）秒，评审者挂死；`no-output` 表示评审者从未写出任何事件。超时时抓到的旁白仍保留在报告文件里，标为部分输出。
+  - 提示词：`SKILL.md` `## 跨 harness 交叉评审` 补充：不要为了让评审者赶上 reviewAgent 而调小超时，以及 `diagnosis=` 字段的含义。README 的调节项表同步更新。
+  - `scripts/test-cross-review.sh` 新增 29 项（共 92 项），覆盖下限、按测试比例回放这次事故，以及三种诊断。9 个定向变异全部被检出，记录在套件头部。
+
 ## [0.32.1] — 2026-11-23
 
 - **提示词：向用户提问一律用自然语言，不使用 AskUserQuestion 工具。** 即使工具可用、即使是让用户在几个选项里做选择（把选项编号列在回复里），也用自然语言提问，并照旧在同一条回复里、结束这一轮之前 `expect.sh set <key> user`。主 agent 提示词删除了「用 AskUserQuestion 提问什么都不用做、做选择时优先用它」一条；`SKILL.md` 的 L7 IM 通知说明和声明用法表同步改写。watchdog 对 AskUserQuestion 的处理（`awaiting-user`、延迟 `needs_input` IM、回答记为用户发言）保留不变，作为工具仍被调用时的兜底。

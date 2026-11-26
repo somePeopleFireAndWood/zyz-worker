@@ -186,11 +186,11 @@ reviewAgent 在设计评审中检查摘要是否仍然准确描述正文，并�
 <plugin-root>/scripts/cross-review.sh run --task-dir <task-dir> --kind <design|implementation|aggregate> --brief <brief-file> --label <round-label> [--cwd <primary-worktree>]
 ```
 
-- `<plugin-root>` 是本 skill 目录往上两级的目录（设置了 `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT` 时则取其值）。如果平台没有后台工具调用，就以分离方式启动它，并把 stdout 重定向到 `<task-dir>/reviews/cross/<label>.summary`（先创建目录），等 reviewAgent 返回后再读取该文件（以及 `.meta` 文件）。一个评审者可能要跑几十分钟；不要让 reviewAgent 的派发因它而阻塞。
+- `<plugin-root>` 是本 skill 目录往上两级的目录（设置了 `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT` 时则取其值）。如果平台没有后台工具调用，就以分离方式启动它，并把 stdout 重定向到 `<task-dir>/reviews/cross/<label>.summary`（先创建目录），等 reviewAgent 返回后再读取该文件（以及 `.meta` 文件）。一个评审者可能要跑几十分钟；不要让 reviewAgent 的派发因它而阻塞，也不要为了让它赶上 reviewAgent 而调小 `ZYZ_CROSS_REVIEW_TIMEOUT`——超时防的是评审者挂死，不是节奏旋钮，低于 1200 秒的值脚本会提升到 1200 并告警。
 - 简报包含 reviewAgent 派发时会给的内容：最终态设计文档路径；设计复审时，附评审历史文件路径；实现评审时，附 SubTask id、冻结文件集，以及 diff 基线 / 提交范围；之前各轮已被拒绝的带编号发现及其理由；以及遗留风险清单路径（一旦存在，见 `## 评审收口`）。范围与 reviewAgent 派发相同——绝不缩小（`## 增量输出` 中的范围规则同样适用于简报）。
-- 脚本会检测宿主 harness，选出所有其他已安装的 harness（`scripts/cross-review.sh detect` 会显示选择结果），渲染 `templates/cross-review-prompt.md` + 简报，并发运行每个评审者。每个评审者的输出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，每个评审者在 stdout 上输出一行摘要：`status=ok|empty|failed|timeout`，外加 `tree-stable=yes|no|n/a`。
+- 脚本会检测宿主 harness，选出所有其他已安装的 harness（`scripts/cross-review.sh detect` 会显示选择结果），渲染 `templates/cross-review-prompt.md` + 简报，并发运行每个评审者。每个评审者的输出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，每个评审者在 stdout 上输出一行摘要：`status=ok|empty|failed|timeout`，外加 `tree-stable=yes|no|n/a`；超时的那一行还带 `diagnosis=still-working|stalled|no-output`（`still-working` 表示被杀时它还在工作，超时设短了）。
 - 评审会话是只读的（Codex 用 `-s read-only`；Claude 用 `--permission-mode dontAsk`，只带读取/搜索工具和只读 git），运行时会清除所有 `ZYZ_*` 变量并设置 `ZYZ_HOOKS_DISABLE=1`（这样插件自身在两个 harness 中都安装了的 hooks，绝不会把评审者误认为本任务的 agent），并且默认不带任何 MCP 服务器。它们**不**注入变异，也不重跑测试——这些义务仍归 reviewAgent。由于评审者读取的是实时工作树，要在派发 reviewAgent 时告诉它有一个并发的只读评审者正在读取工作树，这样只要任务允许，它就会在工作树之外的副本上做变异。
-- 调节项：`ZYZ_CROSS_REVIEW=auto`（默认）| `off` | 显式的 harness 列表；`ZYZ_CROSS_REVIEW_TIMEOUT`（秒，默认 2400）；`ZYZ_CROSS_REVIEW_MCP`（取值同 `ZYZ_WORKER_MCP`，默认 `none`）；`ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` 用于额外的 CLI 参数，例如指定模型。
+- 调节项：`ZYZ_CROSS_REVIEW=auto`（默认）| `off` | 显式的 harness 列表；`ZYZ_CROSS_REVIEW_TIMEOUT`（秒，默认 2400，下限 1200）；`ZYZ_CROSS_REVIEW_MCP`（取值同 `ZYZ_WORKER_MCP`，默认 `none`）；`ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` 用于额外的 CLI 参数，例如指定模型。
 
 **可选，绝不阻断。** 没有安装其他 harness、设置了 `ZYZ_CROSS_REVIEW=off`，或者某个评审者失败 / 超时 / 没有返回内容：把结果记入状态文件的 `## 跨 harness 交叉评审`，然后只靠 reviewAgent 继续。每个评审点对失败的跨 harness 评审者最多重试一次，绝不为了等它而让评审点在超时后仍保持打开。它是对 reviewAgent 的补充，绝不取代 reviewAgent，也绝不替代 reviewAgent 应当提供的任何已登记覆盖维度、变异证据或独立复现。
 
