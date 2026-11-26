@@ -77,6 +77,23 @@ if [ "$key" != main ]; then
     # Any agent's tool call moves the session (read by the L3 session-silence
     # scan). Recorded under the primary task, where every subagent record lives.
     zyz_activity_mark "$root" "$agent_id"
+    # An agent-team teammate calling a tool is in a turn (lib.sh `idle
+    # agent-team teammates`), whatever woke it; a background task it starts
+    # is recorded as its own, since only the teammate would read the result.
+    teammate="$(zyz_teammate_name "$agent_id" "$agent_type")"
+    if [ -n "$teammate" ]; then
+        zyz_teammate_mark "$root" "$teammate" busy
+        if [ "$(zyz_get hook_event_name)" = PostToolUse ] \
+            && case "$(zyz_get tool_name)" in Bash|Monitor) true ;; *) false ;; esac; then
+            bg_task="$(zyz_get tool_response.backgroundTaskId)"
+            [ -n "$bg_task" ] || bg_task="$(zyz_get tool_response.taskId)"
+            case "$bg_task" in
+                ''|*[!A-Za-z0-9._:-]*) ;;
+                *) mkdir -p "$root/runtime/teammates/owned" 2>/dev/null \
+                       && zyz_write_atomic "$root/runtime/teammates/owned/$bg_task" "$(zyz_sanitize "$teammate")" ;;
+            esac
+        fi
+    fi
     # A subagent moving on after its own permission prompt closes that dialog
     # (it is recorded with this agent as owner); any other dialog stays open.
     while IFS= read -r state_root; do

@@ -14,7 +14,7 @@
 # - env: CLAUDE_PROJECT_DIR (fallback base dir), ZYZ_HOOKS_DISABLE=1 skips,
 #   ZYZ_STATUS_STALE_SEC (default 600) staleness threshold,
 #   ZYZ_STATUS_NAG_COOLDOWN_SEC (default 300) min gap between reminders per
-#   audience.
+#   audience, ZYZ_UNARMED_GRACE_SEC (default 300) see the not-armed hint.
 #
 # ## Outputs
 #
@@ -25,8 +25,15 @@
 #   additionalContext telling the CURRENT context (main agent or the
 #   subagent that made the tool call) to persist progress into the status
 #   file now — one line per stale task. Otherwise prints nothing.
+# - Not-armed hint: when NO task of the session resolves and the main agent
+#   itself edits a non-terminal `.zyz-worker/tasks/<id>/status.md` (Write /
+#   Edit / MultiEdit) at least ZYZ_UNARMED_GRACE_SEC after its first such edit,
+#   prints once (per session per task) that the layer is not armed and how to
+#   arm it — or to ignore it when the task is not this session's. Nothing in
+#   the directory alone (task dirs, other pointers) ever triggers it.
 # - Side effect: stamps `<task-root>/runtime/nag/<audience>.last` (epoch)
-#   for the cooldown.
+#   for the cooldown, and `<task-root>/runtime/nag/unarmed-<session-id>` for
+#   the not-armed hint.
 #
 # ## Failure behavior
 #
@@ -56,7 +63,58 @@ base="$(zyz_get cwd)"
 [ -n "$base" ] || base="$PWD"
 
 roots="$(zyz_task_roots "$base")"
-[ -n "$roots" ] || exit 0
+
+# The one "not armed" hint the layer still gives, and only on evidence that
+# THIS session runs execute-task: the main agent itself editing a task's
+# status.md (Write / Edit / MultiEdit; Codex file edits do not reach here), and
+# still resolving no pointer of its own ZYZ_UNARMED_GRACE_SEC (default 300)
+# after its first such edit — a normal start creates status.md a few seconds
+# before task-pointer.sh arm, so the first edit only stamps
+# `<task>/runtime/nag/unarmed-<session-id>`. Said once per session per task.
+# A directory-wide signal (an unfinished task dir, a leftover current-task,
+# another session's pointer) is never evidence: it used to make the watchdog
+# report "未启用" in plain sessions that never ran the workflow.
+unarmed_hint() {
+    [ -z "$(zyz_get agent_id)" ] && [ -z "$(zyz_get agent_type)" ] || return 0
+    case "$(zyz_get tool_name)" in Write|Edit|MultiEdit) ;; *) return 0 ;; esac
+    local file task_dir key mark first state now grace
+    file="$(zyz_get tool_input.file_path)"
+    case "$file" in
+        '') return 0 ;;
+        /*) ;;
+        *) file="$base/$file" ;;
+    esac
+    # Exactly `<base>/.zyz-worker/tasks/<id>/status.md`, the file execute-task
+    # §1 creates — not a SubTask's file deeper in the task dir.
+    case "$file" in */status.md) ;; *) return 0 ;; esac
+    task_dir="${file%/status.md}"
+    case "${task_dir%/*}" in */.zyz-worker/tasks) ;; *) return 0 ;; esac
+    [ -f "$file" ] || return 0
+    zyz_task_is_done "$task_dir" && return 0
+    key="$(zyz_sanitize "$(zyz_session_id)")"
+    mark="$task_dir/runtime/nag/unarmed-${key:-no-session-id}"
+    now="$(zyz_now)"
+    grace="${ZYZ_UNARMED_GRACE_SEC:-300}"
+    case "$grace" in ''|*[!0-9]*) grace=300 ;; esac
+    first=""; state=""
+    [ -f "$mark" ] && read -r first state <"$mark"
+    case "${first:-}" in
+        ''|*[!0-9]*)
+            mkdir -p "${mark%/*}" 2>/dev/null || return 0
+            zyz_write_atomic "$mark" "$now"
+            return 0
+            ;;
+    esac
+    [ "${state:-}" != reported ] || return 0
+    [ $((now - first)) -ge "$grace" ] || return 0
+    zyz_write_atomic "$mark" "$first reported"
+    zyz_emit_context "PostToolUse" "[zyz-worker watchdog] 本会话在修改任务状态文件 ${file}，但 hooks 解析不到本会话的任务指针（.zyz-worker/sessions/<session-id>），所以 watchdog 对本会话什么都不会报告：死掉的 subagent、无人推进的停摆、过期的状态文件都不会有人提醒，Stop 也不会被拦。如果这是你正在用 execute-task 推进的任务，在会话 cwd 下运行 ${SCRIPT_DIR}/task-pointer.sh arm ${task_dir} 启用它（--resume 或 /clear 之后会话 id 可能已变，要重新 arm），再用 task-pointer.sh show 确认。如果这个任务属于另一个会话，或者你并没有在跑 execute-task，就忽略这条，不要替别的会话 arm 它的任务。这条只提示一次。"
+}
+
+if [ -z "$roots" ]; then
+    unarmed_hint
+    exit 0
+fi
 
 # Defer to post-agent-flush.sh on an Agent return. Both hooks are sync
 # PostToolUse and both read this same status-file mtime, so on a stale-status

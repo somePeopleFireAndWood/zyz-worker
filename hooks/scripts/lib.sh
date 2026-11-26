@@ -30,9 +30,10 @@
 #                               one per line, deduplicated.
 # - zyz_task_roots <base>       every task directory of THIS session, one per
 #                               line: the lines of the per-session pointer
-#                               `.zyz-worker/sessions/<session-id>` (#23), else
-#                               the first line of the legacy shared
-#                               `.zyz-worker/current-task`, else $ZYZ_TASK_DIR.
+#                               `.zyz-worker/sessions/<session-id>` (#23); only
+#                               when no session id is available at all, the
+#                               first line of the legacy shared
+#                               `.zyz-worker/current-task`; else $ZYZ_TASK_DIR.
 #                               Each pointer is read under <base>, then under
 #                               the session project dir ($CODEX_PROJECT_DIR /
 #                               $CLAUDE_PROJECT_DIR). A pointer line is a
@@ -109,6 +110,16 @@
 #                               (plugin monitors excluded), or `unknown`.
 # - zyz_executors_left <ids> <residents>
 #                               executor count once residents are removed.
+# - zyz_teammate_name           the agent-team teammate name of the hook
+#                               input (agent_id `a<name>-<hex>`), or empty.
+# - zyz_teammate_mark <root> <name> <busy|idle>
+#                               record a teammate's turn state.
+# - zyz_teammate_entries <root> background_tasks entries of a Stop input that
+#                               map to recorded teammates (or shells they
+#                               started): `<id>\t<names>\t<idle 0|1>`.
+# - zyz_teammates_idle_ids <root> <file> <sec>
+#                               ids of such a file whose teammates have all
+#                               been idle for <sec>; comma-joined.
 # - zyz_live_role_count <horizon>
 #                               non-terminal roles in observer JSON on stdin.
 # - zyz_no_executor_msg <root> <phase> <ids> <stop|watchdog>
@@ -161,9 +172,13 @@ zyz_json_ok() {
 # behind this interface.
 zyz_get() {
     [ -n "${ZYZ_HOOK_INPUT:-}" ] || return 0
+    # jq rejects a lone UTF-16 surrogate escape (`"\ud83d"`), which Claude Code
+    # emits whenever it cuts a string mid-emoji — a teammate's background_tasks
+    # description is the prompt's first 50 UTF-16 units. A parse failure then
+    # emptied EVERY field of that input and the hook silently failed open, so
+    # fall back to python3, which accepts it.
     if command -v jq >/dev/null 2>&1; then
-        printf '%s' "$ZYZ_HOOK_INPUT" | jq -r ".${1} // empty" 2>/dev/null
-        return 0
+        printf '%s' "$ZYZ_HOOK_INPUT" | jq -r ".${1} // empty" 2>/dev/null && return 0
     fi
     if command -v python3 >/dev/null 2>&1; then
         printf '%s' "$ZYZ_HOOK_INPUT" | python3 -c '
@@ -508,6 +523,130 @@ zyz_executors_left() {
             END { printf "%d", c }'
 }
 
+# ---- idle agent-team teammates are not executors ---------------------------
+#
+# Claude Code (2.1.251, observed in a live session) lists an in-process
+# teammate in background_tasks as `{"type":"teammate","status":"running"}` for
+# as long as it exists — idle or not — and an idle teammate is NOT woken by its
+# own background task finishing: the completion notice waits in its queue until
+# someone messages it (11-17 f0b8d80a: queued 22:25, consumed 22:55 when the
+# lead messaged it; reproduced live). So an idle teammate, and every background
+# shell / Monitor it started, will never move the task again by itself, yet
+# counting them as executors kept the no-executor check silent for as long as a
+# team existed. What the hooks see, all verified live:
+#   * a teammate's own hooks carry agent_id `a<name>-<hex>` and agent_type
+#     `<name>` (a plain subagent's id is `a<hex>`);
+#   * SubagentStart fires at spawn and on every wake (a SendMessage to it);
+#   * TeammateIdle {teammate_name} fires when it ends a turn;
+#   * the spawn's PostToolUse Agent carries tool_response.status
+#     `teammate_spawned`, and the background_tasks entry's description is the
+#     spawn's `description`, or the prompt's first 50 UTF-16 units + "...";
+#   * Bash run_in_background answers tool_response.backgroundTaskId, Monitor
+#     tool_response.taskId.
+# Records live under the session's primary task, like every subagent record:
+# runtime/teammates/<name>.state = `busy|idle <epoch>` (last writer wins),
+# <name>.keys = the JSON list of descriptions its entry may carry, and
+# owned/<task-id> = the teammate that started that background task.
+
+# The teammate name when the hook input comes from an agent-team teammate,
+# else nothing. $1 / $2 the agent_id / agent_type when the caller has them.
+zyz_teammate_name() {
+    local id type rest
+    if [ "$#" -ge 2 ]; then id="$1"; type="$2"; else id="$(zyz_get agent_id)"; type="$(zyz_get agent_type)"; fi
+    [ -n "$id" ] && [ -n "$type" ] || return 0
+    case "$id" in "a${type}-"?*) ;; *) return 0 ;; esac
+    rest="${id#a"${type}"-}"
+    case "$rest" in *[!0-9a-f]*) return 0 ;; esac
+    printf '%s' "$type"
+}
+
+# zyz_teammate_mark <root> <name> <busy|idle>
+zyz_teammate_mark() {
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 0
+    case "${3:-}" in busy|idle) ;; *) return 0 ;; esac
+    mkdir -p "$1/runtime/teammates" 2>/dev/null || return 0
+    zyz_write_atomic "$1/runtime/teammates/$(zyz_sanitize "$2").state" "$3 $(zyz_now)"
+}
+
+# Background entries of a Stop / SubagentStop ZYZ_HOOK_INPUT that belong to a
+# teammate this session recorded, one per line: `<id>\t<names>\t<idle 0|1>`.
+# A `teammate` entry maps through its description; when several recorded
+# teammates share that description it counts as idle only if all of them are.
+# A `shell` entry maps through owned/<id>. Unrecorded entries are not printed
+# (they stay executors). $1 the primary task root.
+zyz_teammate_entries() {
+    [ -n "${1:-}" ] && [ -d "$1/runtime/teammates" ] && [ -n "${ZYZ_HOOK_INPUT:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    printf '%s' "$ZYZ_HOOK_INPUT" | python3 -c '
+import json, os, sys
+d = sys.argv[1]
+try:
+    tasks = json.load(sys.stdin).get("background_tasks")
+except Exception:
+    sys.exit(0)
+if not isinstance(tasks, list):
+    sys.exit(0)
+def state(name):
+    try:
+        return open(os.path.join(d, name + ".state")).read().split()[0]
+    except Exception:
+        return ""
+by_key = {}
+for f in os.listdir(d):
+    if not f.endswith(".keys"):
+        continue
+    try:
+        keys = json.load(open(os.path.join(d, f)))
+    except Exception:
+        continue
+    for k in keys if isinstance(keys, list) else []:
+        if isinstance(k, str) and k:
+            by_key.setdefault(k, set()).add(f[:-5])
+for t in tasks:
+    if not isinstance(t, dict):
+        continue
+    tid = str(t.get("id") or "")
+    if not tid or any(c in tid for c in "\t\n ,"):
+        continue
+    names = []
+    if t.get("type") == "teammate":
+        names = sorted(by_key.get(t.get("description") or "", ()))
+    elif t.get("type") == "shell":
+        try:
+            names = [open(os.path.join(d, "owned", tid)).read().strip()]
+        except Exception:
+            names = []
+    names = [n for n in names if n]
+    if names:
+        idle = all(state(n) == "idle" for n in names)
+        print("%s\t%s\t%d" % (tid, ",".join(names), 1 if idle else 0))
+' "$1/runtime/teammates" 2>/dev/null || true
+}
+
+# Ids from a stop-teammates file (zyz_teammate_entries output kept at the last
+# Stop) whose teammates have ALL been idle for at least <sec> now: the L3 view
+# of "this turn ended and nothing moved it since". $1 the primary task root,
+# $2 the file, $3 seconds. Comma-joined.
+zyz_teammates_idle_ids() {
+    [ -f "${2:-}" ] || return 0
+    local root file sec now id names flag n st ep ok out=""
+    root="$1"; file="$2"; sec="${3:-0}"
+    now="$(zyz_now)"
+    while IFS="$(printf '\t')" read -r id names flag; do
+        [ -n "$id" ] && [ -n "$names" ] || continue
+        ok=1
+        for n in $(printf '%s' "$names" | tr ',' ' '); do
+            st=""; ep=""
+            [ -f "$root/runtime/teammates/$(zyz_sanitize "$n").state" ] \
+                && read -r st ep _ < "$root/runtime/teammates/$(zyz_sanitize "$n").state"
+            case "$ep" in ''|*[!0-9]*) ok=0; break ;; esac
+            { [ "$st" = idle ] && [ $((now - ep)) -ge "$sec" ]; } || { ok=0; break; }
+        done
+        [ "$ok" = 1 ] && out="${out:+$out,}$id"
+    done < "$file"
+    printf '%s' "$out"
+}
+
 # Number of non-terminal role instances younger than <horizon> in a
 # zyz_runtime_observe JSON on stdin — dispatched roles that have not ended. A
 # role older than the horizon is ignored, like every other role check. Prints
@@ -542,9 +681,9 @@ zyz_no_executor_msg() {
     lead="任务 ${task} 仍在 ${phase} 阶段"
     [ -z "$pending" ] || lead="${lead}，SubTask ${pending} 尚未提交"
     if [ "$where" = stop ]; then
-        lead="${lead}，但你要停下时没有任何执行者：没有在跑的 subagent 或后台任务（插件 monitor 和声明为 resident 的常驻任务不算），没有排定的唤醒，也没有有效的等待声明——你一停，就没有任何东西会再推动这个任务。"
+        lead="${lead}，但你要停下时没有任何执行者：没有在跑的 subagent 或后台任务（插件 monitor、声明为 resident 的常驻任务、已结束这一轮的空闲 teammate 和它起的后台任务都不算——空闲的 teammate 不会被自己的后台任务结束叫醒，要有人发消息给它），没有排定的唤醒，也没有有效的等待声明——你一停，就没有任何东西会再推动这个任务。"
     else
-        lead="${lead}，但主 agent 停下已有一段时间，期间没有任何执行者：停下时没有在跑的 subagent 或后台任务（插件 monitor 和 resident 常驻任务不算）、没有排定的唤醒，此后也没有新的工具调用，也没有有效的等待声明——任务正在静默搁置。"
+        lead="${lead}，但主 agent 停下已有一段时间，期间没有任何执行者：停下时没有在跑的 subagent 或后台任务（插件 monitor、resident 常驻任务、已结束这一轮的空闲 teammate 和它起的后台任务都不算）、没有排定的唤醒，此后也没有新的工具调用，也没有有效的等待声明——任务正在静默搁置。"
     fi
     printf '%s现在选一条：(1) 派发下一步（或自己接着做）；(2) 如果你认为某条通道还在跑，先核实再说（ps / ListAgents / 后台任务的输出文件）——"以为还在跑、其实早已结束"正是任务被静默搁置的常见原因，以"等待通知"收尾的 subagent 不会再被唤醒；(3) 用 %s 声明你在等什么：等用户 `set <key> user --reason …`（用户下次发言后自动失效）；等一个会在某时推进任务的东西 `set <key> wait --at +2h [--ref <后台任务 id>] --reason …`（到点会叫醒你）；还在跑的后台任务其实是常驻的（开发服务器、tail -f）就 `set <key> resident --ref <id> --reason …`。' \
         "$lead" "$(zyz_expect_cli) --task $root"
@@ -797,10 +936,9 @@ zyz_session_ids() {
 }
 
 # True when the task dir's status.md reports a terminal phase (see
-# zyz_phase_terminal for the accepted spellings). Used by the watchdog's
-# unarmed-suspicion gate: completed tasks legitimately leave their directories
-# behind forever, so a terminal task dir is not evidence that a live task lost
-# its pointer.
+# zyz_phase_terminal for the accepted spellings). Completed tasks legitimately
+# leave their directories (and pointer lines) behind forever, so callers treat
+# a terminal task as finished, never as one that still needs watching.
 zyz_task_is_done() {
     local st="${1:-}/status.md" ph
     [ -f "$st" ] || return 1
@@ -841,22 +979,30 @@ EOF
             printf '%s\n' "$found" | awk 'NF && !seen[$0]++'
             return 0
         fi
+    else
+        # (a) The legacy shared pointer directly under the given base, then
+        # (a') under the session project dir — ONLY when no session id is
+        # available at all, the one case where task-pointer.sh arm still writes
+        # it. A session that has an id but no pointer of its own never armed
+        # execute-task here: `current-task` says nothing about which session
+        # wrote it (a pre-#23 session, another session's no-id arm, a stale
+        # file), so reading it attached plain sessions to whatever task the
+        # directory last pointed at — status-stale and silence wake-ups, Stop
+        # blocks and IM pages about a task they never touched (the 11-04
+        # tipsy-ab-config incident: five notifications in a session that never
+        # ran execute-task, until the user had the watchdog killed).
+        found="$(zyz_resolve_pointer_at "$base")"
+        [ -n "$found" ] || [ -z "$project_dir" ] || found="$(zyz_resolve_pointer_at "$project_dir")"
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+            return 0
+        fi
     fi
 
-    # (a) The legacy shared pointer directly under the given base, then (a')
-    # under the session project dir. Reached only when this session has no
-    # session pointer, so sessions that predate #23 (or run where no session id
-    # is available) behave exactly as before.
-    found="$(zyz_resolve_pointer_at "$base")"
-    [ -n "$found" ] || [ -z "$project_dir" ] || found="$(zyz_resolve_pointer_at "$project_dir")"
-    if [ -n "$found" ]; then
-        printf '%s\n' "$found"
-        return 0
-    fi
-
-    # (b) Explicit override. Only usable where something exported it into the
-    # environment before `claude` started (orchestrated spawn/reuse do this); a
-    # skill cannot set it for itself, since each skill Bash call is a new shell.
+    # (b) Explicit override. Only usable where something exported it into this
+    # process's environment before `claude` started (a launcher wrapping it);
+    # a skill cannot set it for itself, since each skill Bash call is a new
+    # shell. Unlike `current-task` it is per process, not per directory.
     if [ -n "${ZYZ_TASK_DIR:-}" ] && [ -d "${ZYZ_TASK_DIR}" ]; then
         printf '%s\n' "$ZYZ_TASK_DIR"
         return 0

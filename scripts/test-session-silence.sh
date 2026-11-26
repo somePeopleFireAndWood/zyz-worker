@@ -17,6 +17,12 @@
 # every layer stayed silent on it (macOS has no fixed-pack observer; the
 # teammate's agent_type matched no role; 16 "executors" kept no-executor quiet;
 # idle muted status-stale).
+# R2 replays the 11-17 shape behind issue #24 (f0b8d80a): a teammate's two
+# background shells finished 3 min after the main agent stopped next to 12
+# idle teammates; the user noticed 31 min in. With the teammate records the
+# hooks keep (teammate-track.sh, heartbeat.sh) the 22:22 Stop itself is blocked
+# as having no executor; for a team the hooks never saw (spawned before the
+# session armed) it is still caught at silence-sec through the floor.
 #
 # WHAT THIS SUITE DOES NOT PROVE:
 #  * That the host fires tool hooks inside in-process teammates with this
@@ -537,6 +543,105 @@ else
 fi
 
 # ===========================================================================
+echo "--- R2: the 11-17 incident shape (f0b8d80a, the issue #24 report) ---"
+# tipsy-ab-config, 11-17. The main agent's last tool call was 22:22:07 and it
+# stopped at 22:22:27 with ST4 uncommitted in `implementation`. The ST4
+# teammate had started a Monitor and a background shell on its DuckDB suite at
+# 21:25 and ended its turn "Waiting for the completion notification"; both
+# finished at 22:25:05, their notifications were queued and never acted on, and
+# nobody moved until the user asked at 22:53:44 (31 min after the last tool
+# call). The Stop's background_tasks then held 12 agent-team teammates — in
+# Claude Code 2.1.251 an in-process teammate is listed as running while it
+# exists, idle or not, and an idle one is not woken by its own task finishing
+# (both observed live, scripts/test-idle-teammates.sh) — the teammate's two
+# shells, and this watchdog. R2a–R2c: a team the hooks never recorded.
+write_status implementation "" '| SubTask | 内容 | 依赖 | Coded | Tested | Reviewed | Committed |
+|---|---|---|---|---|---|---|
+| ST1 | 回滚终止后端 | 无 | true | true | true | true（a5877d3，未推送） |
+| ST4 | 数仓 SQL/文档 + DuckDB | 无 | true | true | false | false |
+| ST5 | 文档和注释 | ST1 | true | true | true | true（774a827，未推送） |'
+reset_runtime
+r2_tasks="$(python3 -c '
+import json
+t = [{"id":"bwd00001","type":"shell","status":"running","description":"execute-task watchdog","command":"\"/Users/u/.claude/plugins/cache/zyz-worker/zyz-worker/0.28.0\"/monitors/watchdog.sh \"/p\""}]
+t += [{"id":"t%07d" % i,"type":"teammate","status":"running","description":n} for i, n in enumerate(
+    ["st4-impl","st4-test","st1-run","st1-test-r3","st2-impl","st2-review-r2","st5-review","st3-impl","st6-impl","st4-review","st1-review","st2-test"])]
+t += [{"id":"bl1z6235k","type":"shell","status":"running","description":"ST4 round-4 mutations and full suite","command":"cd /tmp; for m in MB2a MB2b; do until grep -q rc= st4_mut4_$m.out; do sleep 10; done; done"},
+      {"id":"bmsfp4gru","type":"shell","status":"running","description":"wait for ST4 runs","command":"cd /tmp; until grep -q ^rc= /tmp/st4_r4_full.log; do sleep 15; done"}]
+print(",".join(json.dumps(x) for x in t))')"
+r2_stop() { printf '{"cwd":"%s","hook_event_name":"Stop","stop_hook_active":false,"background_tasks":[%s],"session_crons":[]}' "$PROJ" "$1" \
+    | ZYZ_STOP_GATE_COOLDOWN_SEC=0 bash "$STOP_MAIN" 2>/dev/null; }
+out="$(r2_stop "$r2_tasks")"
+if ! printf '%s' "$out" | grep -q '没有任何执行者' && [ "$(awk '{print $2}' "$ROOT/runtime/stop-snapshot" 2>/dev/null)" = 14 ]; then
+    pass "R2a the 22:22 Stop, team never recorded: 12 teammates + 2 shells count as executors"
+else
+    fail "R2a Stop" "out=[$out] snap=[$(cat "$ROOT/runtime/stop-snapshot" 2>/dev/null)]"
+fi
+printf '{"cwd":"%s","hook_event_name":"Stop"}' "$PROJ" | bash "$MAIN_STATE"
+r2_age() { # <sec>: the last tool call, the status write, the Stop and its snapshot all <sec> ago
+    set_activity "$1" main
+    age_file "$ROOT/status.md" "$1"
+    python3 - "$ROOT/runtime/stop-snapshot" "$ROOT/runtime/main-state" "$((NOW - $1))" <<'PY'
+import sys
+for p in sys.argv[1:3]:
+    head, *rest = open(p).read().split()
+    if p.endswith("main-state"):
+        open(p, "w").write("%s %s\n" % (head, sys.argv[3]))
+    else:
+        open(p, "w").write(" ".join([sys.argv[3]] + rest) + "\n")
+PY
+}
+export ZYZ_WATCHDOG_SILENCE_SEC=3600   # the shipped default, as on 11-17
+r2_age 1860
+out="$(tick)"
+if [ -z "$out" ]; then
+    pass "R2b 22:53 (31 min, when the user noticed): still silent — the documented window below silence-sec"
+else
+    fail "R2b 31 min" "out=[$out]"
+fi
+r2_age 3660
+out="$(tick)"
+if is_silence "$out" && printf '%s' "$out" | grep -q 'SubTask ST4 尚未提交' && ! printf '%s' "$out" | grep -q '没有任何执行者'; then
+    pass "R2c 23:23 (61 min): the session-silence floor reports it, naming ST4 (the 0.31.0 code prints nothing on this replay)"
+else
+    fail "R2c 61 min" "out=[$out]"
+fi
+export ZYZ_WATCHDOG_SILENCE_SEC=1800
+# R2d–R2f: the same session with the records the hooks keep — each spawn's
+# PostToolUse Agent (teammate_spawned; the entry description is the spawn's
+# description here), st4-impl's Bash / Monitor PostToolUse (the two shells),
+# and a TeammateIdle per teammate when it ended its turn.
+reset_runtime
+TT="hooks/scripts/teammate-track.sh"
+for n in st4-impl st4-test st1-run st1-test-r3 st2-impl st2-review-r2 st5-review st3-impl st6-impl st4-review st1-review st2-test; do
+    printf '{"cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"name":"%s","description":"%s","prompt":"p"},"tool_response":{"status":"teammate_spawned","name":"%s"}}' "$PROJ" "$n" "$n" "$n" | bash "$TT"
+done
+printf '{"cwd":"%s","hook_event_name":"PostToolUse","agent_id":"ast4-impl-98dd931c06e8eaf4","agent_type":"st4-impl","tool_name":"Monitor","tool_response":{"taskId":"bl1z6235k"}}' "$PROJ" | bash "$HEARTBEAT"
+printf '{"cwd":"%s","hook_event_name":"PostToolUse","agent_id":"ast4-impl-98dd931c06e8eaf4","agent_type":"st4-impl","tool_name":"Bash","tool_response":{"backgroundTaskId":"bmsfp4gru"}}' "$PROJ" | bash "$HEARTBEAT"
+for n in st4-impl st4-test st1-run st1-test-r3 st2-impl st2-review-r2 st5-review st3-impl st6-impl st4-review st1-review st2-test; do
+    printf '{"cwd":"%s","hook_event_name":"TeammateIdle","teammate_name":"%s"}' "$PROJ" "$n" | bash "$TT"
+done
+out="$(r2_stop "$r2_tasks")"
+if printf '%s' "$out" | grep -q '没有任何执行者' && printf '%s' "$out" | grep -q 'SubTask ST4 尚未提交'; then
+    pass "R2d recorded team: the 22:22 Stop is blocked at once (idle teammates and st4-impl's shells are not executors), naming ST4"
+else
+    fail "R2d recorded team blocks" "out=[$out]"
+fi
+printf '{"cwd":"%s","hook_event_name":"SubagentStart","agent_id":"ast4-impl-98dd931c06e8eaf4","agent_type":"st4-impl"}' "$PROJ" | bash "$TT"
+out="$(r2_stop "$r2_tasks")"
+if ! printf '%s' "$out" | grep -q '没有任何执行者'; then
+    pass "R2e control: st4-impl woken (it will read its shells) -> the Stop is allowed"
+else
+    fail "R2e control woken" "out=[$out]"
+fi
+out="$(r2_stop "$(printf '%s' "$r2_tasks" | python3 -c 'import json,sys; t=json.loads("["+sys.stdin.read()+"]"); print(",".join(json.dumps(x) for x in t if "watchdog" in x.get("command","")))')")"
+if printf '%s' "$out" | grep -q '没有任何执行者'; then
+    pass "R2f control: with the team gone and only the plugin monitor left, the Stop is blocked"
+else
+    fail "R2f control" "out=[$out]"
+fi
+
+# ===========================================================================
 echo "--- M: main-state dialog semantics used by the floor ---"
 write_status implementation; reset_runtime
 set_state awaiting-user 10
@@ -590,8 +695,11 @@ printf '{"enabled":true,"command":"printf \\"%%s|%%s|%%s\\\\n\\" \\"$ZYZ_NOTIFY_
 CLAUDE_CONFIG_DIR="$FAKE_CC" ZYZ_NOTIFY_CONFIG="$SB/notify-i2.json" bash "$NOTIFY" --event stuck --origin stall --task-root "$ROOT" --session-id "$SID_A" --message m
 if grep -q '^stuck||【aaaa1111】Agent 似乎卡住了$' "$ICAP"; then pass "I2b include_message=false: no derived name, the short session id instead"; else fail "I2b privacy" "cap=[$(cat "$ICAP")]"; fi
 
-# AskUserQuestion pages after the delay unless answered first.
+# AskUserQuestion pages after the delay unless answered first. The payload
+# carries a session id, and a session with an id is armed only by its own
+# pointer (never by the shared current-task), so arm SID_A for this task.
 : > "$ICAP"; reset_runtime
+mkdir -p "$PROJ/.zyz-worker/sessions"; printf '%s\n' "$ROOT" > "$PROJ/.zyz-worker/sessions/$SID_A"
 ask='{"cwd":"%s","session_id":"%s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"用 A 还是 B？"},{"question":"现在发版吗？"}]}}'
 printf "$ask" "$PROJ" "$SID_A" | CLAUDE_CONFIG_DIR="$FAKE_CC" ZYZ_NOTIFY_CONFIG="$SB/notify-i.json" ZYZ_NOTIFY_ASK_DELAY_SEC=1 bash "$HEARTBEAT"
 for _ in $(seq 1 20); do [ -s "$ICAP" ] && break; sleep 0.3; done
