@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **后台任务通知不再被当成用户发言；teammate 的结果只送一次。** 复盘（11-09～11-12，tipsy-ab-config，CC 2.1.251）：主 agent 一共收到 74 轮、80 条 teammate 消息，其中 40 条是 teammate 主动用 SendMessage 发来的报告，另外 40 条是宿主自动发的 idle 通知（`result` 就是 teammate 这一轮的最终文本，超过约 4000 字会被截断）。teammate 在同一轮里先用 SendMessage 发报告，再把同样的内容写成最终消息，主 agent 于是收到两份，其中至少 18 次专门回复「这条是重复的，没有新内容」。插件的 hook 在这些 teammate 里一次都没有注入过：L1 跳过非三种角色名的 `agent_type`，L2 的 matcher 也匹配不上按 `name` 派发的 teammate。所以重复本身是平台行为，这里只做提示词层的缓解。
   - **`main-state.sh`：`<task-notification>` 轮次不写 `runtime/user-prompt-epoch`。** 调查中实测：宿主把后台任务通知（后台 subagent / Bash 结束、monitor 的一行输出，watchdog 自己的唤醒也在内）作为一轮送给主 agent 时，也会触发 `UserPromptSubmit`；teammate 消息则不会触发。之前每一条这样的通知都被记成「用户刚发过言」，造成两个后果：`user` 声明提前失效，下一次 Stop 被「无执行者」拦下，主 agent 只好重新声明，用户又收到一条 IM；延迟 60 秒的提问 IM 只要这期间来一条通知就被丢掉。这类轮次照常记 `working`、照常删除 stop-snapshot，只是不再算作用户发言。测试见 `scripts/test-no-executor.sh` N4h–N4k，套件头部记录了变异测试。
   - **提示词：用 `name` 派发 teammate 时，结果只送一次。** `prompts/main-agent.md` 要求在派发里写明以下几点：完整报告写进报告文件；最终消息就是汇报，只写结论和路径；不要再用 SendMessage 重发同样的内容；SendMessage 只用来在本轮中途提出需要主 agent 答复的问题或阻塞。主 agent 收到只是重复内容的 idle 通知时，不回复，也不向用户复述。
+- **跨 harness 评审：超时加下限，超时给出诊断。** 实战（11-15）：主 agent 跑在 Codex 时，自己用 `ZYZ_CROSS_REVIEW_TIMEOUT=180`（一次 300）调用 `cross-review.sh`，5 次 Claude 评审全部 `status=timeout rc=143`，报告只有 0–69 字节（其中一份全文是「Now GetPublic in full.」）。评审者其实没卡住：stderr 为空，事件流 340–900 KB，每次 17–46 次工具调用，被杀时还在读代码；rc=143 是脚本自己的超时发出的 SIGTERM，Codex 的 `exec_command`（`yield_time_ms=1000`）并没有杀它。400 次真实 Codex 评审中只有 9 次在 180 秒内、38 次在 300 秒内跑完，中位数 567 秒。Claude 宿主一侧从未调小过超时（都用 2400 以上），所以没出过问题。
+  - `ZYZ_CROSS_REVIEW_TIMEOUT` 低于下限 1200 秒（400 次中 97% 在此之内跑完）时提升到 1200，在 stderr 告警，并在 `.meta` 记 `timeout=` / `timeout-requested=` / `timeout-raised=yes`。默认值 2400 不变。下限可用 `ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR` 调整，只供测试套件使用。
+  - 超时的摘要行新增 `diagnosis=<still-working|stalled|no-output> timeout=<秒>`，`.meta` 新增 `timeout-diagnosis`、`last-output-age`、`log-bytes`、`report-partial`。判据是被杀前事件流最后一次增长的时间：`still-working` 表示超时设短了；`stalled` 表示事件流已安静 `ZYZ_CROSS_REVIEW_STALL_SEC`（默认 300）秒，评审者挂死；`no-output` 表示评审者从未写出任何事件。超时时抓到的旁白仍保留在报告文件里，标为部分输出。
+  - 提示词：`SKILL.md` `## 跨 harness 交叉评审` 补充：不要为了让评审者赶上 reviewAgent 而调小超时，以及 `diagnosis=` 字段的含义。README 的调节项表同步更新。
+  - `scripts/test-cross-review.sh` 新增 29 项（共 92 项），覆盖下限、按测试比例回放这次事故，以及三种诊断。9 个定向变异全部被检出，记录在套件头部。
 
 ## [0.32.1] — 2026-11-23
 
