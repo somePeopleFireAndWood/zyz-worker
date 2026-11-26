@@ -23,6 +23,11 @@
 #    the script cannot tell who decided; the prompts own that rule.
 #  * That a dispatch outside the review-agent type (a general-purpose agent
 #    asked to "review") is a review — the gate only sees the subagent type.
+#  * That a later round reaches a fresh reviewer: re-using a resident reviewer
+#    teammate via SendMessage bypasses the gate and L5 entirely; only the
+#    prompts ("每一轮评审都重新派发 review-agent") forbid it.
+#  * That a re-run `result` or a later `check` is honest: the main agent can
+#    lower `rejected` or overwrite an `escalate` by rewriting its own record.
 #
 # Mutation record (2026-11-26, each mutant applied to an out-of-tree copy of
 # hooks/ + scripts/ and run against this suite; every one turns a check red):

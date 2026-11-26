@@ -205,7 +205,7 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
   2. **引号剥离**——限缩匹配针对的是一份把 `"…"`、`` `…` `` 和 `'…'` 片段清空后的副本，因此一个*引用*限缩短语的提示词（关于这个守卫本身的文档、测试、changelog 工作——在这里很常见）不会被当成在*发出*限缩。`'` 只有在空白或标点之后才会开启一个片段，所以英文缩写不会吞掉真实文本。有意的取舍：一个*完全*由被引用的限缩短语构成的提示词会被放行。
   3. **限缩必须指向一个评审交付物**（`findings|issues|problems`）。没有这一条，普通的领域需求也会被匹配上——"no more than 3 items per page"、"cap it at 3 attempts"。
 - 失败行为：输入/解析器/指针缺失时 fail open（放行）。匹配天然是启发式的，因此才有上面的豁免和逐守卫的禁用开关；T7 钉住了 23 种必须被拒绝的限缩写法和 28 种必须放行的正当写法。T7 的载荷构造器会对提示词做 JSON 转义——如果直接插值一个包含 `"` 的 fixture，会得到非法 JSON，守卫随之 fail open，断言就会空转通过。
-- **增量复审放行（分档改造 §4.2）。** 派发给 review-agent、且 prompt 带 `review-point=<id> round=<n> mode=incremental` 标记时，只要 `review-round.sh` 确实记录了这一轮（n ≥ 2，是该评审点最新开始、尚未 `result` 的一轮，且不是 `start --full` 的全量轮），就直接放行：增量复审按设计只核实上一轮被接受的 blocking 和修复 diff，"只核实这几条"不是缩范围。判定交给 `review_round.py incremental`（`lib.sh zyz_review_incremental_ok`），所以光写 `mode=incremental` 几个字、标记指向没开始的轮次、`mode=full` 标记、或者派发给其它角色，都照旧检查——"恢复卡住的角色时缩减范围"仍然被拒。旧任务（没有 `Tier:`）同样适用：只要轮次是用 `review-round.sh` 记的。用例在 `scripts/test-review-round.sh` 的 I 节。
+- **增量复审放行（分档改造 §4.2）。** 派发给 review-agent、且 prompt 带 `review-point=<id> round=<n> mode=incremental` 标记时，只要 `review-round.sh` 确实记录了这一轮（n ≥ 2，是该评审点最新开始、尚未 `result` 的一轮，且不是 `start --full` 的全量轮），就直接放行：增量复审按设计只核实上一轮被接受的 blocking、复核被拒绝的 blocking、评审修复 diff，"只核实这几条"不是缩范围。判定交给 `review_round.py incremental`（`lib.sh zyz_review_incremental_ok`），所以光写 `mode=incremental` 几个字、标记指向没开始的轮次、`mode=full` 标记、或者派发给其它角色，都照旧检查——"恢复卡住的角色时缩减范围"仍然被拒。旧任务（没有 `Tier:`）同样适用：只要轮次是用 `review-round.sh` 记的。用例在 `scripts/test-review-round.sh` 的 I 节。
 - 支持的 agent：派发 implementation-agent / test-agent / review-agent 的主 agent。
 
 ## scripts/review-round.sh — 评审轮次账本
