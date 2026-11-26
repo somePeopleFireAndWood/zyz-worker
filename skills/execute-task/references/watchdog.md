@@ -35,7 +35,7 @@
 - **指针按会话区分（#23）。** 有会话 id 时，脚本把任务目录的绝对路径追加到 `.zyz-worker/sessions/<session-id>`（一行一个任务，重复 arm 不重复写）。会话 id 取自本会话所在的 harness：Claude Code 是 `$CLAUDE_CODE_SESSION_ID`，Codex 是 `$CODEX_THREAD_ID`——两者都已实测与 hooks 收到的 `session_id` 一致，并且在 subagent 的 hooks 里仍是父会话的 id。脚本按最近的 `claude`/`codex` 祖先进程判定 harness，因为这两个变量会泄漏进嵌套启动的另一个 harness。拿不到会话 id 时脚本才退回写共享的 `.zyz-worker/current-task`，并在 stderr 上提示；不要手工写 `current-task`。
 - 只有主 agent 写指针：Codex sub-agent 的 shell 里 `$CODEX_THREAD_ID` 是它自己的子线程 id，写出来的指针属于错误的会话。
 - 本会话同时推进多个任务时，对每个任务各 arm 一次，第一行是**主任务**：subagent 的心跳、运行时跟踪和派发守卫的记录都存在主任务下。hooks 无法知道某个 subagent 是为哪个任务派发的，所以多任务时 subagent 类告警会列出本会话的全部任务，由你按派发记录判断归属，再到所属任务的目录读结果、写进所属任务的 `status.md`；只有 `agent-runtime-state.sh finalize` 等 runtime 命令的 `<task-dir>` 用告警里写明的记账目录。任务结束后可以 `task-pointer.sh disarm <任务目录>`；终态任务留在指针里也不再触发强制。会话恢复（`--resume`、`/clear` 后继续）时会话 id 可能变了，要重新 arm。
-- 解析器只看本会话的会话指针，缺失时依次回落到 `current-task` 和编排模式派生时导出的 `$ZYZ_TASK_DIR`。它不搜索同级 git worktree，也不读别的会话的指针：早先这样做的兜底逻辑曾把一个会话挂到并发会话的任务上（#18）。因此缺少指针时 watchdog 确定性地保持沉默，"确认已启用"就是用来发现这种情况的。`task-pointer.sh show` 列出 hooks 为本会话解析到的全部任务。
+- 解析器只看本会话的会话指针；只有拿不到任何会话 id 时才回落到共享的 `current-task`（有会话 id 却没 arm 的会话不会被目录里残留的 `current-task` 挂到别人的任务上，watchdog 对它完全安静），此外只认进程启动前导出的 `$ZYZ_TASK_DIR`。它不搜索同级 git worktree，也不读别的会话的指针：早先这样做的兜底逻辑曾把一个会话挂到并发会话的任务上（#18）。因此缺少指针时 watchdog 确定性地保持沉默，"确认已启用"就是用来发现这种情况的。`task-pointer.sh show` 列出 hooks 为本会话解析到的全部任务。
 
 ## 主 agent 对 watchdog 的义务（细节）
 

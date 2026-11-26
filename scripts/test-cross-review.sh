@@ -9,6 +9,19 @@
 # hand against codex-cli 0.151.0 and Claude Code 2.1.251 and is not asserted
 # here.
 #
+# Timeout floor + diagnosis (2026-11-15 Codex-host incident, 5/5 Claude
+# reviewers killed by an agent-set 180/300s timeout): targeted mutations of
+# scripts/cross-review.sh, each run against this suite, all turned it red —
+#   M1 floor check disabled (`if false`)                     5 FAIL
+#   M2 default floor 1200 -> 0                               3 FAIL
+#   M3 `stalled` branch disabled                             2 FAIL
+#   M4 `no-output` branch disabled                           2 FAIL
+#   M5 event-log growth never recorded                       6 FAIL
+#   M6 diagnosis/timeout dropped from the summary line       5 FAIL
+#   M7 report-partial never `yes`                            1 FAIL
+#   M8 last-output age forced to 0                           2 FAIL
+#   M9 timeout/timeout-requested/timeout-raised not in meta  9 FAIL
+#
 # Mutation record (execute-task tiers, 2026-11-26; out-of-tree copy, each one
 # turns a check red; M17/M19/M27/M28 re-run against the --mode contract):
 # M17 skip on --mode full too; M18 drop the task-dir exclusion from
@@ -88,6 +101,26 @@ env > "$FAKE_LOG/claude.env"
 cat > "$FAKE_LOG/claude.stdin"
 case "${FAKE_CLAUDE_MODE:-ok}" in
     fail) exit 4 ;;
+    # Keeps writing events until killed: a live review cut short.
+    stream)
+        printf '%s\n' '{"type":"system","subtype":"init"}'
+        for i in $(seq 1 60); do
+            printf '{"type":"assistant","message":{"content":[{"type":"text","text":"narration-%s"}]}}\n' "$i"
+            sleep 1
+        done
+        exit 0 ;;
+    # One event, then silence: a hung reviewer.
+    stall)
+        printf '%s\n' '{"type":"system","subtype":"init"}'
+        printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"narration"}]}}'
+        sleep 60; exit 0 ;;
+    # Works for ~FAKE_CLAUDE_WORK_SEC seconds, then reports.
+    slow)
+        printf '%s\n' '{"type":"system","subtype":"init"}'
+        for i in $(seq 1 "${FAKE_CLAUDE_WORK_SEC:-4}"); do
+            printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}'
+            sleep 1
+        done ;;
 esac
 printf '%s\n' '{"type":"system","subtype":"init"}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}'
@@ -209,10 +242,14 @@ out="$(run_xr "$BOTH" claude FAKE_CODEX_MODE=empty ZYZ_CROSS_REVIEW_MCP=inherit 
 has "$out" "status=empty" "empty: rc 0 with no report is not ok"
 reset_logs
 start=$(date +%s)
-out="$(run_xr "$BOTH" claude FAKE_CODEX_MODE=sleep ZYZ_CROSS_REVIEW_TIMEOUT=2 ZYZ_CROSS_REVIEW_MCP=inherit -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label t)"
+out="$(run_xr "$BOTH" claude FAKE_CODEX_MODE=sleep ZYZ_CROSS_REVIEW_TIMEOUT=2 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 ZYZ_CROSS_REVIEW_MCP=inherit -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label t)"
 elapsed=$(( $(date +%s) - start ))
 has "$out" "status=timeout" "timeout: classified"
 [ "$elapsed" -lt 40 ] && ok "timeout: reviewer killed (${elapsed}s)" || bad "timeout: took ${elapsed}s"
+has "$out" "diagnosis=no-output timeout=2 report=" "timeout: a reviewer that never wrote an event is diagnosed no-output on the summary line"
+meta="$(cat "$TASK/reviews/cross/t.codex.meta" 2>/dev/null)"
+has "$meta" "timeout-diagnosis=no-output" "timeout: meta records the diagnosis"
+has "$meta" "timeout=2"$'\n' "timeout: meta records the effective timeout"
 reset_logs
 out="$(run_xr "$BOTH" claude FAKE_CODEX_MODE=mutate ZYZ_CROSS_REVIEW_MCP=inherit -- run --task-dir "$TASK" --kind implementation --brief "$TASK/brief.md" --cwd "$REPO" --label m)"
 has "$out" "tree-stable=no" "fingerprint: a tree change during review is flagged"
@@ -244,6 +281,63 @@ lacks "$rep" "partial" "claude: result event preferred over partial text"
 reset_logs
 out="$(run_xr "$BOTH" codex FAKE_CLAUDE_MODE=fail -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label cf)"
 has "$out" "status=failed rc=4" "claude: failure classified"
+lacks "$out" "diagnosis=" "claude: only a timeout carries a diagnosis"
+
+# --- timeout floor (2026-11-15 Codex-host incident) --------------------------
+# The Codex main agent ran `ZYZ_CROSS_REVIEW_TIMEOUT=180|300 cross-review.sh
+# run`; all 5 Claude reviewers were killed mid-review (rc=143, 0-69 byte
+# reports, 17-46 tool calls each, event stream still growing).
+reset_logs
+err="$(run_xr "$BOTH" codex ZYZ_CROSS_REVIEW_TIMEOUT=180 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label fl 2>&1 >/dev/null)"
+meta="$(cat "$TASK/reviews/cross/fl.claude.meta" 2>/dev/null)"
+has "$meta" "timeout=1200"$'\n' "floor: 180s is raised to the default 1200s floor"
+has "$meta" "timeout-requested=180" "floor: meta keeps the requested value"
+has "$meta" "timeout-raised=yes" "floor: meta flags the raise"
+has "$err" "ZYZ_CROSS_REVIEW_TIMEOUT=180 is below the 1200s floor; raised to 1200" "floor: the caller is told on stderr"
+reset_logs
+err="$(run_xr "$BOTH" codex ZYZ_CROSS_REVIEW_TIMEOUT=3600 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label fh 2>&1 >/dev/null)"
+meta="$(cat "$TASK/reviews/cross/fh.claude.meta" 2>/dev/null)"
+has "$meta" "timeout=3600"$'\n' "floor: a value above the floor is kept"
+has "$meta" "timeout-raised=no" "floor: no raise recorded above the floor"
+lacks "$err" "below the" "floor: no warning above the floor"
+reset_logs
+run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label fd >/dev/null 2>&1
+meta="$(cat "$TASK/reviews/cross/fd.codex.meta" 2>/dev/null)"
+has "$meta" "timeout=2400"$'\n' "floor: unset keeps the 2400s default (claude host unchanged)"
+has "$meta" "timeout-requested="$'\n' "floor: unset is recorded as an empty request"
+has "$meta" "timeout-raised=no" "floor: the default is not a raise"
+# Replay at test scale: a too-small timeout (3s) against a reviewer that needs
+# ~4s. The floor (6s here) lets it finish; with no floor it is cut short.
+reset_logs
+out="$(run_xr "$BOTH" codex FAKE_CLAUDE_MODE=slow FAKE_CLAUDE_WORK_SEC=4 ZYZ_CROSS_REVIEW_TIMEOUT=3 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=6 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label rp 2>/dev/null)"
+has "$out" "cross-review harness=claude status=ok" "replay: the floor lets a working reviewer finish"
+has "$(cat "$TASK/reviews/cross/rp.claude.md" 2>/dev/null)" "Reviewer: cross-harness:claude" "replay: the full report is captured"
+reset_logs
+out="$(run_xr "$BOTH" codex FAKE_CLAUDE_MODE=slow FAKE_CLAUDE_WORK_SEC=8 ZYZ_CROSS_REVIEW_TIMEOUT=3 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label rp0 2>/dev/null)"
+has "$out" "status=timeout rc=143 tree-stable=yes diagnosis=still-working timeout=3 " "replay: without the floor the same reviewer is killed and diagnosed still-working"
+
+# --- timeout diagnosis -----------------------------------------------------------
+reset_logs
+out="$(run_xr "$BOTH" codex FAKE_CLAUDE_MODE=stream ZYZ_CROSS_REVIEW_TIMEOUT=4 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label dw 2>/dev/null)"
+has "$out" "status=timeout" "diagnosis: streaming reviewer times out"
+has "$out" "diagnosis=still-working" "diagnosis: output until the kill is still-working"
+meta="$(cat "$TASK/reviews/cross/dw.claude.meta" 2>/dev/null)"
+has "$meta" "timeout-diagnosis=still-working" "diagnosis: meta records still-working"
+has "$meta" "report-partial=yes" "diagnosis: captured narration is flagged partial"
+has "$meta" "last-output-age=" "diagnosis: meta records the last output age"
+case "$meta" in *"log-bytes=0"$'\n'*) bad "diagnosis: log-bytes not recorded" ;; *"log-bytes="[1-9]*) ok "diagnosis: meta records the event-log size" ;; *) bad "diagnosis: log-bytes missing" ;; esac
+has "$(cat "$TASK/reviews/cross/dw.claude.md" 2>/dev/null)" "narration-1" "diagnosis: partial output kept in the report file"
+reset_logs
+out="$(run_xr "$BOTH" codex FAKE_CLAUDE_MODE=stall ZYZ_CROSS_REVIEW_TIMEOUT=6 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 ZYZ_CROSS_REVIEW_STALL_SEC=3 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label ds 2>/dev/null)"
+has "$out" "diagnosis=stalled" "diagnosis: silence for the stall window is stalled"
+has "$(cat "$TASK/reviews/cross/ds.claude.meta" 2>/dev/null)" "timeout-diagnosis=stalled" "diagnosis: meta records stalled"
+reset_logs
+out="$(run_xr "$BOTH" codex FAKE_CLAUDE_MODE=stall ZYZ_CROSS_REVIEW_TIMEOUT=6 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label ds2 2>/dev/null)"
+has "$out" "diagnosis=still-working" "diagnosis: a short silence under the default 300s stall window is still-working"
+reset_logs
+out="$(run_xr "$BOTH" codex ZYZ_CROSS_REVIEW_TIMEOUT=6 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label dok 2>/dev/null)"
+lacks "$out" "diagnosis=" "diagnosis: an ok run carries none"
+lacks "$(cat "$TASK/reviews/cross/dok.claude.meta" 2>/dev/null)" "timeout-diagnosis" "diagnosis: an ok run's meta carries none"
 
 # --- incremental impl rounds skip cross-harness review (tiers §10.4/§10.7) ---
 # The skip follows --mode (copied from review-round.sh start), not the round.

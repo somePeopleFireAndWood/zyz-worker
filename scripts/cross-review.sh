@@ -44,6 +44,11 @@
 #                                     fingerprint at start/end)
 #     stdout, one line per reviewer:
 #       cross-review harness=<h> status=<ok|empty|failed|timeout> rc=<n> tree-stable=<yes|no|n/a> report=<path> meta=<path>
+#     a timed-out reviewer's line also carries, before report=,
+#       diagnosis=<still-working|stalled|no-output> timeout=<seconds>
+#     (still-working: it was writing events until the kill, so the timeout
+#     cut a live review short; stalled: no event for ZYZ_CROSS_REVIEW_STALL_SEC
+#     before the kill; no-output: it never wrote an event).
 #     or, when nothing runs:
 #       cross-review status=none host=<h> reason=<text>
 #     Exit: 0 whenever the arguments were valid (a failed/timed-out reviewer is
@@ -58,7 +63,17 @@
 #     ZYZ_AGENT_RUNTIME         host override (claude|codex), same knob the
 #                               orchestration adapter uses for detection
 #     ZYZ_CROSS_REVIEW_FORCE    1 = run even an incremental impl round
-#     ZYZ_CROSS_REVIEW_TIMEOUT  seconds per reviewer, default 2400
+#     ZYZ_CROSS_REVIEW_TIMEOUT  seconds per reviewer, default 2400. It guards
+#                               against a hung reviewer; it is not a pacing
+#                               knob. A value below the floor is raised to it
+#                               with a warning (meta: timeout-raised=yes) —
+#                               real reviews take 5-30 minutes, and Codex-host
+#                               runs that set 180/300 got 5/5 timeouts.
+#     ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR  that floor, default 1200 (~p97 of 400
+#                               real Codex reviews). For test suites; the
+#                               workflow never sets it.
+#     ZYZ_CROSS_REVIEW_STALL_SEC  event-stream silence that makes a timeout
+#                               `stalled` rather than `still-working`, default 300
 #     ZYZ_CROSS_REVIEW_MCP      MCP inheritance for the reviewer session, same
 #                               values as ZYZ_WORKER_MCP; default none (zero
 #                               MCP servers — review is code reading)
@@ -257,22 +272,27 @@ build_cmd() {
 }
 
 # launch_and_wait <cwd> <prompt> <log> <err> <timeout> <argv...> — run one
-# reviewer session with a scrubbed env; sets globals LAUNCH_RC and
-# LAUNCH_TIMED_OUT.
+# reviewer session with a scrubbed env; sets globals LAUNCH_RC,
+# LAUNCH_TIMED_OUT and LAUNCH_IDLE (seconds since the event log last grew,
+# measured at the kill; -1 if it never grew).
 launch_and_wait() {
     local cwd="$1" prompt="$2" log="$3" err="$4" timeout="$5" x
     shift 5
     local -a envp
     envp=(); while IFS= read -r -d '' x; do envp+=("$x"); done < <(scrubbed_env_prefix)
     ( cd "$cwd" && exec "${envp[@]}" "$@" ) < "$prompt" > "$log" 2> "$err" &
-    local pid=$! elapsed=0
+    local pid=$! elapsed=0 size last_size=0 last_change=-1
     LAUNCH_TIMED_OUT=0
+    LAUNCH_IDLE=-1
     # Group redirect: bash prints the "Terminated" job notice for a killed
     # reviewer on its own stderr whenever it next reaps, not via `wait`.
     {
         while kill -0 "$pid"; do
+            size="$(wc -c < "$log" 2>/dev/null || echo 0)"
+            if [ "${size// /}" != "$last_size" ]; then last_size="${size// /}"; last_change="$elapsed"; fi
             if [ "$elapsed" -ge "$timeout" ]; then
                 LAUNCH_TIMED_OUT=1
+                [ "$last_change" -ge 0 ] && LAUNCH_IDLE=$((elapsed - last_change))
                 kill -TERM "$pid"
                 sleep 5
                 kill -KILL "$pid"
@@ -286,15 +306,30 @@ launch_and_wait() {
     LAUNCH_RC=$?
 }
 
+# timeout_diagnosis <log> <idle> <stall-sec> — classify a timed-out reviewer.
+timeout_diagnosis() {
+    if [ ! -s "$1" ] || [ "$2" -lt 0 ]; then printf 'no-output\n'
+    elif [ "$2" -ge "$3" ]; then printf 'stalled\n'
+    else printf 'still-working\n'
+    fi
+}
+
 # run_one <harness> <host> <kind> <label> <cwd> <task-dir> <brief> <out-dir> <summary-file>
 run_one() {
     local harness="$1" host="$2" kind="$3" label="$4" cwd="$5" task_dir="$6" brief="$7" out_dir="$8" summary="$9"
     local base="$out_dir/$label.$harness"
     local report="$base.md" log="$base.jsonl" err="$base.stderr" prompt="$base.prompt.md" meta="$base.meta"
     local timeout="${ZYZ_CROSS_REVIEW_TIMEOUT:-2400}" started finished fp_start fp_end stable x
+    local floor="${ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR:-1200}" stall="${ZYZ_CROSS_REVIEW_STALL_SEC:-300}" raised=no
     local mcp_mode="isolated" rc timed_out
     local -a cmd
     case "$timeout" in ''|*[!0-9]*|0) timeout=2400 ;; esac
+    case "$floor" in ''|*[!0-9]*) floor=1200 ;; esac
+    case "$stall" in ''|*[!0-9]*|0) stall=300 ;; esac
+    if [ "$timeout" -lt "$floor" ]; then
+        echo "warning: ZYZ_CROSS_REVIEW_TIMEOUT=$timeout is below the ${floor}s floor; raised to $floor (it guards against a hung reviewer, it is not a pacing knob — a review takes 5-30 minutes)" >&2
+        timeout="$floor"; raised=yes
+    fi
 
     render_prompt "$harness" "$host" "$kind" "$cwd" "$task_dir" "$brief" > "$prompt"
     : > "$report"
@@ -324,9 +359,13 @@ run_one() {
         extract_claude_result "$log" > "$report"
     fi
 
-    local status
+    local status diagnosis="" partial=no
     if [ "$timed_out" -eq 1 ]; then
         status=timeout
+        diagnosis="$(timeout_diagnosis "$log" "$LAUNCH_IDLE" "$stall")"
+        # Whatever text was captured is the reviewer's narration so far, not a
+        # report; it stays in the report file but is flagged as partial.
+        grep -q '[^[:space:]]' "$report" 2>/dev/null && partial=yes
     elif [ "$rc" -ne 0 ]; then
         status=failed
     elif [ -s "$report" ] && grep -q '[^[:space:]]' "$report"; then
@@ -342,12 +381,17 @@ run_one() {
     {
         printf 'harness=%s\nhost=%s\nkind=%s\nlabel=%s\ncwd=%s\n' "$harness" "$host" "$kind" "$label" "$cwd"
         printf 'status=%s\nrc=%s\nstarted=%s\nfinished=%s\nmcp=%s\n' "$status" "$rc" "$started" "$finished" "$mcp_mode"
+        printf 'timeout=%s\ntimeout-requested=%s\ntimeout-raised=%s\n' "$timeout" "${ZYZ_CROSS_REVIEW_TIMEOUT:-}" "$raised"
+        if [ "$status" = "timeout" ]; then
+            printf 'timeout-diagnosis=%s\nlast-output-age=%s\nlog-bytes=%s\nreport-partial=%s\n' \
+                "$diagnosis" "$LAUNCH_IDLE" "$(wc -c < "$log" 2>/dev/null | tr -d ' ')" "$partial"
+        fi
         [ -z "${XR_REVIEW_META:-}" ] || printf '%s' "$XR_REVIEW_META"
         printf 'tree-fingerprint-start=%s\ntree-fingerprint-end=%s\ntree-stable=%s\n' "$fp_start" "$fp_end" "$stable"
         printf 'report=%s\nlog=%s\nstderr=%s\nprompt=%s\n' "$report" "$log" "$err" "$prompt"
     } > "$meta"
-    printf 'cross-review harness=%s status=%s rc=%s tree-stable=%s report=%s meta=%s\n' \
-        "$harness" "$status" "$rc" "$stable" "$report" "$meta" > "$summary"
+    printf 'cross-review harness=%s status=%s rc=%s tree-stable=%s %sreport=%s meta=%s\n' \
+        "$harness" "$status" "$rc" "$stable" "${diagnosis:+diagnosis=$diagnosis timeout=$timeout }" "$report" "$meta" > "$summary"
 }
 
 cmd_run() {

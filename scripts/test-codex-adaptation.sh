@@ -268,7 +268,9 @@ EOF
     if [ "${1:-}" = "--real" ] && [ "$real_provenance_ready" = true ] && [ "$spawn_rc" -eq 0 ]; then
         real_task_dir="$TMP/spawn-worktree/.zyz-worker/tasks/spawn-codex"
         mkdir -p "$real_task_dir/runtime"
-        printf 'spawn-codex\n' > "$TMP/spawn-worktree/.zyz-worker/current-task"
+        # A real Codex hook carries session_id, and a session with an id never
+        # reads the shared current-task; the thread id is unknown before launch,
+        # so the task is handed to this one process via $ZYZ_TASK_DIR.
         cat > "$real_task_dir/status.md" <<'EOF'
 # Task Status
 
@@ -289,7 +291,7 @@ EOF
         fi
         real_args="$(printf '%s\n' "$spawn_dispatch" | awk '/^worker-runtime-args:/{sub(/^worker-runtime-args:[[:space:]]*/, ""); print; exit}')"
         real_cmd="$("$R" launch-command codex "$ROOT" "$TMP/spawn-worktree" spawn-codex "$real_args" "$TMP/spawn-worktree")"
-        tmux send-keys -t "$TEST_SESSION" "$real_cmd" Enter
+        tmux send-keys -t "$TEST_SESSION" "ZYZ_TASK_DIR=$real_task_dir $real_cmd" Enter
         real_bound="false"
         real_report=""
         trust_sent="false"
@@ -353,7 +355,6 @@ EOF
     if [ "${1:-}" = "--real" ] && [ "$real_provenance_ready" = true ] && [ "$spawn_rc" -eq 0 ]; then
         standalone_task_dir="$TMP/standalone/.zyz-worker/tasks/hook-smoke"
         mkdir -p "$standalone_task_dir/runtime"
-        printf 'hook-smoke\n' > "$TMP/standalone/.zyz-worker/current-task"
         cat > "$standalone_task_dir/status.md" <<'EOF'
 # Task Status
 
@@ -372,7 +373,7 @@ EOF
             standalone_fixed_genesis_unavailable=true
         fi
         standalone_out="$(env -u PLUGIN_ROOT -u ZYZ_PLUGIN_ROOT -u CLAUDE_PLUGIN_ROOT -u CODEX_PLUGIN_ROOT \
-            ZYZ_HOOK_DEBUG_FILE="$TMP/standalone-hook-input.jsonl" \
+            ZYZ_HOOK_DEBUG_FILE="$TMP/standalone-hook-input.jsonl" ZYZ_TASK_DIR="$standalone_task_dir" \
             codex exec -C "$TMP/standalone" --skip-git-repo-check -s read-only \
             --dangerously-bypass-hook-trust --color never \
             'Use the shell tool to run pwd once, then reply exactly OK.' 2>&1)"

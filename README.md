@@ -99,7 +99,7 @@ execute-task 的评审点（设计评审每一轮、每个实现 / lane 评审�
 | 环境变量 | 作用 |
 |---|---|
 | `ZYZ_CROSS_REVIEW` | `auto`（默认，所有已安装的非宿主 harness）/ `off` / 显式列表如 `codex` |
-| `ZYZ_CROSS_REVIEW_TIMEOUT` | 每个评审者的超时秒数，默认 2400 |
+| `ZYZ_CROSS_REVIEW_TIMEOUT` | 每个评审者的超时秒数，默认 2400；低于下限 1200 的值会被提升到 1200 并告警（`.meta` 记 `timeout-raised=yes`）。超时的摘要行带 `diagnosis=still-working\|stalled\|no-output` |
 | `ZYZ_CROSS_REVIEW_MCP` | 同 `ZYZ_WORKER_MCP` 的取值，默认 `none` |
 | `ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` | 追加给对应 CLI 的参数（如 `-m <model>`） |
 | `ZYZ_CROSS_REVIEW_FORCE` | `1` 时 impl 评审点的增量轮也照常跑跨 harness |

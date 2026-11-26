@@ -32,8 +32,9 @@
 #   completed in the background when the task has just been handed to the user
 #   (see below) — never for an ordinary stop of an executing task.
 #   On UserPromptSubmit, also writes <task-root>/runtime/user-prompt-epoch (the
-#   lapse point of Awaiting-User declarations) and deletes the L3 no-executor
-#   stop-snapshot (#24).
+#   lapse point of Awaiting-User declarations; skipped when the prompt is a
+#   host `<task-notification>`, which is not the user speaking) and deletes
+#   the L3 no-executor stop-snapshot (#24).
 #
 # ## Failure behavior
 #
@@ -77,6 +78,19 @@ case "$hook_event" in
     *) exit 0 ;;
 esac
 
+# UserPromptSubmit also fires when the host delivers a background-task
+# notification as a turn (verified on Claude Code 2.1.251: a finished
+# background subagent / Bash, a plugin monitor line — the watchdog's own wake-ups
+# included). That is not the user speaking: counting it lapsed every `user`
+# declaration and dropped the deferred question IM whenever any notification
+# came in. Agent-team teammate messages do not fire UserPromptSubmit at all.
+user_spoke=1
+if [ "$hook_event" = UserPromptSubmit ]; then
+    case "$(zyz_get prompt | sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p;q;}')" in
+        '<task-notification>'*) user_spoke=0 ;;
+    esac
+fi
+
 # The main agent owns every task of its session, so each task's state machine
 # moves on its own.
 apply_state() {
@@ -98,9 +112,11 @@ apply_state() {
 
     # The user just spoke (#24): record when, so an Awaiting-User declaration
     # written before this moment lapses (expect_state.py kind=user), and end the
-    # L3 no-executor window opened by the previous Stop.
+    # L3 no-executor window opened by the previous Stop. A notification turn
+    # ends that window too (the main agent is running again) but is not the
+    # user speaking.
     if [ "$hook_event" = UserPromptSubmit ]; then
-        mkdir -p "$root/runtime" 2>/dev/null \
+        [ "$user_spoke" = 1 ] && mkdir -p "$root/runtime" 2>/dev/null \
             && zyz_write_atomic "$root/runtime/user-prompt-epoch" "$(zyz_now)"
         rm -f "$root/runtime/stop-snapshot" 2>/dev/null
     fi
@@ -142,7 +158,8 @@ stop_notify() {
         expect="$(zyz_expect_eval "$root" unknown)"
         zyz_expect_known "$expect" || return 0
         [ "$(zyz_expect_field "$expect" users)" = 0 ] || return 0
-        left="$(zyz_executors_left "$(zyz_bg_executor_ids)" "$(zyz_expect_field "$expect" residents)")"
+        left="$(zyz_executors_left "$(zyz_bg_executor_ids)" "$(zyz_expect_field "$expect" residents),$(zyz_teammate_entries "${roots%%
+*}" | awk -F '\t' '$3 == 1 { printf "%s,", $1 }')")"
         [ "$left" = 0 ] || return 0
         event=needs_input
         msg="主 agent 在设计阶段停下了，没有在跑的执行者——多半在等你批准设计或回答问题"
