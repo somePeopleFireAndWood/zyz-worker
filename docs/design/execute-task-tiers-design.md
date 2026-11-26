@@ -106,11 +106,7 @@
 
 ### 4.6 机械化
 
-- 新脚本 `hooks/scripts/review-round.sh`：`open <point> [--kind main|aux]`、`record <point> <round> --blocking N --behavior-changing M`、`grant-extra <point>`、`check <point>`。它把每个评审点的轮次记录写进 `status.md` 的 `## 评审收口`，格式机器可读，和 `expect.sh` 一样校验后原子写入。
-- PreToolUse(Agent) 派发 review-agent 时：
-  - 快速档和标准档：轮次已到上限、又没有 `extra-round` 授权，就拒绝派发，并提示按 §4.4 交给用户。
-  - 严格档：到了第 3、6、9… 轮还没有记录收口检查，就拒绝派发。
-- 跨 harness 简报同样通过 `cross-review.sh` 读取轮次，在实现阶段的增量轮自动跳过。
+- 新脚本 `hooks/scripts/review-round.sh` 记录每个评审点的轮次，新 hook `review-gate.sh` 在派发 review-agent 时检查上限和收口检查；`cross-review.sh` 在实现阶段的增量轮自动跳过。命令、行格式、上限和闸门逻辑以 §10.4、§10.5 为准。
 
 ### 4.7 变异
 
@@ -127,7 +123,7 @@
 | 类 | 范围 | 处理 |
 |---|---|---|
 | A 设计决定 | 架构、模块划分、关键算法、对外接口契约、持久化的数据结构、用户可见的行为 | 必须经用户批准（不变） |
-| B 可逆的实现细节 | 以后能低成本改回来的选择：内部命名、配置键的默认值、内部函数怎么拆分、日志措辞、内部错误码映射、依赖的小版本等 | 按推荐执行，批量记入 `status.md` 的 `## 按推荐执行的决定`；在设计批准时和最终报告里列给用户，用户可以否决任何一条 |
+| B 可逆的实现细节 | 以后能低成本改回来的选择：内部命名、配置键的默认值、内部函数怎么拆分、日志措辞、内部错误码映射、依赖的小版本等 | 按推荐执行，批量记入 `decisions.md` 的「按推荐执行的决定」（§10.6）；在设计批准时和最终报告里列给用户，用户可以否决任何一条 |
 
 拿不准属于 A 还是 B 时，按 A 处理。运维类许可（环境准备、用户已授权的合并）已经从 0.31.0 起不再询问，保持不变。
 
@@ -322,3 +318,24 @@ tree-stable 的指纹计算要排除 `.zyz-worker/` 和 `--task-dir` 所在目�
 <task-dir>/design/…          设计文档与 *.review-history.md（标准档和严格档）
 <task-dir>/residual-risks.md 遗留风险清单（不变）
 ```
+
+### 10.7 契约补充（回应 lane 疑问，2026-11-26）
+
+1. **结构性修复后改走全量复审。** 用 `review-round.sh start <point> --full --reason …` 强制本轮 `mode=full`。impl 评审点的全量轮 `cross-harness=yes`。轮次照常计数，上限不变。
+2. **评审点的关闭。** 新增命令 `close <point> --outcome passed|residual|split [--by user] --reason …`，写入一行：
+   `- Review-Close: point=<id>; round=<n>; outcome=<o>; at=<unix>; reason=<text>`
+   - `passed`：要求最近一轮已 `result`，且 `blocking=0`。
+   - `residual` 和 `split`：要求 `--by user`，是用户在 §4.4 三选一时的处置。
+   - 已关闭的评审点再 `start` 会被拒绝；要重开需要先 `open`，`open` 会生成新的一组记录。
+   - 交付核验要求每个已登记的评审点都有一条 `Review-Close`。
+3. **设计批准记录**留在原位：`status.md` 的 `## 设计评审 > 设计批准记录`。编排模式靠这里判断能否进入实现，位置不变。快速档的改法确认也记在这一处，原文要点写进 `change-note.md`。
+4. **快速档和标准档的 lane** 用 `implementation-agent` 的 lane 模式，同时写代码和测试。
+5. **`status.md` 里的固定小节名：**
+   - `## 发现台账`：只放当前未关闭的发现，来源包括 reviewAgent、跨 harness 和 PR 评审，用一列"来源"区分；被拒绝的发现带着理由也留在这里，直到评审点关闭，之后移到 `log/review-ledger.md`。
+   - `## 并行资源租约`：保留。
+   - `## 设计评审`：保留，只放最近一次评审结果和设计批准记录。
+   - `## 跨 harness 交叉评审`、`## PR 评审`：并入 `## 发现台账`，不再单列。
+6. **合同包含已批准的设计本身**：快速档是 `change-note.md`，标准档和严格档是设计文档。所以实现违背已批准设计，属于 blocking 的"违反合同"。
+7. **"关键机制"由主 agent 在设计文档的 `## 关键机制` 小节里列出**，依据是用户的设计，加上安全、权限、数据完整性这类机制，以及用户点名的机制。这一节同时列入 `### 需要你关注的细节`，随设计一起批准。用户可以增删。快速档没有关键机制清单，只做负对照。评审者认为有遗漏时，提一条 `non-blocking:normal` 建议，不作为 blocking。
+8. **声明域条款**：主 agent 在审批闸门前重新生成快速审阅时，把用户没有亲口说过的范围边界条款（首先是威胁模型）列进 `### 需要你关注的细节`。评审方面，涉及安全或数据的改动缺少声明域、或者声明域含糊时，算 blocking 的"设计缺失"，并标 `requires-user-decision`。
+9. **单个评审点升档**：`open <point> --stage … [--kind …] [--tier standard|strict]`。`--tier` 只能比任务级 `- Tier:` 更严；写入时在该评审点的 `Review` 行加 `tier=<t>` 字段，上限、`mode`、`cross-harness` 都按这个评审点自己的档位算。改已经打开的评审点的档位，用 `open <point> --tier …` 重新打开（只能升）。降回任务档位要求 `--by user`。review-gate 比对的 `Tier:` 行取评审点的生效档位。
