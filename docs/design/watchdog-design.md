@@ -72,7 +72,9 @@
 | 观察期无排定检查 | L4 + L3 | `observing` 阶段没有任何会把主 agent 叫回来的东西 | 有效 `wait` / `user`；宿主排定的唤醒 | `wait --at` 或改成 `done` | L3 每 3 小时 |
 | 状态文件过期 | L1 / L4 / L3 | 活跃阶段 `status.md` 超过 600 / 1200 / 1800 秒没写 | `wait`；旧 `Waiting On`；main-state 为 `awaiting-user` / `idle`（L3/L4） | 写状态文件 | 各层冷却 |
 | 角色静默 / 跟踪未对账 / probe 逾期 / 无输出 / 终态未收取 | L4 + L3 | fixed-pack 观察（仅 Linux，仅三种 zyz-worker 角色名） | 无 | `probe-*` / `finalize` / `reconcile-*`；读结果并写状态 | L3 冷却 900s，6 小时后不再看 |
-| 未启用 | L3 | 有未完成任务目录却解析不到本会话的指针 | — | `task-pointer.sh arm` | 一次 |
+| 未启用 | L1 | 本会话解析不到任何任务，而主 agent 自己在改某个未结束任务的 `status.md`（Write / Edit / MultiEdit），且距它第一次这样改已过 `ZYZ_UNARMED_GRACE_SEC`（默认 300 秒） | 第一次修改只记时间（正常启动先写 status.md、几秒后才 arm） | `task-pointer.sh arm <任务目录>`；任务不是本会话的就忽略 | 每个会话每个任务一次 |
+
+**没有 arm 的会话完全安静。** 「哪个任务属于我」只由会话身份决定：本会话的会话指针，拿不到任何会话 id 时才读共享的 `current-task`，再就是按进程导出的 `$ZYZ_TASK_DIR`。目录里能看到的东西——未结束的任务目录、别的会话的指针、残留的 `current-task`——都不是本会话在跑 execute-task 的证据，不触发任何告警、拦截、注入或 IM。0.32.1 及之前有两条路径违反这一点：有会话 id 但没有自己指针的会话会回落读 `current-task`，挂到目录最后指向的任务上（11-04 tipsy-ab-config：一个没跑过 execute-task 的会话收到 5 次通知，其中一次把别的会话的任务误判为卡住）；L3 的「未启用」只要看到未完成且无人认领的任务目录就报。「未启用」因此改到 L1，证据只取本会话自己的写入。
 
 「状态文件过期」是**卫生**提醒，不是存活检测：主 agent 停下后 main-state 就是 `idle`，它不再响。停下之后判断「有没有人在推」的，只有会话静默、无执行者、声明到点三条，以及 Linux 上的角色级检查。
 
@@ -123,6 +125,9 @@
 - **多任务会话**：会话静默对每个活跃任务各报一条——每个任务都要各自说明为什么安静，一个任务上的声明不替别的任务说话。
 - **长时间只思考不调用工具的执行者**：超过 `silence-sec` 会被当成静默。用 `wait --at` 声明，或用 `Tune silence-sec` 放宽（最多 24 小时）。
 - **设计批准闸门忘了声明 `user`**：兜底的 `needs_input` 要靠 Stop 输入里的 `background_tasks` 判断「没有执行者」；Codex 没有这个字段，兜底不响，用户只能靠声明得知。
+- **空闲的 agent-team teammate 被当成执行者**：Claude Code 2.1.251 的 Stop 输入里，只要 teammate 还在就以 `running` 列出（`isIdle` 不导出，静态阅读宿主代码得出）。只要团队还在，「无执行者」就不会响；这种停摆只能等会话静默（默认 1 小时）。11-17 的事故（issue #24 的来源）就是这种形态：teammate 的两个后台 shell 在主 agent 停下 3 分钟后结束、完成通知没人处理，用户 31 分钟后自己发现；按现在的代码，会话静默会在主 agent 最后一次工具调用后 60 分钟报出（`scripts/test-session-silence.sh` R2）。`Tune` 只能放宽、不能把 `silence-sec` 收紧到默认以下；想更早被叫醒，主 agent 在停下前用 `wait --at <预计完成时间>` 声明它在等什么（到点叫醒它），或者在环境里调低 `ZYZ_WATCHDOG_SILENCE_SEC`。
+- **没 arm 的 Codex 会话**：「未启用」提示靠 PostToolUse 看到的 Write / Edit / MultiEdit，Codex 的文件编辑不经过这里，所以 Codex 上没有这条提示（只会少报，不会误报）；主 agent 在 §1 的「确认已启用」检查是主要防线。
+- **monitor 进程本身出现在每个会话的后台任务列表里**：没 arm 的会话里 watchdog 一声不响，但它以 `when: always` 启动，是一个 `running` 的 shell 任务。Claude Code 的 `/goal` 在有后台任务时推迟评估、定期 check-in「background work still running」（10-24 tipsy-ab-config a7afe585：目标早已完成，check-in 两次点名这个 watchdog，最后会话手动停掉了它）。改用 `on-skill-invoke:` 要同时声明带插件前缀和不带前缀的 skill 名（两个 monitor 名），还要解决 `--resume` 之后不再重新启动的问题，尚未处理。
 - **用户就在终端前**：提问类 IM 延迟 60 秒、期间回答就不发；超过 60 秒才回答，仍会多收一条。
 
 ## 9. 改动时要遵守的规则

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **没有 arm 的会话不再收到任何 watchdog 告警。** 一个会话「哪个任务属于我」只由会话身份决定，但 0.32.1 之前还有两条路违反这一点，都已在当前代码上复现：
+  - **回落读共享的 `current-task`。** 有会话 id、却没有自己会话指针的会话（也就是没在这里跑过 execute-task 的普通会话），解析器会回落读目录里的 `.zyz-worker/current-task`，挂到它指向的任务上：L1 注入「状态文件过期」、L4 拦下 Stop（状态过期 + 无执行者）、L3 报状态过期和会话静默、再升级成 IM，还会往那个任务的 `runtime/` 里写心跳。真实事故（11-04 tipsy-ab-config）：一个从没调用 execute-task 的会话收到 5 次 watchdog 通知，其中一次把另一个会话的任务误判为卡住，用户最后让它把 watchdog 关掉。这个目录现在仍留着 0.28.0 之前写的 `current-task`，其它几个仓库也有（其中一个指向一个今天还在推进的任务）。现在 `current-task` **只在拿不到任何会话 id 时**才读——也只有这时 `task-pointer.sh arm` 才会写它；`$ZYZ_TASK_DIR`（按进程导出）照旧有效。**迁移：** 仍靠 `current-task` 启用的旧会话需要用 `task-pointer.sh arm <任务目录>` 重新 arm 一次；`task-pointer.sh show` 会用一行 `ignored:` 标出被忽略的 `current-task`。
+  - **L3 的「未启用」按目录猜。** 只要会话 cwd 下有一个未完成、且没有被任何会话指针认领的任务目录，watchdog 就对本会话报一次「未启用」。monitor 随每个会话启动，所以在留有废弃任务的仓库里打开的每个普通会话都会收到。已删除：没有 arm 的会话里 watchdog 完全安静。「没 arm」的提醒改到 L1，证据只取本会话自己的动作：主 agent 自己用 Write / Edit / MultiEdit 修改某个未结束任务的 `.zyz-worker/tasks/<id>/status.md`，而且距它第一次这样改已过 `ZYZ_UNARMED_GRACE_SEC`（默认 300 秒，正常启动时 status.md 先写、几秒后才 arm）仍解析不到本会话的指针，才注入一次提示（每个会话每个任务一次），并说明任务若属于别的会话就忽略、不要替它 arm。subagent 的写入、Bash / Read 调用、目录里的任务和别的会话的指针都不算证据。Codex 的文件编辑不经过这个 hook，所以 Codex 上没有这条提示（只会少报）。
+  - 已 arm 的会话不受影响：同一目录里的正对照（Stop 拦截、watchdog 报告、IM）照常触发。
+- **回放 issue #24 的 11-17 事故（f0b8d80a）。** 当时主 agent 22:22 停下，ST4 的 teammate 留下的两个后台 shell 在 22:25 结束、完成通知没人处理，用户 22:53 才发现。按当时的形态（12 个空闲 teammate + 2 个后台 shell + 本 watchdog）回放：现在的代码会在主 agent 最后一次工具调用后 60 分钟由「会话静默」报出（0.31.0 的代码对同一回放什么都不报）；31 分钟时仍然安静，这是 `silence-sec` 的设计窗口。静态阅读 Claude Code 2.1.251 的 Stop 输入构造得出：agent-team teammate 只要还在就以 `running` 列出、`isIdle` 不导出，所以只要团队还在，「无执行者」就不会响。这一点作为已知盲区写进 `docs/design/watchdog-design.md` §8，并在回放里钉住（团队一散，同一个 Stop 就会被拦）。
+- 测试：`scripts/test-session-pointer.sh` 新增 S9（一个从未 arm 的会话，在另一个会话的任务、一个无人认领的进行中任务和一个残留 `current-task` 旁边，驱动全部 hook、watchdog 和 IM，断言什么都不输出、什么都不写、谁都不通知，并在同一目录做正对照）和 S10（新的「未启用」提示的正例与 9 种反例），S1 / S4 / S5 改为新契约（106 项）；`scripts/test-watchdog-hooks.sh` T11 改为「没 arm 的 watchdog 在任何目录形态下都安静」；`scripts/test-session-silence.sh` 新增 R2 回放（123 项）。13 个定向变异中 12 个被杀，1 个是等价变异（文件名检查被其它守卫兜住），第一轮存活的 H6 暴露出反例只改一次、而第一次修改本来就不提示，已改成两次修改；记录在 `test-session-pointer.sh` 头部。`test-session-silence.sh` 的 I3 和 `test-codex-adaptation.sh --real` 原先依赖「有会话 id 也读 `current-task`」，分别改为写会话指针和导出 `$ZYZ_TASK_DIR`。
+
 ## [0.32.1] — 2026-11-23
 
 - **提示词：向用户提问一律用自然语言，不使用 AskUserQuestion 工具。** 即使工具可用、即使是让用户在几个选项里做选择（把选项编号列在回复里），也用自然语言提问，并照旧在同一条回复里、结束这一轮之前 `expect.sh set <key> user`。主 agent 提示词删除了「用 AskUserQuestion 提问什么都不用做、做选择时优先用它」一条；`SKILL.md` 的 L7 IM 通知说明和声明用法表同步改写。watchdog 对 AskUserQuestion 的处理（`awaiting-user`、延迟 `needs_input` IM、回答记为用户发言）保留不变，作为工具仍被调用时的兜底。

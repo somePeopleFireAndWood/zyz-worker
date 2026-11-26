@@ -30,9 +30,10 @@
 #                               one per line, deduplicated.
 # - zyz_task_roots <base>       every task directory of THIS session, one per
 #                               line: the lines of the per-session pointer
-#                               `.zyz-worker/sessions/<session-id>` (#23), else
-#                               the first line of the legacy shared
-#                               `.zyz-worker/current-task`, else $ZYZ_TASK_DIR.
+#                               `.zyz-worker/sessions/<session-id>` (#23); only
+#                               when no session id is available at all, the
+#                               first line of the legacy shared
+#                               `.zyz-worker/current-task`; else $ZYZ_TASK_DIR.
 #                               Each pointer is read under <base>, then under
 #                               the session project dir ($CODEX_PROJECT_DIR /
 #                               $CLAUDE_PROJECT_DIR). A pointer line is a
@@ -797,10 +798,9 @@ zyz_session_ids() {
 }
 
 # True when the task dir's status.md reports a terminal phase (see
-# zyz_phase_terminal for the accepted spellings). Used by the watchdog's
-# unarmed-suspicion gate: completed tasks legitimately leave their directories
-# behind forever, so a terminal task dir is not evidence that a live task lost
-# its pointer.
+# zyz_phase_terminal for the accepted spellings). Completed tasks legitimately
+# leave their directories (and pointer lines) behind forever, so callers treat
+# a terminal task as finished, never as one that still needs watching.
 zyz_task_is_done() {
     local st="${1:-}/status.md" ph
     [ -f "$st" ] || return 1
@@ -841,22 +841,30 @@ EOF
             printf '%s\n' "$found" | awk 'NF && !seen[$0]++'
             return 0
         fi
+    else
+        # (a) The legacy shared pointer directly under the given base, then
+        # (a') under the session project dir — ONLY when no session id is
+        # available at all, the one case where task-pointer.sh arm still writes
+        # it. A session that has an id but no pointer of its own never armed
+        # execute-task here: `current-task` says nothing about which session
+        # wrote it (a pre-#23 session, another session's no-id arm, a stale
+        # file), so reading it attached plain sessions to whatever task the
+        # directory last pointed at — status-stale and silence wake-ups, Stop
+        # blocks and IM pages about a task they never touched (the 11-04
+        # tipsy-ab-config incident: five notifications in a session that never
+        # ran execute-task, until the user had the watchdog killed).
+        found="$(zyz_resolve_pointer_at "$base")"
+        [ -n "$found" ] || [ -z "$project_dir" ] || found="$(zyz_resolve_pointer_at "$project_dir")"
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+            return 0
+        fi
     fi
 
-    # (a) The legacy shared pointer directly under the given base, then (a')
-    # under the session project dir. Reached only when this session has no
-    # session pointer, so sessions that predate #23 (or run where no session id
-    # is available) behave exactly as before.
-    found="$(zyz_resolve_pointer_at "$base")"
-    [ -n "$found" ] || [ -z "$project_dir" ] || found="$(zyz_resolve_pointer_at "$project_dir")"
-    if [ -n "$found" ]; then
-        printf '%s\n' "$found"
-        return 0
-    fi
-
-    # (b) Explicit override. Only usable where something exported it into the
-    # environment before `claude` started (orchestrated spawn/reuse do this); a
-    # skill cannot set it for itself, since each skill Bash call is a new shell.
+    # (b) Explicit override. Only usable where something exported it into this
+    # process's environment before `claude` started (a launcher wrapping it);
+    # a skill cannot set it for itself, since each skill Bash call is a new
+    # shell. Unlike `current-task` it is per process, not per directory.
     if [ -n "${ZYZ_TASK_DIR:-}" ] && [ -d "${ZYZ_TASK_DIR}" ]; then
         printf '%s\n' "$ZYZ_TASK_DIR"
         return 0

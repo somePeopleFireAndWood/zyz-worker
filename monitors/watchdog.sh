@@ -73,11 +73,19 @@
 #
 # Never exits on scan errors; sleeps and retries. Exits 0 on SIGTERM/INT/HUP
 # or when the base dir disappears. Silent when no task pointer of this session
-# resolves (zyz_task_roots: .zyz-worker/sessions/<session-id>, then the legacy
-# .zyz-worker/current-task, then $ZYZ_TASK_DIR). The session id comes from
+# resolves (zyz_task_roots: .zyz-worker/sessions/<session-id>; the legacy
+# .zyz-worker/current-task only when no session id is known at all; then
+# $ZYZ_TASK_DIR). The session id comes from
 # $ZYZ_SESSION_ID (the Codex starter sets it) or the Claude monitor's own
 # $CLAUDE_CODE_SESSION_ID, plus the live id in ~/.claude/sessions/$CLAUDE_PID.json.
 # Each task listed in the session pointer is scanned and reported separately.
+# A session that never armed is silent, full stop: this monitor is armed
+# `when: always`, so it runs in every session, and the task dirs, other
+# sessions' pointers or a leftover current-task it can see in the directory say
+# nothing about this session. (Until 0.32.1 it reported "未启用" once whenever
+# an unfinished, unclaimed task dir existed — a false alarm in every plain
+# session opened in a repo with an abandoned task. The narrowed hint now lives
+# in status-freshness.sh, keyed on this session's own status writes.)
 #
 # ## Main-agent state gating (pure signal, no TTL)
 #
@@ -141,12 +149,6 @@ watchdog_cleanup() {
 trap 'exit 0' TERM INT HUP
 trap watchdog_cleanup EXIT
 
-# Unarmed-visibility state. An unarmed watchdog and a healthy quiet one are
-# externally indistinguishable — that is how a whole task ran with every layer
-# inert and nobody noticing. Report the miss ONCE (not every tick) so the main
-# agent learns the layer is not protecting it, then stay quiet; re-arm resets it.
-UNARMED_REPORTED="false"
-
 # IM escalation (0.32.0, best-effort, fail-open). Every finding goes to the
 # MAIN agent first (the stdout line wakes it); the user is paged only when
 # that did not help — this task already had a finding reported at least
@@ -181,47 +183,6 @@ notify_stuck() { # $1 = task root, $2 = short message, $3 = origin (main|subagen
     "$NOTIFY_SH" --event stuck --task-root "$1" --origin "${3:-main}" ${4:+--task-id "$4"} \
         --message "watchdog $(( (now - first) / 60 )) 分钟前提醒过主 agent，此后会话里没有任何动作：$2" \
         </dev/null >/dev/null 2>&1 &
-}
-
-# But this monitor is armed `when: always`, so it starts in EVERY session —
-# including the overwhelming majority that never run execute-task. Reporting a
-# bare resolution miss there is a false alarm that tells the user dead subagents
-# will not be reported when there is nothing to report on, and a warning that
-# cries wolf in ordinary sessions is worse than no warning: it trains people to
-# ignore the one that matters. So only speak up when a task plausibly EXISTS but
-# the pointer cannot be found — i.e. some `.zyz-worker/tasks/<id>/` is present
-# under the base yet resolution still came back empty. A repo with no task dirs
-# at all, or one whose task dirs are all finished, stays silent.
-zyz_unarmed_is_suspicious() {
-    local d claimed
-    claimed="$(zyz_claimed_task_dirs)"
-    for d in "$BASE"/.zyz-worker/tasks/*/; do
-        [ -d "$d" ] || continue
-        # A task dir counts as evidence only while it is not finished; completed
-        # tasks legitimately leave their directories behind forever.
-        zyz_task_is_done "${d%/}" && continue
-        [ -f "${d%/}/status.md" ] || continue
-        # A task another session's pointer claims is that session's, not a sign
-        # that ours went missing (#23): several sessions may share this dir.
-        [ -n "$claimed" ] && printf '%s\n' "$claimed" \
-            | grep -qxF "$(cd "$d" 2>/dev/null && pwd -P)" 2>/dev/null && continue
-        return 0
-    done
-    return 1
-}
-
-# Physical paths of every task dir named by any session pointer under $BASE,
-# one per line. Read only by the unarmed check above; resolution never uses it.
-zyz_claimed_task_dirs() {
-    local f line dir
-    for f in "$BASE"/.zyz-worker/sessions/*; do
-        [ -f "$f" ] || continue
-        while IFS= read -r line || [ -n "$line" ]; do
-            dir="$(zyz_resolve_ref_at "$BASE" "$line")"
-            [ -n "$dir" ] && (cd "$dir" 2>/dev/null && pwd -P)
-        done < "$f"
-    done
-    return 0
 }
 
 # One scan of one task dir. Every task of this session is scanned on its own
@@ -623,13 +584,6 @@ while :; do
     esac
     [ -d "$BASE" ] || exit 0
     roots="$(zyz_task_roots "$BASE")"
-    if [ -z "$roots" ] && [ "$UNARMED_REPORTED" = "false" ] && zyz_unarmed_is_suspicious; then
-        UNARMED_REPORTED="true"
-        printf '[zyz-worker watchdog] 未启用：无法从 %s 解析到任务指针（已尝试该目录下本会话的 .zyz-worker/sessions/<session-id>、共享的 .zyz-worker/current-task 和 $ZYZ_TASK_DIR；解析器有意不搜索同级 worktree，也不按“最新”或“未完成”去挑别的会话的指针——那些任务可能属于另一个并发会话）。本会话的 watchdog 层处于失效状态——死掉的 subagent 不会被报告，空闲门也不会拦住停止。如果有正在运行的 execute-task，请用 hooks/scripts/task-pointer.sh arm <任务目录绝对路径> 写入本会话的指针。每次未命中只报告一次，不会每轮扫描都报一次。\n' "$BASE"
-    fi
-    if [ -n "$roots" ]; then
-        UNARMED_REPORTED="false"
-    fi
     SESSION_LIVE=0
     # The last moment anyone moved the session: the silence floor and the IM
     # escalation (notify_stuck) both read it, so it is taken before any scan.

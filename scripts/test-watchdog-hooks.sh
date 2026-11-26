@@ -1227,26 +1227,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# T11  Watchdog reports being UNARMED (issue #5).
+# T11  An unarmed watchdog is SILENT — in every directory shape.
 #
-# The deeper defect: an inert layer and a healthy quiet one are externally
-# identical, which is why a whole task ran unprotected without anyone noticing.
-# The monitor must announce a resolution miss — once, not per tick.
+# History: issue #5 made the monitor announce a resolution miss ("未启用") so an
+# inert layer would not pass for a healthy quiet one, gated on "some unfinished
+# task dir exists under the base". But the monitor is armed `when: always`, so
+# it runs in every session, and a directory says nothing about THIS session: a
+# plain session opened in a repo with an abandoned or another session's task
+# was told its watchdog was off (the 11-04 tipsy-ab-config incident; S9 of
+# test-session-pointer.sh replays it). The miss is now caught by the main
+# agent's own §1 armed check and by status-freshness.sh's evidence-based hint
+# (S10 there); the watchdog reports only for tasks this session armed.
 # Also pinned: monitors.json interpolates "${CLAUDE_PROJECT_DIR}" into argv, so
 # an unset variable yields an EMPTY $1. BASE must still fall through to
 # CLAUDE_PROJECT_DIR. (This already held — `${1:-word}` substitutes on unset OR
 # empty — so this case documents the behavior rather than guarding a fix; it
 # would catch a future rewrite to `${1-word}`, which does NOT substitute on empty.)
 # ---------------------------------------------------------------------------
-# The monitor is armed `when: always`, so it runs in EVERY session — including
-# the vast majority that never touch execute-task. The unarmed report must
-# therefore fire only when a task plausibly EXISTS but its pointer cannot be
-# found; a bare miss in an ordinary repo is a false alarm, and a warning that
-# cries wolf in normal use trains people to ignore the one that matters.
-# (Observed for real: this monitor warned "dead subagents will NOT be reported"
-# in a session that was not running a task at all.)
-t11_run() { # $1 dir -> prints the unarmed-report count (one '未启用：' per message)
-    ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "$1" >"$1/out.txt" 2>&1 &
+t11_run() { # $1 dir [env...] -> prints the number of watchdog lines over several ticks
+    local d="$1"; shift
+    env ZYZ_WATCHDOG_INTERVAL_SEC=1 "$@" bash monitors/watchdog.sh "$d" >"$d/out.txt" 2>&1 &
     local p=$!
     sleep 3
     kill "$p" 2>/dev/null || true
@@ -1255,72 +1255,64 @@ t11_run() { # $1 dir -> prints the unarmed-report count (one '未启用：' per 
     # so the fallback appends a second 0 and the caller's integer comparison dies
     # on "0\n0". Count with grep -c alone and normalize a non-numeric result.
     local n
-    n="$(grep -c '未启用：' "$1/out.txt" 2>/dev/null)"
+    n="$(grep -c . "$d/out.txt" 2>/dev/null)"
     case "$n" in ''|*[!0-9]*) n=0 ;; esac
     printf '%s' "$n"
 }
 t11_base="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t11.XXXXXX")"
 
-# (i) live task dir, pointer missing -> the real issue-#5 bug, must report ONCE.
+# (i) live task dir, no pointer: the old issue-#5 report is gone, with or
+#     without a session id.
 mkdir -p "$t11_base/live/.zyz-worker/tasks/t"
 printf -- '## Metadata\n\n- Current Phase: implementation\n' > "$t11_base/live/.zyz-worker/tasks/t/status.md"
 t11_n="$(t11_run "$t11_base/live")"
-if [ "$t11_n" -eq 1 ]; then
-    pass "T11 unarmed watchdog reports the miss exactly once across several ticks"
+if [ "$t11_n" -eq 0 ]; then
+    pass "T11 no report for an unclaimed live task dir when this session armed nothing"
 else
-    fail "T11 unarmed watchdog reports the miss exactly once" "saw $t11_n '未启用：' lines"
+    fail "T11 no report for an unclaimed live task dir" "saw $t11_n lines: $(head -c 200 "$t11_base/live/out.txt")"
+fi
+t11_n="$(t11_run "$t11_base/live" CLAUDE_CODE_SESSION_ID=cccccccc-t11-plain)"
+if [ "$t11_n" -eq 0 ]; then
+    pass "T11 ... nor for a session with an id"
+else
+    fail "T11 ... nor for a session with an id" "saw $t11_n lines: $(head -c 200 "$t11_base/live/out.txt")"
 fi
 
-# (ii) no .zyz-worker at all -> ordinary session, must stay SILENT.
+# (ii) no .zyz-worker at all -> ordinary session, SILENT.
 mkdir -p "$t11_base/plain"
 t11_n="$(t11_run "$t11_base/plain")"
 if [ "$t11_n" -eq 0 ]; then
-    pass "T11 no unarmed report in a repo that never used the workflow (no false alarm)"
+    pass "T11 silent in a repo that never used the workflow"
 else
-    fail "T11 no unarmed report in a repo that never used the workflow" "saw $t11_n '未启用：' lines"
+    fail "T11 silent in a repo that never used the workflow" "saw $t11_n lines"
 fi
 
-# (iii) task dirs present but all finished -> must stay SILENT (completed tasks
-#       leave their directories behind forever, so their presence is not evidence).
-mkdir -p "$t11_base/finished/.zyz-worker/tasks/old"
-printf -- '## Metadata\n\n- Current Phase: done\n' > "$t11_base/finished/.zyz-worker/tasks/old/status.md"
-t11_n="$(t11_run "$t11_base/finished")"
-if [ "$t11_n" -eq 0 ]; then
-    pass "T11 no unarmed report when every task dir is already done (no false alarm)"
-else
-    fail "T11 no unarmed report when every task dir is already done" "saw $t11_n '未启用：' lines"
-fi
-
-# (iv) same, with a terminal SYNONYM (issue #18 rec 4): the incident's finished
-#      task wrote `delivered`, which the old done-only literal did not recognize
-#      as terminal — its leftover dir would have kept counting as evidence.
-mkdir -p "$t11_base/synonym/.zyz-worker/tasks/old"
-printf -- '## Metadata\n\n- Current Phase: delivered\n' > "$t11_base/synonym/.zyz-worker/tasks/old/status.md"
-t11_n="$(t11_run "$t11_base/synonym")"
-if [ "$t11_n" -eq 0 ]; then
-    pass "T11 no unarmed report when the finished task wrote a terminal synonym (delivered)"
-else
-    fail "T11 no unarmed report when the finished task wrote a terminal synonym (delivered)" "saw $t11_n '未启用：' lines"
-fi
-# Point CLAUDE_PROJECT_DIR at the `live` fixture, not the bare base: the report
-# now requires a plausibly-active task (see the suspicion gate above), so a base
-# with no task dirs would print nothing and the assertion would pass/fail for the
-# wrong reason. The claim under test is only "an empty $1 falls through to
-# CLAUDE_PROJECT_DIR", and the message naming that path is the evidence.
+# (iii)/(iv) task dirs present but all finished (done, or the synonym
+#     `delivered` of issue #18 rec 4) -> SILENT.
+for t11_phase in done delivered; do
+    mkdir -p "$t11_base/finished-$t11_phase/.zyz-worker/tasks/old"
+    printf -- '## Metadata\n\n- Current Phase: %s\n' "$t11_phase" > "$t11_base/finished-$t11_phase/.zyz-worker/tasks/old/status.md"
+    t11_n="$(t11_run "$t11_base/finished-$t11_phase")"
+    if [ "$t11_n" -eq 0 ]; then
+        pass "T11 silent when every task dir is finished ($t11_phase)"
+    else
+        fail "T11 silent when every task dir is finished ($t11_phase)" "saw $t11_n lines"
+    fi
+done
+# The empty-$1 fall-through, observed through a report about a task the
+# fixture arms (no session id in this suite -> the legacy pointer): the line
+# names the status file under CLAUDE_PROJECT_DIR.
 t11_dir="$t11_base/live"
-t11_out="$t11_base/live/out.txt"
+printf 't\n' > "$t11_dir/.zyz-worker/current-task"
+touch -t 202001010000 "$t11_dir/.zyz-worker/tasks/t/status.md"
 t11_out2="$t11_base/out2.txt"
-CLAUDE_PROJECT_DIR="$t11_dir" ZYZ_WATCHDOG_INTERVAL_SEC=1 bash monitors/watchdog.sh "" >"$t11_out2" 2>&1 &
-t11_pid2=$!
-sleep 2
-kill "$t11_pid2" 2>/dev/null || true
-wait "$t11_pid2" 2>/dev/null || true
-if grep -qF "无法从 $t11_dir 解析到" "$t11_out2" 2>/dev/null; then
+CLAUDE_PROJECT_DIR="$t11_dir" ZYZ_WATCHDOG_ONCE=1 ZYZ_WATCHDOG_STATUS_STALE_SEC=1 bash monitors/watchdog.sh "" >"$t11_out2" 2>&1
+if grep -qF "$t11_dir/.zyz-worker/tasks/t/status.md" "$t11_out2" 2>/dev/null; then
     pass "T11 empty positional arg falls through to CLAUDE_PROJECT_DIR (not \$PWD)"
 else
     fail "T11 empty positional arg falls through to CLAUDE_PROJECT_DIR" "$(head -c 200 "$t11_out2" 2>/dev/null)"
 fi
-rm -rf "$t11_dir"
+rm -rf "$t11_base"
 
 # ---------------------------------------------------------------------------
 # T9  Watchdog-audit regression guards. Three defects found by audit and each
@@ -1357,7 +1349,8 @@ fi
 # `done` — the incident's task wrote `delivered`, so `*deliver*` classified a
 # FINISHED task as active and the staleness machinery nagged it forever, which
 # is what pushed that session to delete its pointer. zyz_task_is_done must
-# recognize the same synonym set (it gates the unarmed-suspicion report).
+# recognize the same synonym set (it decides whether a session still has an
+# open task, which gates the watchdog's API-failure scan).
 t9_done="$(
     . hooks/scripts/lib.sh 2>/dev/null || exit 0
     d="$(mktemp -d "${TMPDIR:-/tmp}/zyz-t9done.XXXXXX")"

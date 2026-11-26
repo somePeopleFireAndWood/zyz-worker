@@ -19,10 +19,12 @@
 # - arm appends the task dir's absolute path to
 #   `<dir>/.zyz-worker/sessions/<session-id>` (one task per line; arming an
 #   already-listed task is a no-op). Without a session id it falls back to the
-#   legacy shared `<dir>/.zyz-worker/current-task` and says so on stderr.
+#   legacy shared `<dir>/.zyz-worker/current-task` and says so on stderr; the
+#   hooks read that file only when they too have no session id.
 # - disarm removes that task's line (and the file once it is empty).
 # - show prints the session id, the pointer file, and every task dir the hooks
-#   resolve for this session (the same zyz_task_roots the hooks call).
+#   resolve for this session (the same zyz_task_roots the hooks call), plus a
+#   leftover current-task the session ignores.
 #
 # ## Session id
 #
@@ -142,6 +144,10 @@ if [ "$cmd" = show ]; then
     fi
     printf 'tasks:\n'
     ZYZ_HOOK_INPUT="" ZYZ_SESSION_ID="$primary" zyz_task_roots "$base" | sed 's/^/  /'
+    if [ -n "$primary" ] && [ -f "$base/.zyz-worker/current-task" ]; then
+        printf 'ignored: %s -> %s (the legacy shared pointer is read only when no session id is available; arm the task if it is this session'"'"'s)\n' \
+            "$base/.zyz-worker/current-task" "$(head -n1 "$base/.zyz-worker/current-task" 2>/dev/null)"
+    fi
     exit 0
 fi
 
@@ -178,7 +184,7 @@ if [ -z "$sids" ]; then
     if [ "$cmd" = arm ]; then
         mkdir -p "$base/.zyz-worker" || exit 2
         zyz_write_atomic "$base/.zyz-worker/current-task" "$task_dir"
-        echo "task-pointer: no session id available; wrote the legacy shared pointer $base/.zyz-worker/current-task — another session armed in this dir will overwrite it" >&2
+        echo "task-pointer: no session id available; wrote the legacy shared pointer $base/.zyz-worker/current-task — another session armed in this dir will overwrite it, and hooks that do see a session id ignore it (confirm the layer is armed)" >&2
         printf 'armed: %s -> %s\n' "$base/.zyz-worker/current-task" "$task_dir"
     else
         if [ "$(zyz_resolve_pointer_at "$base")" = "$task_dir" ]; then

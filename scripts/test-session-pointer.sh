@@ -10,12 +10,19 @@
 #
 # Test groups:
 #   S1  resolver: own pointer only, multi-line, dangling lines, fallback order
-#       (session -> current-task -> $ZYZ_TASK_DIR), still no search (#18)
+#       (session pointer -> $ZYZ_TASK_DIR with a session id; current-task ->
+#       $ZYZ_TASK_DIR only without one), still no search (#18)
 #   S2  hooks: two sessions in one dir only touch their own task
 #       (heartbeat/main-state, status-freshness, Stop gate, notify, scope guard)
-#   S3  watchdog: per-session scan, multi-task reports, live Claude registry id,
-#       unarmed check ignores tasks other sessions claim
-#   S4  legacy: a session without a session pointer behaves exactly as before
+#   S3  watchdog: per-session scan, multi-task reports, live Claude registry id
+#   S4  legacy: a session without ANY session id still follows current-task;
+#       one with an id never does
+#   S9  a session that never armed is completely silent — every hook, the
+#       watchdog and the IM — next to another session's task, an orphaned
+#       live task and a leftover current-task (the 11-04 tipsy-ab-config
+#       incident); positive controls in the same directory
+#   S10 the narrowed not-armed hint (status-freshness.sh): only the main
+#       agent's own repeated status.md edits are evidence
 #   S5  task-pointer.sh: arm/disarm/show, idempotence, legacy fallback
 #   S6  Codex: start-watchdog.sh hands the payload session_id to the watchdog
 #
@@ -23,6 +30,24 @@
 # verified by hand on Claude Code 2.1.251 and codex-cli 0.151.0 (hook payload
 # session_id equals $CLAUDE_CODE_SESSION_ID / $CODEX_THREAD_ID, and stays the
 # PARENT id inside subagent hooks); the hook payloads here are synthetic.
+#
+# Mutation record (S9/S10 change, each mutant applied to an out-of-tree rsync
+# copy and run against this suite; W1 also against test-watchdog-hooks.sh):
+# 13 targeted mutants, 12 killed.
+#  * lib.sh zyz_task_roots — current-task read with a session id (L1);
+#    $ZYZ_TASK_DIR branch dropped (L2).
+#  * watchdog.sh — the old directory-based "未启用" report restored (W1).
+#  * status-freshness.sh unarmed_hint — first edit hints at once (H1); subagent
+#    edits count (H2); Bash / Read count (H3); said every time (H4); finished
+#    tasks hint (H5); any `status.md` whose parent is not `.zyz-worker/tasks`
+#    counts (H6, first survived: the negative checks edited once and a first
+#    edit is always silent — they now edit twice with no grace); grace period
+#    ignored (H7); hint given to an armed session (H8).
+#  * task-pointer.sh show — the `ignored:` line dropped (T1).
+#  * Equivalent, recorded rather than hidden: H9 drops the `*/status.md` file
+#    name check. A non-status.md file then passes only when it sits directly
+#    under `.zyz-worker/tasks/`, and its marker dir would live under a regular
+#    file, so `mkdir -p` fails and the hook stays silent (S10 README.md case).
 #
 # Usage: bash scripts/test-session-pointer.sh
 # Exits 0 when every check passes, 1 otherwise. macOS bash 3.2 + Linux bash.
@@ -121,13 +146,19 @@ out="$(env ZYZ_SESSION_ID="$SA" bash -c '. "$1/lib.sh" && zyz_task_root "$2"' _ 
 check "S1 zyz_task_root is the first pointer line (primary task)" "$([ "$out" = "$TA" ]; echo $?)" "got [$out]"
 
 out="$(resolve "$D" ZYZ_SESSION_ID="cccccccc-no-pointer")"
-check "S1 own session pointer missing -> legacy current-task" "$([ "$out" = "$TL" ]; echo $?)" "got [$out]"
+check "S1 a session id without its own pointer never reads the shared current-task" "$([ -z "$out" ]; echo $?)" "got [$out]"
+out="$(resolve "$D" ZYZ_HOOK_INPUT="{\"session_id\":\"cccccccc-no-pointer\"}")"
+check "S1 ... same for a hook payload session_id" "$([ -z "$out" ]; echo $?)" "got [$out]"
 point "$D" "dangling-only" "nonexistent-task"
 out="$(resolve "$D" ZYZ_SESSION_ID="dangling-only")"
-check "S1 session pointer with only dangling lines -> legacy current-task" "$([ "$out" = "$TL" ]; echo $?)" "got [$out]"
-rm -f "$D/.zyz-worker/current-task"
+check "S1 session pointer with only dangling lines -> empty, not current-task" "$([ -z "$out" ]; echo $?)" "got [$out]"
+out="$(resolve "$D")"
+check "S1 no session id at all -> legacy current-task" "$([ "$out" = "$TL" ]; echo $?)" "got [$out]"
+out="$(resolve "$D" ZYZ_TASK_DIR="$TB")"
+check "S1 no session id: current-task still precedes \$ZYZ_TASK_DIR" "$([ "$out" = "$TL" ]; echo $?)" "got [$out]"
 out="$(resolve "$D" ZYZ_SESSION_ID="cccccccc-no-pointer" ZYZ_TASK_DIR="$TB")"
-check "S1 no session pointer, no current-task -> \$ZYZ_TASK_DIR" "$([ "$out" = "$TB" ]; echo $?)" "got [$out]"
+check "S1 session id, no pointer -> \$ZYZ_TASK_DIR (per process), current-task skipped" "$([ "$out" = "$TB" ]; echo $?)" "got [$out]"
+rm -f "$D/.zyz-worker/current-task"
 out="$(resolve "$D" ZYZ_SESSION_ID="cccccccc-no-pointer")"; rc=$?
 check "S1 other sessions' pointers are never searched (#18): empty, rc 0" \
     "$([ -z "$out" ] && [ "$rc" -eq 0 ]; echo $?)" "out=[$out] rc=$rc"
@@ -254,31 +285,8 @@ out="$(wd_once "$D" CLAUDE_CODE_SESSION_ID="$SA")"
 check "S3 multi-task pointer: per-task main-state suppression" \
     "$(printf '%s' "$out" | grep -qF "t1/status.md" && ! printf '%s' "$out" | grep -qF "t2/status.md"; echo $?)" "got [$out]"
 
-# Unarmed check: tasks other sessions claim are not evidence of a lost pointer.
-wd_unarmed() { # <base> [env...] -> count of unarmed reports over a few ticks
-    local b="$1" p n; shift
-    env ZYZ_WATCHDOG_INTERVAL_SEC=1 "$@" bash "$WD" "$b" > "$TMP/unarmed.out" 2>&1 &
-    p=$!
-    sleep 3
-    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    n="$(grep -c '未启用：' "$TMP/unarmed.out" 2>/dev/null)"
-    case "$n" in ''|*[!0-9]*) n=0 ;; esac
-    printf '%s' "$n"
-}
-D="$TMP/s3u"
-mk_task "$D" ta implementation
-mk_task "$D" tb implementation
-point "$D" "$SA" ta
-point "$D" "$SB" "$D/.zyz-worker/tasks/tb"
-n="$(wd_unarmed "$D" CLAUDE_CODE_SESSION_ID="cccccccc-plain-session")"
-check "S3 a third session is not told it is unarmed by tasks A and B own" "$([ "$n" -eq 0 ]; echo $?)" "saw $n"
-mk_task "$D" orphan implementation
-n="$(wd_unarmed "$D" CLAUDE_CODE_SESSION_ID="cccccccc-plain-session")"
-check "S3 an unclaimed live task still reports unarmed exactly once" "$([ "$n" -eq 1 ]; echo $?)" "saw $n"
-check "S3 the unarmed report names the per-session pointer" "$(grep -qF '.zyz-worker/sessions/<session-id>' "$TMP/unarmed.out"; echo $?)"
-
 # ---------------------------------------------------------------------------
-# S4  legacy sessions: only current-task, behavior unchanged
+# S4  legacy sessions: current-task arms only a session without any id
 # ---------------------------------------------------------------------------
 D="$TMP/s4"
 mk_task "$D" old implementation
@@ -288,9 +296,11 @@ hook heartbeat.sh "{\"cwd\":\"$D\",\"hook_event_name\":\"PostToolUse\",\"tool_na
 check "S4 payload without session_id: current-task still arms the heartbeat" "$([ "$(state_of "$TO")" = working ]; echo $?)"
 rm -f "$TO/runtime/main-state"
 hook heartbeat.sh "{\"cwd\":\"$D\",\"session_id\":\"$SA\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\"}" >/dev/null
-check "S4 session id without a session pointer: current-task still arms the heartbeat" "$([ "$(state_of "$TO")" = working ]; echo $?)"
+check "S4 a session with an id but no pointer is never armed through current-task" "$([ ! -e "$TO/runtime/main-state" ]; echo $?)" "state=[$(state_of "$TO")]"
 out="$(wd_once "$D")"
 check "S4 watchdog without any session id still follows current-task" "$(printf '%s' "$out" | grep -qF "$TO/status.md"; echo $?)" "got [$out]"
+out="$(wd_once "$D" CLAUDE_CODE_SESSION_ID="$SA")"
+check "S4 watchdog with a session id ignores current-task" "$([ -z "$out" ]; echo $?)" "got [$out]"
 
 # ---------------------------------------------------------------------------
 # S5  task-pointer.sh
@@ -322,6 +332,14 @@ check "S5 arm of a missing task dir fails with rc 2" "$([ "$rc" -eq 2 ]; echo $?
 out="$(cd "$D" && ZYZ_SESSION_ID="$SA" "$TP" session-id)"
 check "S5 \$ZYZ_SESSION_ID overrides the harness id" "$([ "$out" = "$SA" ]; echo $?)" "got [$out]"
 
+# show names a leftover current-task the session ignores.
+printf 't1\n' > "$D/.zyz-worker/current-task"
+out="$(cd "$D" && ZYZ_SESSION_ID="$SA" "$TP" show)"
+check "S5 show flags a leftover current-task as ignored for a session with an id" \
+    "$(printf '%s' "$out" | grep -qF "ignored: $D/.zyz-worker/current-task -> t1"; echo $?)" "got [$out]"
+check "S5 ... and does not list its task among the session's tasks" "$(! printf '%s' "$out" | grep -qxF "  $D/.zyz-worker/tasks/t1"; echo $?)" "got [$out]"
+rm -f "$D/.zyz-worker/current-task"
+
 # Legacy fallback: no id anywhere (env cleared, empty registry).
 D="$TMP/s5l"
 mk_task "$D" t1 implementation
@@ -346,6 +364,173 @@ log="$TMP/s6tmp/zyz-worker-codex-watchdog-$SB.log"
 i=0; while [ "$i" -lt 50 ] && ! grep -q '分钟没有更新' "$log" 2>/dev/null; do sleep 0.1; i=$((i+1)); done
 check "S6 Codex watchdog scans the payload session's task" "$(grep -qF "tb/status.md" "$log" 2>/dev/null; echo $?)" "log=[$(cat "$log" 2>/dev/null)]"
 check "S6 Codex watchdog ignores a Claude id leaked into its env" "$(! grep -qF "ta/status.md" "$log" 2>/dev/null; echo $?)" "log=[$(cat "$log" 2>/dev/null)]"
+
+# ---------------------------------------------------------------------------
+# S9  a session that never armed is completely silent (11-04 incident)
+#
+# The tipsy-ab-config session a07d11fb never ran execute-task, yet received
+# five watchdog wake-ups (one misjudging another session's task as stuck) until
+# the user had its watchdog killed: the directory's shared current-task pointed
+# at a live task of ANOTHER session. Every task-touching surface is driven here
+# with a plain session id next to three tasks it does not own — one armed by
+# session A, one orphaned but unfinished, and the target of a leftover
+# current-task — and must produce nothing: no injection, no Stop block, no
+# watchdog line (the old "未启用" report included), no IM, no file written
+# under any task. Positive controls in the same directory prove each surface
+# still fires for its owner.
+# ---------------------------------------------------------------------------
+SP="cccccccc-3333-4333-8333-plainsession"
+D="$TMP/s9"
+mk_task "$D" owned implementation
+mk_task "$D" orphan implementation
+mk_task "$D" legacy implementation
+printf -- '\n## SubTasks\n\n- SubTask ID: ST1\n- Committed:\n' >> "$D/.zyz-worker/tasks/legacy/status.md"
+touch -t 202001010000 "$D/.zyz-worker/tasks/legacy/status.md"
+point "$D" "$SA" owned
+printf 'legacy\n' > "$D/.zyz-worker/current-task"
+TOWN="$D/.zyz-worker/tasks/owned"
+S9CAP="$TMP/s9-im.log"
+printf '{"enabled":true,"command":"printf \\"%%s|%%s\\\\n\\" \\"$ZYZ_NOTIFY_EVENT\\" \\"$ZYZ_NOTIFY_TASK_ID\\" >> %s","cooldown_sec":0}\n' "$S9CAP" > "$TMP/s9-notify.json"
+: > "$S9CAP"
+plain() { # <script> <json-tail> -> stdout of the hook for the plain session
+    printf '{"cwd":"%s","session_id":"%s",%s}' "$D" "$SP" "$2" \
+        | ZYZ_NOTIFY_CONFIG="$TMP/s9-notify.json" ZYZ_NOTIFY_ASK_DELAY_SEC=0 ZYZ_STATUS_STALE_SEC=1 \
+            ZYZ_STOP_STATUS_STALE_SEC=1 ZYZ_STOP_GATE_COOLDOWN_SEC=0 ZYZ_POSTFLUSH_STALE_SEC=1 \
+            bash "$H/$1" 2>/dev/null
+}
+s9_out=""
+s9_out="$s9_out$(plain heartbeat.sh '"hook_event_name":"PreToolUse","tool_name":"Bash"')"
+s9_out="$s9_out$(plain heartbeat.sh '"hook_event_name":"PostToolUse","tool_name":"Bash"')"
+s9_out="$s9_out$(plain heartbeat.sh '"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"A or B?"}]}')"
+s9_out="$s9_out$(plain main-state.sh '"hook_event_name":"UserPromptSubmit","prompt":"hi"')"
+s9_out="$s9_out$(plain status-freshness.sh '"hook_event_name":"PostToolUse","tool_name":"Bash"')"
+s9_out="$s9_out$(plain post-agent-flush.sh '"hook_event_name":"PostToolUse","tool_name":"Agent","tool_response":{"status":"completed"}')"
+s9_out="$s9_out$(plain dispatch-scope-guard.sh '"hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"subagent_type":"review-agent","prompt":"Report only the top 3 findings."}')"
+s9_out="$s9_out$(plain checkout-guard.sh '"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git checkout main"}')"
+s9_out="$s9_out$(plain subagent-track.sh '"hook_event_name":"SubagentStart","agent_id":"sub-9","agent_type":"zyz-worker:test-agent"')"
+s9_out="$s9_out$(plain stop-gate-subagent.sh '"hook_event_name":"SubagentStop","stop_hook_active":false,"agent_id":"sub-9","agent_type":"zyz-worker:test-agent","agent_transcript_path":"/nonexistent","last_assistant_message":"waiting for the notification"')"
+s9_out="$s9_out$(plain api-failure.sh '"hook_event_name":"StopFailure","agent_id":"sub-9","error":"rate_limit"')"
+s9_out="$s9_out$(plain stop-gate-main.sh '"hook_event_name":"Stop","stop_hook_active":false,"background_tasks":[],"session_crons":[]')"
+s9_out="$s9_out$(plain main-state.sh '"hook_event_name":"Stop"')"
+s9_out="$s9_out$(plain notify.sh '"hook_event_name":"Notification","notification_type":"permission_prompt","message":"allow?"')"
+s9_out="$s9_out$(plain notify.sh '"hook_event_name":"StopFailure","error":"billing_error"')"
+s9_out="$s9_out$(plain notify.sh '"hook_event_name":"SessionEnd","reason":"exit"')"
+sleep 1.2
+check "S9 no hook says anything to a never-armed session (injection, deny, block)" "$([ -z "$s9_out" ]; echo $?)" "got [$s9_out]"
+s9_files="$(find "$D/.zyz-worker/tasks" -path '*/runtime*' 2>/dev/null | head -5)"
+check "S9 no hook writes under any task dir for it (heartbeat, main-state, snapshots, records)" "$([ -z "$s9_files" ]; echo $?)" "found [$s9_files]"
+check "S9 no hook pages the user for it" "$([ ! -s "$S9CAP" ]; echo $?)" "im=[$(cat "$S9CAP")]"
+
+s9_wd=""
+for _ in 1 2 3; do
+    s9_wd="$s9_wd$(env ZYZ_WATCHDOG_ONCE=1 ZYZ_WATCHDOG_STATUS_STALE_SEC=1 ZYZ_WATCHDOG_COOLDOWN_SEC=0 \
+        ZYZ_WATCHDOG_SILENCE_SEC=1 ZYZ_WATCHDOG_NO_EXECUTOR_SEC=1 ZYZ_WATCHDOG_ESCALATE_SEC=0 \
+        ZYZ_NOTIFY_CONFIG="$TMP/s9-notify.json" CLAUDE_CODE_SESSION_ID="$SP" bash "$WD" "$D" 2>&1)"
+done
+sleep 1
+check "S9 the watchdog of a never-armed session prints nothing over several ticks (no 未启用 either)" \
+    "$([ -z "$s9_wd" ]; echo $?)" "got [$s9_wd]"
+check "S9 ... writes nothing and pages nobody" \
+    "$([ -z "$(find "$D/.zyz-worker/tasks" -path '*/runtime*' 2>/dev/null | head -1)" ] && [ ! -s "$S9CAP" ]; echo $?)" "im=[$(cat "$S9CAP")]"
+out="$(cd "$D" && ZYZ_SESSION_ID="$SP" "$TP" show)"
+check "S9 task-pointer.sh show lists no task for it and flags the leftover current-task" \
+    "$(! printf '%s\n' "$out" | grep -q '^  /' && printf '%s' "$out" | grep -q '^ignored: '; echo $?)" "got [$out]"
+
+# Positive controls: the same surfaces still fire for the session that owns
+# a task here, and for a session without any id (legacy current-task).
+out="$(printf '{"cwd":"%s","session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"background_tasks":[],"session_crons":[]}' "$D" "$SA" \
+    | ZYZ_STOP_STATUS_STALE_SEC=1 ZYZ_STOP_GATE_COOLDOWN_SEC=0 bash "$H/stop-gate-main.sh" 2>/dev/null)"
+check "S9 control: the owning session's Stop is still blocked on its own task" \
+    "$(printf '%s' "$out" | grep -q '"decision":"block"' && printf '%s' "$out" | grep -qF "$TOWN/status.md" && ! printf '%s' "$out" | grep -qF 'tasks/legacy'; echo $?)" "got [$out]"
+out="$(env ZYZ_WATCHDOG_ONCE=1 ZYZ_WATCHDOG_STATUS_STALE_SEC=1 ZYZ_WATCHDOG_COOLDOWN_SEC=0 CLAUDE_CODE_SESSION_ID="$SA" bash "$WD" "$D" 2>/dev/null)"
+check "S9 control: the owning session's watchdog still reports its own task, only it" \
+    "$(printf '%s' "$out" | grep -qF "$TOWN/status.md" && ! printf '%s' "$out" | grep -qF 'tasks/legacy' && ! printf '%s' "$out" | grep -qF 'tasks/orphan'; echo $?)" "got [$out]"
+printf '{"cwd":"%s","session_id":"%s","hook_event_name":"Notification","notification_type":"permission_prompt","message":"allow?"}' "$D" "$SA" \
+    | ZYZ_NOTIFY_CONFIG="$TMP/s9-notify.json" bash "$H/notify.sh" >/dev/null 2>&1
+i=0; while [ ! -s "$S9CAP" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+check "S9 control: the IM capture works (the owning session's permission prompt pages)" \
+    "$(grep -q '^needs_input|owned$' "$S9CAP"; echo $?)" "im=[$(cat "$S9CAP")]"
+hook heartbeat.sh "{\"cwd\":\"$D\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\"}" >/dev/null
+check "S9 control: a payload without any session id still arms through current-task" \
+    "$([ "$(state_of "$D/.zyz-worker/tasks/legacy")" = working ]; echo $?)"
+
+# ---------------------------------------------------------------------------
+# S10  the not-armed hint needs this session's own evidence
+#
+# The watchdog no longer guesses from the directory. The one remaining hint is
+# injected by status-freshness.sh when the main agent itself keeps editing a
+# live task's status.md while no pointer of its own resolves: the first edit
+# only stamps runtime/nag/unarmed-<sid> (a normal start writes status.md a few
+# seconds before arming), an edit ZYZ_UNARMED_GRACE_SEC (300) later says it
+# once.
+# ---------------------------------------------------------------------------
+D="$TMP/s10"
+mk_task "$D" mine implementation
+mk_task "$D" fin done
+TM="$D/.zyz-worker/tasks/mine"
+MARK="$TM/runtime/nag/unarmed-$SP"
+edit() { # <session-id> <tool> <file> [extra-json] -> hook stdout
+    printf '{"cwd":"%s","session_id":"%s","hook_event_name":"PostToolUse","tool_name":"%s","tool_input":{"file_path":"%s"}%s}' \
+        "$D" "$1" "$2" "$3" "${4:-}" | bash "$H/status-freshness.sh" 2>/dev/null
+}
+is_hint() { printf '%s' "$1" | grep -q 'hooks 解析不到本会话的任务指针'; }
+age_mark() { printf '%s\n' "$(( $(date +%s) - $1 ))" > "$MARK"; }
+# A negative check edits twice with no grace period: the first edit of a file
+# that WOULD count stamps silently, the second would hint — so a check that
+# stays silent here proves the file is not evidence, not that it was a first edit.
+edit2() { ZYZ_UNARMED_GRACE_SEC=0 edit "$@" >/dev/null; ZYZ_UNARMED_GRACE_SEC=0 edit "$@"; }
+
+out="$(edit "$SP" Edit "$TM/status.md")"
+check "S10 first status edit of an unarmed session: silent, stamps the marker" \
+    "$([ -z "$out" ] && [ -s "$MARK" ]; echo $?)" "out=[$out] mark=[$(cat "$MARK" 2>/dev/null)]"
+out="$(edit "$SP" Edit "$TM/status.md")"
+check "S10 an edit inside the grace period stays silent (normal start arms within seconds)" "$([ -z "$out" ]; echo $?)" "got [$out]"
+age_mark 400
+out="$(edit "$SP" Write "$TM/status.md")"
+check "S10 an edit past the grace period, still unarmed: the hint" "$(is_hint "$out"; echo $?)" "got [$out]"
+check "S10 the hint names the task-pointer.sh arm command for that task" \
+    "$(printf '%s' "$out" | grep -qF "task-pointer.sh arm $TM" && printf '%s' "$out" | grep -q '属于另一个会话'; echo $?)" "got [$out]"
+check "S10 the hint is PostToolUse additionalContext" "$(printf '%s' "$out" | grep -q '"hookEventName":"PostToolUse"'; echo $?)" "got [$out]"
+out="$(edit "$SP" MultiEdit "$TM/status.md")"
+check "S10 the hint is said once per session per task" "$([ -z "$out" ]; echo $?)" "got [$out]"
+
+age_mark 400
+for t in Bash Read; do
+    out="$(edit "$SP" "$t" "$TM/status.md")"
+    check "S10 a $t call naming status.md is no evidence" "$([ -z "$out" ]; echo $?)" "got [$out]"
+done
+out="$(edit "$SP" Edit "$TM/status.md" ',"agent_id":"sub-1","agent_type":"zyz-worker:implementation-agent"')"
+check "S10 a subagent's status edit is no evidence (only the main agent arms)" "$([ -z "$out" ]; echo $?)" "got [$out]"
+out="$(edit2 "$SP" Edit "$TM/design.md")"
+check "S10 editing another file of the task dir is no evidence" "$([ -z "$out" ]; echo $?)" "got [$out]"
+mkdir -p "$TM/subtasks/st1"; printf 'x\n' > "$TM/subtasks/st1/status.md"
+out="$(edit2 "$SP" Edit "$TM/subtasks/st1/status.md")"
+check "S10 a SubTask's status.md deeper in the task dir is no evidence" "$([ -z "$out" ]; echo $?)" "got [$out]"
+mkdir -p "$D/notes"; printf 'x\n' > "$D/notes/status.md"
+out="$(edit2 "$SP" Edit "$D/notes/status.md")"
+check "S10 a status.md outside .zyz-worker/tasks/<id>/ is no evidence" "$([ -z "$out" ]; echo $?)" "got [$out]"
+printf 'x\n' > "$D/.zyz-worker/tasks/README.md"
+out="$(edit2 "$SP" Edit "$D/.zyz-worker/tasks/README.md")"
+check "S10 a file directly under .zyz-worker/tasks/ is no evidence" "$([ -z "$out" ]; echo $?)" "got [$out]"
+mkdir -p "$D/.zyz-worker/tasks/fin/runtime/nag"
+printf '%s\n' "$(( $(date +%s) - 400 ))" > "$D/.zyz-worker/tasks/fin/runtime/nag/unarmed-$SP"
+out="$(edit "$SP" Edit "$D/.zyz-worker/tasks/fin/status.md")"
+check "S10 a finished task needs no watchdog: no hint" "$([ -z "$out" ]; echo $?)" "got [$out]"
+out="$(edit "$SP" Edit "$TM/status.md")"
+check "S10 control: the same edit past the grace period does hint" "$(is_hint "$out"; echo $?)" "got [$out]"
+
+rm -rf "$TM/runtime"
+point "$D" "$SA" mine
+out="$(edit "$SA" Edit "$TM/status.md")$(edit "$SA" Edit "$TM/status.md")"
+check "S10 an armed session never gets the hint, and stamps no marker" \
+    "$(! is_hint "$out" && [ ! -e "$TM/runtime/nag/unarmed-$SA" ]; echo $?)" "got [$out]"
+SO="dddddddd-4444-4444-8444-othersession"
+edit "$SO" Edit "$TM/status.md" >/dev/null
+printf '%s\n' "$(( $(date +%s) - 400 ))" > "$TM/runtime/nag/unarmed-$SO"
+out="$(ZYZ_UNARMED_GRACE_SEC=3600 edit "$SO" Edit "$TM/status.md")"
+check "S10 ZYZ_UNARMED_GRACE_SEC widens the grace period" "$([ -z "$out" ]; echo $?)" "got [$out]"
+out="$(edit "$SO" Edit "$TM/status.md")"
+check "S10 ... and the default 300 s has passed for the same marker" "$(is_hint "$out"; echo $?)" "got [$out]"
 
 # ---------------------------------------------------------------------------
 # S8  subagent findings name no owning task in a multi-task session
