@@ -10,7 +10,8 @@
 # Why: a reviewer from a different product has different blind spots. Its
 # report is ADVISORY — the execute-task workflow verifies every cross-harness
 # finding independently before accepting it and may reject any of them with a
-# recorded reason (see skills/execute-task/SKILL.md `## Cross-Harness Review`).
+# recorded reason (see skills/execute-task/SKILL.md `## 跨 harness 交叉评审` and
+# skills/execute-task/references/cross-harness.md).
 # This script only launches the sessions and captures their reports; it never
 # adjudicates anything.
 #
@@ -20,7 +21,20 @@
 #             (empty list = no other harness available, or disabled).
 #   cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate>
 #                       --brief <file> [--label <label>] [--cwd <dir>]
+#                       [--point <id>] [--round <n>] [--mode full|incremental]
 #     Launches every selected reviewer CONCURRENTLY and waits for all of them.
+#     --point/--round/--mode are the review-round.sh round this run belongs to
+#     (copy them from `review-round.sh start`'s output). An incremental round
+#     (--mode incremental) of an impl review point (the point's `stage=impl`
+#     row in <task-dir>/status.md, else --kind implementation) runs without
+#     cross-harness review (design §10.4, §10.7): nothing is launched and
+#     stdout is
+#       cross-review status=skipped reason=incremental-round point=<id> round=<n>
+#     unless ZYZ_CROSS_REVIEW_FORCE=1. A full impl round — round 1, or one
+#     opened with `start --full` — is --mode full and runs. Without --mode
+#     (older callers) the mode is inferred: round >= 2 is incremental unless
+#     the point's row for that round says mode=full. --point/--round are
+#     otherwise only recorded (meta file, default label).
 #     Per reviewer, under <task-dir>/reviews/cross/:
 #       <label>.<harness>.md          the reviewer's final report (captured)
 #       <label>.<harness>.jsonl       full event stream (for a lost/empty report)
@@ -43,6 +57,7 @@
 #                               names are dropped with a warning)
 #     ZYZ_AGENT_RUNTIME         host override (claude|codex), same knob the
 #                               orchestration adapter uses for detection
+#     ZYZ_CROSS_REVIEW_FORCE    1 = run even an incremental impl round
 #     ZYZ_CROSS_REVIEW_TIMEOUT  seconds per reviewer, default 2400
 #     ZYZ_CROSS_REVIEW_MCP      MCP inheritance for the reviewer session, same
 #                               values as ZYZ_WORKER_MCP; default none (zero
@@ -69,7 +84,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   cross-review.sh detect
-  cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <label>] [--cwd <dir>]
+  cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <label>] [--cwd <dir>] [--point <id>] [--round <n>] [--mode full|incremental]
 EOF
 }
 
@@ -119,17 +134,23 @@ sha256_stdin() {
     fi
 }
 
-# tree_fingerprint <dir> — hash of the working tree's uncommitted state
-# (tracked diff vs HEAD + untracked non-ignored files), excluding the
-# `.zyz-worker/` task artifacts that the workflow itself keeps writing.
-# Prints `n/a` outside a git work tree.
+# tree_fingerprint <dir> [<task-dir>] — hash of the working tree's uncommitted
+# state (tracked diff vs HEAD + untracked non-ignored files), excluding the
+# `.zyz-worker/` task artifacts and the task dir wherever it lives: the
+# workflow itself keeps writing status.md while the review runs, and that is
+# not "the reviewed tree changed". Prints `n/a` outside a git work tree.
 tree_fingerprint() {
-    local dir="$1"
+    local dir="$1" task="${2:-}"
+    local -a ex
+    ex=(':(exclude).zyz-worker')
+    case "$task" in
+        "$dir"/?*) ex+=(":(exclude)${task#"$dir"/}") ;;
+    esac
     git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { printf 'n/a\n'; return 0; }
     {
         git -C "$dir" rev-parse HEAD 2>/dev/null
-        git -C "$dir" diff HEAD --binary -- . ':(exclude).zyz-worker' 2>/dev/null
-        git -C "$dir" ls-files -o --exclude-standard -z -- . ':(exclude).zyz-worker' 2>/dev/null |
+        git -C "$dir" diff HEAD --binary -- . "${ex[@]}" 2>/dev/null
+        git -C "$dir" ls-files -o --exclude-standard -z -- . "${ex[@]}" 2>/dev/null |
             while IFS= read -r -d '' f; do
                 printf '%s\n' "$f"
                 [ -f "$dir/$f" ] && cat "$dir/$f"
@@ -280,7 +301,7 @@ run_one() {
     [ "${ZYZ_CROSS_REVIEW_MCP:-none}" = "inherit" ] && mcp_mode="inherit"
 
     started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    fp_start="$(tree_fingerprint "$cwd")"
+    fp_start="$(tree_fingerprint "$cwd" "$task_dir")"
     cmd=(); while IFS= read -r -d '' x; do cmd+=("$x"); done < <(build_cmd "$harness" "$cwd" "$task_dir" "$report" 1)
     launch_and_wait "$cwd" "$prompt" "$log" "$err" "$timeout" "${cmd[@]}"
     # Defensive: if codex still refuses to load its config with the MCP
@@ -297,7 +318,7 @@ run_one() {
     fi
     rc="$LAUNCH_RC"; timed_out="$LAUNCH_TIMED_OUT"
     finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    fp_end="$(tree_fingerprint "$cwd")"
+    fp_end="$(tree_fingerprint "$cwd" "$task_dir")"
 
     if [ "$harness" = "claude" ] && [ -s "$log" ]; then
         extract_claude_result "$log" > "$report"
@@ -321,6 +342,7 @@ run_one() {
     {
         printf 'harness=%s\nhost=%s\nkind=%s\nlabel=%s\ncwd=%s\n' "$harness" "$host" "$kind" "$label" "$cwd"
         printf 'status=%s\nrc=%s\nstarted=%s\nfinished=%s\nmcp=%s\n' "$status" "$rc" "$started" "$finished" "$mcp_mode"
+        [ -z "${XR_REVIEW_META:-}" ] || printf '%s' "$XR_REVIEW_META"
         printf 'tree-fingerprint-start=%s\ntree-fingerprint-end=%s\ntree-stable=%s\n' "$fp_start" "$fp_end" "$stable"
         printf 'report=%s\nlog=%s\nstderr=%s\nprompt=%s\n' "$report" "$log" "$err" "$prompt"
     } > "$meta"
@@ -329,7 +351,7 @@ run_one() {
 }
 
 cmd_run() {
-    local task_dir="" kind="" brief="" label="" cwd="$PWD"
+    local task_dir="" kind="" brief="" label="" cwd="$PWD" point="" round="" mode=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --task-dir) task_dir="${2:-}"; shift 2 ;;
@@ -337,6 +359,9 @@ cmd_run() {
             --brief) brief="${2:-}"; shift 2 ;;
             --label) label="${2:-}"; shift 2 ;;
             --cwd) cwd="${2:-}"; shift 2 ;;
+            --point) [ "$#" -ge 2 ] || { echo "error: --point needs a value" >&2; return 2; }; point="$2"; shift 2 ;;
+            --round) [ "$#" -ge 2 ] || { echo "error: --round needs a value" >&2; return 2; }; round="$2"; shift 2 ;;
+            --mode) [ "$#" -ge 2 ] || { echo "error: --mode needs a value" >&2; return 2; }; mode="$2"; shift 2 ;;
             *) echo "error: unknown argument: $1" >&2; usage; return 2 ;;
         esac
     done
@@ -345,10 +370,37 @@ cmd_run() {
     [ -n "$brief" ] && [ -s "$brief" ] || { echo "error: --brief must be a non-empty file" >&2; return 2; }
     [ -d "$cwd" ] || { echo "error: --cwd must be an existing directory" >&2; return 2; }
     [ -r "$PROMPT_TEMPLATE" ] || { echo "error: missing prompt template: $PROMPT_TEMPLATE" >&2; return 2; }
+    if [ -n "$point" ]; then
+        printf '%s' "$point" | grep -Eq '^[a-z0-9][a-z0-9-]{0,63}$' || { echo "error: --point must match [a-z0-9-]+" >&2; return 2; }
+    fi
+    case "$round" in ''|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;; *) echo "error: --round must be a round number >= 1" >&2; return 2 ;; esac
+    case "$mode" in ''|full|incremental) ;; *) echo "error: --mode must be full|incremental" >&2; return 2 ;; esac
     task_dir="$(cd "$task_dir" && pwd)"
+    local eff_mode="$mode"
+    if [ -z "$eff_mode" ] && [ -n "$round" ] && [ "$round" -ge 2 ]; then
+        eff_mode=incremental
+        # The newest row of this round (a reopened point repeats round numbers).
+        [ -z "$point" ] || case "$(grep -E "^- Review: point=$point; .*; round=$round; " "$task_dir/status.md" 2>/dev/null | tail -n1)" in
+            *"; mode=full; "*) eff_mode=full ;;
+        esac
+    fi
+    if [ "$eff_mode" = incremental ] && [ "${ZYZ_CROSS_REVIEW_FORCE:-0}" != "1" ]; then
+        local stage=""
+        # The point's stage from its newest review-round.sh row; --kind only
+        # when the point has no row (or no --point was given).
+        [ -z "$point" ] || stage="$(sed -n "s/^- Review: point=$point; stage=\([a-z]*\);.*/\1/p" "$task_dir/status.md" 2>/dev/null | tail -n1)"
+        [ -n "$stage" ] || { [ "$kind" = implementation ] && stage=impl; }
+        if [ "$stage" = impl ]; then
+            printf 'cross-review status=skipped reason=incremental-round point=%s round=%s\n' "${point:--}" "${round:--}"
+            return 0
+        fi
+    fi
     cwd="$(cd "$cwd" && pwd)"
     brief="$(cd "$(dirname "$brief")" && pwd)/$(basename "$brief")"
-    [ -n "$label" ] || label="$kind-$(date -u +%Y%m%dT%H%M%SZ)"
+    [ -n "$label" ] || label="$kind${point:+-$point}${round:+-r$round}-$(date -u +%Y%m%dT%H%M%SZ)"
+    XR_REVIEW_META=""
+    [ -z "$point$round$mode" ] || XR_REVIEW_META="$(printf 'review-point=%s\nreview-round=%s\nreview-mode=%s\n_' "${point:--}" "${round:--}" "${mode:--}")"
+    XR_REVIEW_META="${XR_REVIEW_META%_}"
     label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')"
 
     local host reviewers
