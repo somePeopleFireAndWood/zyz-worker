@@ -29,7 +29,8 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - git-worktree Skill 位于 `skills/git-worktree/SKILL.md`
 - clean-tmp Skill 位于 `skills/clean-tmp/SKILL.md`（跨平台安全清理临时目录 + Docker/编译缓存清理面，交互/自动双模式；细节参考资料在 `references/`）
 - self-healing-loop Skill 位于 `skills/self-healing-loop/SKILL.md`（长期定时 agent：session loop + cron watchdog + 哨兵唤醒双层自愈；断链沉睡自愈、进程被杀由 headless 兜底，模板在 `templates/`，唤醒信道分析在 `references/`）
-- Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`
+- Execute Task 主控提示词位于 `skills/execute-task/prompts/main-agent.md`；按需加载的专题细则（评审收口、跨 harness、watchdog、恢复、版本控制、PR 评审、编排模式、设计文档纪律）位于 `skills/execute-task/references/`
+- execute-task 按风险分三档：`/execute-task --fast|--standard|--strict <任务>`（不给参数时主 agent 提议一个档位）。快速档用一条消息加 `change-note.md` 代替设计文档、1 轮独立评审；标准档设计文档 + 有上限的评审；严格档不设轮次上限但有收口检查。评审轮次由 `hooks/scripts/review-round.sh` 记账、`hooks/scripts/review-gate.sh` 在派发 review-agent 时核对——见下方 *跨 harness 交叉评审* 的「评审收口」与 `docs/design/execute-task-tiers-design.md`
 - Orchestration 主控提示词位于 `skills/orchestration-scheduling-task/prompts/main-agent.md`
 - Orchestration bash helpers 位于 `scripts/orch-*.sh`（其中 `orch-reuse-worker.sh` 用于「复用已完成任务的 tmux/worktree 创建新任务」——见下方 *容器复用*）
 - 跨 harness 交叉评审脚本位于 `scripts/cross-review.sh`（execute-task 每个评审点在 review-agent 之外，再为本机装着的其它 agent 产品各起一个只读评审会话——见下方 *跨 harness 交叉评审*）
@@ -41,7 +42,7 @@ zyz-worker 的一条核心信条是：**长期任务的状态以文件为单一�
 - 整体架构说明位于 `docs/architecture.md`（各 skill / subAgent / 脚本 / hook 的职责与主体原理）
 - 长期任务状态文件约定位于 `docs/conventions/long-running-state.md`
 - 初始设计占位文档位于 `docs/design/initial-design.md`
-- execute-task Skill 设计文档位于 `docs/design/execute-task-skill-design.md`
+- execute-task Skill 设计文档位于 `docs/design/execute-task-skill-design.md`（第一版；分档改造取代了其中的部分内容，见 `docs/design/execute-task-tiers-design.md`）
 - 工程结构约定位于 `docs/conventions/project-structure.md`
 - 暂未实现 MCP server 或真实 SubAgent 运行时
 
@@ -87,12 +88,12 @@ orchestration 下每个 worker 是一个完整 `claude` 进程，而 **stdio 型
 
 ## 跨 harness 交叉评审（cross-harness review）
 
-execute-task 的每个评审点（设计评审每一轮、每个实现 / SubTask 评审、汇总评审）除了派发本工程的 `review-agent` subAgent，还会**同时**为本机装着的**其它** agent 产品各起一个只读评审会话：主 agent 跑在 Claude Code 且装了 `codex`，就同时起 `codex exec` 评审；跑在 Codex 且装了 `claude`，就同时起 `claude -p` 评审。宿主自身的产品不会重复起（那就是 review-agent）。
+execute-task 的评审点（设计评审每一轮、每个实现 / lane 评审的第 1 轮和 `start --full` 开的全量轮、汇总评审第 1 轮；实现的增量轮不跑）除了派发本工程的 `review-agent` subAgent，还会**同时**为本机装着的**其它** agent 产品各起一个只读评审会话：主 agent 跑在 Claude Code 且装了 `codex`，就同时起 `codex exec` 评审；跑在 Codex 且装了 `claude`，就同时起 `claude -p` 评审。宿主自身的产品不会重复起（那就是 review-agent）。
 
-- **入口**：`scripts/cross-review.sh detect` 查看会选中哪些 harness；`scripts/cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <l>] [--cwd <dir>]` 并发跑所有选中的评审者，产出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，stdout 每个评审者一行 `status=ok|empty|failed|timeout`。提示词模板是 `skills/execute-task/templates/cross-review-prompt.md`（沿用 `subagents/review-agent.md` 的评审标准与 `templates/review-report.md` 的报告结构）。
-- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件 `## 跨 harness 交叉评审`；两个评审者意见一致本身不算证据。评审点收敛条件见 `## 评审收口`：review-agent 本轮零 blocking，交叉评审的每条 finding 都有处置且没有被接受为 blocking，也没有待用户决定的问题。
+- **入口**：`scripts/cross-review.sh detect` 查看会选中哪些 harness；`scripts/cross-review.sh run --task-dir <dir> --kind <design|implementation|aggregate> --brief <file> [--label <l>] [--point <id> --round <n> --mode <full|incremental>] [--cwd <dir>]` 并发跑所有选中的评审者，产出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`，stdout 每个评审者一行 `status=ok|empty|failed|timeout`；`--point/--round/--mode` 取自 `review-round.sh start` 的输出，impl 评审点的增量轮直接输出 `status=skipped reason=incremental-round`（`ZYZ_CROSS_REVIEW_FORCE=1` 时照常跑）。提示词模板是 `skills/execute-task/templates/cross-review-prompt.md`（沿用 `subagents/review-agent.md` 的评审标准与 `templates/review-report.md` 的报告结构）。
+- **态度不变：独立确认、可拒绝。** 交叉评审报告只是参考输入。每条 finding 由该评审点本来的裁决者逐条对照真实产物独立核实后才可接受，不成立就带具体理由拒绝，处置记录在任务状态文件的 `## 发现台账`（来源列写 `跨 harness:<harness>`）；两个评审者意见一致本身不算证据。评审点收敛条件见 `## 评审收口`：review-agent 本轮零 blocking，交叉评审的每条 finding 都有处置且没有被接受为 blocking，也没有待用户决定的问题。
 - **可选、不阻塞**：没装其它 harness、被关闭、失败或超时，都只记录然后继续用 review-agent 单独评审。
-- **评审收口（review convergence）**：每条 finding 分 `blocking` / `non-blocking:normal` / `non-blocking:contrived` 三级，以设计文档 `## 范围边界` 声明的输入域与威胁模型为判据；评审点在 review-agent 本轮零 blocking（被拒或降级的 blocking 要由下一轮评审确认）、交叉评审无被接受的 blocking、无待用户决定项时收口，contrived 按类记入 `<task-dir>/residual-risks.md` 留给后续补强任务，同类第二个变体要求类级修复，第 3 轮起每 3 轮做一次收敛检查并告知用户。详见 `skills/execute-task/SKILL.md` `## 评审收口`。
+- **评审收口（review convergence）**：合同先行——已批准的设计（快速档是 `change-note.md`）连同验收标准、测试计划和 `## 范围边界` 就是合同。每条 finding 分 `blocking` / `non-blocking:normal` / `non-blocking:contrived` 三级，blocking 只有三类：可达的产品缺陷（附复现）、设计缺失或矛盾、违反合同；测试强度是 `non-blocking:normal`，证据或流程缺口是不开新一轮的补证请求，快速审阅漂移不进评审。评审点（主路径、每个附属子功能、汇总各一个）第 1 轮全量、之后增量（只核实上一轮被接受的 blocking 并评审修复 diff），按档位有轮次上限（快速档 impl 2 轮；标准档 design 2 / impl 3 / aggregate 3），到上限交用户三选一：再开一轮、接受为遗留风险、拆成加固任务；严格档不设上限，从第 3 轮起每满 3 轮做一次收口检查。上限和收口检查由 `hooks/scripts/review-round.sh` 强制，`hooks/scripts/review-gate.sh` 拒绝没有记录在案的评审派发（`ZYZ_REVIEW_GATE_DISABLE=1` 只关它）；没有 `- Tier:` 的旧任务 fail open。contrived 按类记入 `<task-dir>/residual-risks.md` 留给后续补强任务，同类第二个变体要求类级修复。详见 `skills/execute-task/SKILL.md` `## 评审收口` 与 `skills/execute-task/references/review-closure.md`。
 - **隔离**：Codex 用 `-s read-only`；Claude 用 `--permission-mode dontAsk` + 只读工具白名单（含只读 git）并禁用编辑工具；子会话清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，不关的话子会话的 hook 会冒充本任务的主 agent）；默认零 MCP（沿用 `orch-worker-mcp-args.sh` 的覆盖参数；万一 Codex 仍因这些覆盖加载配置失败，会退回继承一次，并在 `.meta` 记 `mcp=inherit-fallback`）。交叉评审者不注入变异、不复跑测试——那仍是 review-agent 的义务。
 
 | 环境变量 | 作用 |
@@ -101,8 +102,9 @@ execute-task 的每个评审点（设计评审每一轮、每个实现 / SubTask
 | `ZYZ_CROSS_REVIEW_TIMEOUT` | 每个评审者的超时秒数，默认 2400；低于下限 1200 的值会被提升到 1200 并告警（`.meta` 记 `timeout-raised=yes`）。超时的摘要行带 `diagnosis=still-working\|stalled\|no-output` |
 | `ZYZ_CROSS_REVIEW_MCP` | 同 `ZYZ_WORKER_MCP` 的取值，默认 `none` |
 | `ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS` | 追加给对应 CLI 的参数（如 `-m <model>`） |
+| `ZYZ_CROSS_REVIEW_FORCE` | `1` 时 impl 评审点的增量轮也照常跑跨 harness |
 
-纯脚本单元测是 `bash scripts/test-cross-review.sh`（PATH 上放假的 `codex`/`claude`，不消耗配额）。
+纯脚本单元测是 `bash scripts/test-cross-review.sh`（PATH 上放假的 `codex`/`claude`，不消耗配额）；评审轮次账本与闸门的单元测是 `bash scripts/test-review-round.sh`。
 
 ## Go 构建 I/O 优化注入（Go build I/O optimization）
 
@@ -320,6 +322,7 @@ subagents/
 │   │   └── project-structure.md
 │   └── design/
 │       ├── execute-task-skill-design.md
+│       ├── execute-task-tiers-design.md
 │       ├── initial-design.md
 │       └── watchdog-design.md
 ├── hooks/
@@ -340,6 +343,9 @@ subagents/
 │       ├── api-failure.sh
 │       ├── expect.sh
 │       ├── expect_state.py
+│       ├── review-round.sh
+│       ├── review_round.py
+│       ├── review-gate.sh
 │       ├── task-pointer.sh
 │       ├── start-watchdog.sh
 │       ├── agent-runtime-state.sh
@@ -368,10 +374,22 @@ subagents/
 │   │   ├── SKILL.md
 │   │   ├── prompts/
 │   │   │   └── main-agent.md
+│   │   ├── references/
+│   │   │   ├── cross-harness.md
+│   │   │   ├── design-doc-discipline.md
+│   │   │   ├── orchestration-mode.md
+│   │   │   ├── pr-review.md
+│   │   │   ├── recovery.md
+│   │   │   ├── review-closure.md
+│   │   │   ├── version-control.md
+│   │   │   └── watchdog.md
 │   │   └── templates/
+│   │       ├── change-note.md
 │   │       ├── cross-review-prompt.md
+│   │       ├── decisions.md
 │   │       ├── design-doc.md
 │   │       ├── final-report.md
+│   │       ├── residual-risks.md
 │   │       ├── review-report.md
 │   │       └── task-status.md
 │   ├── orchestration-scheduling-task/

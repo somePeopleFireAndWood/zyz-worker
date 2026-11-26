@@ -27,6 +27,14 @@
 #   emits a PreToolUse deny with a reason telling the main agent to
 #   re-dispatch at full scope, split into steps instead. Reducing per-round
 #   output volume is fine; reducing the total deliverable is not.
+# - Exception (§4.2 of execute-task-tiers-design): a review-agent dispatch
+#   carrying `review-point=<id> round=<n> mode=incremental` passes when
+#   review-round.sh recorded that round (n >= 2, the point's latest, no
+#   result yet, not a `start --full` round) — an
+#   incremental re-review checks the last round's accepted blockers, re-checks
+#   the rejected ones, and reviews the fix diff by design. Only a recorded round counts: the bare words, or a
+#   marker for a round that was never started, still get the check, so
+#   "shrink the scope to unstick a role" stays denied.
 # - Side effect: appends the blocked attempt to
 #   `<task-root>/runtime/scope-guard.log` for auditability.
 #
@@ -74,6 +82,7 @@ prompt="$(zyz_get tool_input.prompt)"
 hit="$(zyz_scope_cap_hit "$prompt")"
 [ -n "$hit" ] || exit 0
 zyz_scope_continuation "$prompt" && exit 0
+[ "$target" = review-agent ] && zyz_review_incremental_ok "$prompt" "$(zyz_task_roots "$base")" && exit 0
 
 mkdir -p "$root/runtime" 2>/dev/null
 printf '%s\t%s\t%s\n' "$(zyz_iso)" "$target" "$hit" \

@@ -92,7 +92,7 @@ raise SystemExit(0 if ok else 1)' "$3" "$4"
 # ---------------------------------------------------------------------------
 # T1 — layout, exec bits, syntax
 # ---------------------------------------------------------------------------
-HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh hooks/scripts/agent-runtime-state.sh hooks/scripts/task-pointer.sh hooks/scripts/teammate-track.sh"
+HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh hooks/scripts/agent-runtime-state.sh hooks/scripts/task-pointer.sh hooks/scripts/review-gate.sh hooks/scripts/review-round.sh hooks/scripts/teammate-track.sh"
 for f in $HOOK_SCRIPTS monitors/watchdog.sh hooks/hooks.json monitors/monitors.json hooks/README.md; do
     if [ -f "$f" ]; then pass "T1 exists: $f"; else fail "T1 exists: $f" "missing"; fi
 done
@@ -168,6 +168,9 @@ expected_by_id = {
     "UserPromptSubmit[0].hooks[0]": "main-state.sh",
     "PreToolUse[0].hooks[0]": "heartbeat.sh",
     "PreToolUse[1].hooks[0]": "dispatch-scope-guard.sh",
+    # execute-task tiers (§10.5): the review-round gate shares L5's dispatch
+    # matcher (Claude Agent + Codex spawn_agent).
+    "PreToolUse[1].hooks[1]": "review-gate.sh",
     "PreToolUse[2].hooks[0]": "checkout-guard.sh",
     "PostToolUse[0].hooks[0]": "heartbeat.sh",
     "PostToolUse[0].hooks[1]": "status-freshness.sh",
@@ -225,13 +228,13 @@ for command_id, command in commands:
 
 actual_targets = collections.Counter(targets)
 actual_by_id = {command_id: target for (command_id, _), target in zip(commands, targets)}
-if len(commands) == 20 and actual_by_id == expected_by_id and actual_targets == expected_targets:
+if len(commands) == 21 and actual_by_id == expected_by_id and actual_targets == expected_targets:
     emit("PASS", "T2R_static_exact_thirteen_commands_and_targets")
 else:
     emit("FAIL", "T2R_static_exact_thirteen_commands_and_targets",
          f"count={len(commands)} targets={dict(actual_targets)} shape={shape_errors}")
 
-if len(prefixes) == 20 and len(set(prefixes)) == 1:
+if len(prefixes) == 21 and len(set(prefixes)) == 1:
     emit("PASS", "T2R_static_uniform_resolution_prefix_all_thirteen")
 else:
     emit("FAIL", "T2R_static_uniform_resolution_prefix_all_thirteen",
@@ -248,7 +251,7 @@ for command_id, command in commands:
         shape_errors.append(f"{command_id}: resolution is not assigned to a private zyz plugin-root variable")
     else:
         private_assignments.append(match.group(1))
-if len(private_assignments) == 20 and len(set(private_assignments)) == 1:
+if len(private_assignments) == 21 and len(set(private_assignments)) == 1:
     emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen")
 else:
     emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen", "; ".join(shape_errors))
@@ -764,16 +767,35 @@ fi
 #   - The self-check-rule ban grep includes the NEGATION inside the matched
 #     literal (`不要把…` / `绝不把…`). Matching only the noun phrase let the
 #     rule be inverted ("务必把…自检规则写进设计文档") with a green suite.
-for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
-    if grep -qE '^## 设计文档编辑纪律$' "$f" 2>/dev/null; then
-        pass "T6 $f has the edit-discipline section heading (#20)"
-    else
-        fail "T6 $f has the edit-discipline section heading (#20)"
-    fi
-done
+#   - Tiers rework (docs/design/execute-task-tiers-design.md §7, §10.2): the
+#     rule body now lives ONLY in references/design-doc-discipline.md (one rule,
+#     one owning file). SKILL.md keeps the heading plus a two-clause summary;
+#     main-agent.md dropped its copy of the section on purpose and only points
+#     at the reference, so the per-file content checks target the reference and
+#     main-agent.md is pinned on the pointer instead of the heading.
+DDD=skills/execute-task/references/design-doc-discipline.md
+if grep -qE '^## 设计文档编辑纪律$' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qF '纠正类发现就地改或删' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qF '缺失类发现补上规格' skills/execute-task/SKILL.md 2>/dev/null \
+    && grep -qF 'references/design-doc-discipline.md' skills/execute-task/SKILL.md 2>/dev/null; then
+    pass "T6 SKILL.md keeps the edit-discipline heading + summary + pointer (#20)"
+else
+    fail "T6 SKILL.md keeps the edit-discipline heading + summary + pointer (#20)"
+fi
+if grep -qE '^## 编辑纪律$' "$DDD" 2>/dev/null; then
+    pass "T6 $DDD has the edit-discipline section heading (#20)"
+else
+    fail "T6 $DDD has the edit-discipline section heading (#20)"
+fi
+if grep -qF '`SKILL.md` `## 设计文档编辑纪律`（细则 `references/design-doc-discipline.md`）' skills/execute-task/prompts/main-agent.md 2>/dev/null \
+    && ! grep -qE '^## 设计文档编辑纪律$' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
+    pass "T6 main-agent.md points at the edit discipline instead of restating it (#20)"
+else
+    fail "T6 main-agent.md points at the edit discipline instead of restating it (#20)"
+fi
 # Both halves of the repair-shape rule must be present, not just the heading:
 # (a) edit/delete rather than annotate, (b) length holds flat or shrinks.
-for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+for f in "$DDD"; do
     if grep -qE '绝不在旁边追加(解释性)?(注释|批注)' "$f" 2>/dev/null \
         && grep -qE '(文档长度保持不变或变短|文档篇幅持平或缩小)' "$f" 2>/dev/null; then
         pass "T6 $f states repair shape + no-growth (#20)"
@@ -791,7 +813,7 @@ for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md;
 done
 # Document-text self-check rules stay OUT of the design document. Polarity is
 # inside the matched literal so the rule cannot be inverted silently.
-for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+for f in "$DDD"; do
     if grep -qE '(不要|绝不)把针对文档文字的自检规则写进设计文档' "$f" 2>/dev/null; then
         pass "T6 $f bans document-text self-check rules in the design doc (#20)"
     else
@@ -799,12 +821,13 @@ for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md;
     fi
 done
 # #20 rec 2: the design.md vs review-history responsibility boundary, in BOTH
-# of its carriers (the English SKILL.md table and the Chinese design-doc mirror).
-if grep -q '| 文件 | 职责 | 读者 |' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -q 'review-history.md`（其同级文件）' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 SKILL.md carries the design/review-history responsibility table (#20)"
+# of its carriers (the skill's table — moved with the rule body into
+# references/design-doc-discipline.md — and the plugin design-doc mirror).
+if grep -q '| 文件 | 职责 | 读者 |' "$DDD" 2>/dev/null \
+    && grep -q 'review-history.md`（其同级文件）' "$DDD" 2>/dev/null; then
+    pass "T6 $DDD carries the design/review-history responsibility table (#20)"
 else
-    fail "T6 SKILL.md carries the design/review-history responsibility table (#20)"
+    fail "T6 $DDD carries the design/review-history responsibility table (#20)"
 fi
 if grep -q '### 设计文档的修改形态' docs/design/execute-task-skill-design.md 2>/dev/null; then
     pass "T6 plugin design doc mirrors the edit-discipline section (#20)"
@@ -840,15 +863,19 @@ for f in subagents/review-agent.md agents/review-agent.md; do
     # The calibration must NOT read as a license to report fewer findings —
     # that would collide with the "never batch findings" hard limit and the L5
     # dispatch-scope-guard's anti-scope-reduction posture.
-    if grep -qF '绝不是少报的许可' "$f" 2>/dev/null; then
+    # (Tiers rework dropped the intensifier "绝不" per §10.2; the negation
+    # stays inside the matched literal.)
+    if grep -qF '是结论，不是少报的许可' "$f" 2>/dev/null; then
         pass "T6 $f states non-blocking is a verdict, not less reporting (#20)"
     else
         fail "T6 $f states non-blocking is a verdict, not less reporting (#20)"
     fi
 done
 # The non-blocking destination needs an OWNING RULE, not just a status-file
-# slot: an orphaned template field is filled by nobody.
-for f in skills/execute-task/prompts/main-agent.md skills/execute-task/SKILL.md; do
+# slot: an orphaned template field is filled by nobody. After the tiers rework
+# the single owner is the review-history rule in design-doc-discipline.md
+# (main-agent.md's old design-workflow step 5 restated it and was removed).
+for f in "$DDD"; do
     if grep -q '记入评审历史的非阻断发现' "$f" 2>/dev/null; then
         pass "T6 $f owns the non-blocking recording rule (#20)"
     else
@@ -950,8 +977,8 @@ fi
 # second carrier (the review-history file) and its verified fix was a pure
 # deletion, not a merge of duplicate surfaces. Pin the causal claim so the
 # wrong one cannot creep back.
-if grep -qE '有人\*\*追加\*\*一句更正，而不是重写' skills/execute-task/SKILL.md 2>/dev/null \
-    && ! grep -qE '同一(个|份)?设计的第二(份|种)描述|second description of the same design' skills/execute-task/SKILL.md 2>/dev/null; then
+if grep -qE '有人\*\*追加\*\*一句更正，而不是重写' "$DDD" 2>/dev/null \
+    && ! grep -qE '同一(个|份)?设计的第二(份|种)描述|second description of the same design' "$DDD" skills/execute-task/SKILL.md 2>/dev/null; then
     pass "T6 summary staleness is attributed to append-instead-of-rewrite"
 else
     fail "T6 summary staleness is attributed to append-instead-of-rewrite"
@@ -989,11 +1016,18 @@ fi
 # "re-deriving it co-signs", the lane owning "regenerating shared build
 # artifacts") and stayed green with the rule deleted — a self-satisfying
 # assertion of exactly the kind the no-op checklist names.
-if grep -qF '以正文为准' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF '根据正文重新生成摘要中受影响的部分' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 SKILL.md states body-wins + regenerate-from-body"
+if grep -qF '以正文为准' "$DDD" 2>/dev/null \
+    && grep -qF '根据正文重新生成摘要中受影响的部分' "$DDD" 2>/dev/null; then
+    pass "T6 $DDD states body-wins + regenerate-from-body"
 else
-    fail "T6 SKILL.md states body-wins + regenerate-from-body"
+    fail "T6 $DDD states body-wins + regenerate-from-body"
+fi
+# Tiers §4.3: Quick Review drift is not a review finding; the main agent
+# regenerates it mechanically before the approval gate.
+if grep -qF '**快速审阅不进入评审。**' "$DDD" 2>/dev/null; then
+    pass "T6 $DDD keeps Quick Review drift out of review (tiers)"
+else
+    fail "T6 $DDD keeps Quick Review drift out of review (tiers)"
 fi
 if printf '%s' "$dd_tmpl_flat" | grep -qF '以正文为准' \
     && printf '%s' "$dd_tmpl_flat" | grep -qF '根据正文当前的样子**重新推导**受影响的部分'; then
@@ -1001,12 +1035,17 @@ if printf '%s' "$dd_tmpl_flat" | grep -qF '以正文为准' \
 else
     fail "T6 design-doc template states body-wins + regenerate-from-body"
 fi
+# Tiers §4.3 deliberately REMOVED the reviewer's Quick-Review/body consistency
+# audit (doc-sync drift no longer enters review; the main agent regenerates the
+# summary before approval — pinned on main-agent.md just below). Reverse guard:
+# the reviewer prompt states it does not audit it, and the old audit wording
+# (`…仍然准确描述正文`, still a token worth guarding) is gone.
 for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -qE '快速审阅.{0,40}仍然准确描述正文' "$f" 2>/dev/null \
-        && grep -qF '从正文重新推导摘要的这一部分' "$f" 2>/dev/null; then
-        pass "T6 $f audits Quick Review and demands re-derivation"
+    if grep -qF '设计评审里不检查 `## 快速审阅` 与正文的一致性' "$f" 2>/dev/null \
+        && ! grep -qE '快速审阅.{0,40}仍然准确描述正文' "$f" 2>/dev/null; then
+        pass "T6 $f no longer audits Quick Review drift (tiers reverse guard)"
     else
-        fail "T6 $f audits Quick Review and demands re-derivation"
+        fail "T6 $f no longer audits Quick Review drift (tiers reverse guard)"
     fi
 done
 if grep -qF '保持 `## 快速审阅` 为最新' skills/execute-task/prompts/main-agent.md 2>/dev/null \
@@ -1020,10 +1059,13 @@ if grep -qF '引导用户去看 `## 快速审阅`' skills/execute-task/SKILL.md 
 else
     fail "T6 approval gate points the user at Quick Review"
 fi
-if grep -q '设计变更请求（' skills/execute-task/templates/task-status.md 2>/dev/null; then
-    pass "T6 task-status records design-change requests"
+# Tiers §7 / §10.6: append-only user decisions (design-change requests among
+# them) moved from status.md into <task-dir>/decisions.md.
+if grep -qF '设计变更请求' skills/execute-task/templates/decisions.md 2>/dev/null \
+    && grep -qE '^## B 类：按推荐执行的决定$' skills/execute-task/templates/decisions.md 2>/dev/null; then
+    pass "T6 decisions template records design-change requests + B-class decisions"
 else
-    fail "T6 task-status records design-change requests"
+    fail "T6 decisions template records design-change requests + B-class decisions"
 fi
 
 # L5 must treat the new blocking/non-blocking vocabulary as a scope cap; the
@@ -1049,8 +1091,11 @@ fi
 t22_has() { # <file> <fixed-string> <label>
     if grep -qF -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (#22)"; else fail "T6 $1 $3 (#22)" "missing: $2"; fi
 }
-for f in skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md; do
-    if grep -qE '^## 评审收口$' "$f" 2>/dev/null; then
+RC=skills/execute-task/references/review-closure.md
+for f in skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md "$RC"; do
+    if [ "$f" = "$RC" ]; then
+        :  # the reference is titled `# 评审收口细则`; no `##` heading to pin
+    elif grep -qE '^## 评审收口$' "$f" 2>/dev/null; then
         pass "T6 $f has the review-convergence section heading (#22)"
     else
         fail "T6 $f has the review-convergence section heading (#22)"
@@ -1064,31 +1109,38 @@ for f in skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md;
         pass "T6 $f carries no pre-#22 closure wording (#22)"
     fi
 done
+# Tiers rework: the closure detail moved from SKILL.md into
+# references/review-closure.md ($RC); §10.2 dropped intensifiers ("绝不"), and
+# doubt-defaults-to-blocking now hinges on reachability (§4.3). The
+# convergence check became strict-tier only, every 3 rounds from round 3, and
+# is script-enforced; the normal-fix extra round now counts toward the cap.
 S=skills/execute-task/SKILL.md
-t22_has "$S" "reviewAgent 本轮自己的报告是 \`no-changes-needed\`" "closes on reviewAgent's own zero-blocking report"
-t22_has "$S" "拒绝或降级一条 reviewAgent 的阻断发现，本身绝不会关闭评审点" "keeps the reviewer re-check of rejections/downgrades"
-t22_has "$S" "没有标为 \`requires-user-decision\` 的发现仍在等待用户回答" "holds the point open on a pending user decision"
-t22_has "$S" "在 \`blocking\` 和 \`contrived\` 之间拿不准时，就按 \`blocking\` 处理" "defaults doubt to blocking"
-t22_has "$S" "等级改变的是处置，绝不是报告" "keeps reporting full"
-t22_has "$S" "把评审者判为 \`blocking\` 的发现降级，则需要把那份证据写进处置" "demands evidence for a downgrade"
-t22_has "$S" "**并且**没有任何当前调用方能触达它" "makes contrived a conjunction"
-t22_has "$S" "\`non-blocking:contrived\`——绝不在本评审循环内修复" "never lands contrived findings in the loop"
-t22_has "$S" "在每个评审点额外再开**一**轮" "bounds the normal-fix round per review point"
-t22_has "$S" "当一个评审点跑完第三轮仍有阻断发现时" "triggers the convergence check at round 3"
-t22_has "$S" "只有当它的每一个产生者都落在该条目已经排查过的调用点之内时" "re-checks reachability per variant"
-t22_has "$S" "威胁模型和每一条范围外条款都由用户决定" "reserves the scope boundary to the user"
-t22_has "$S" "绝不能因为今天的调用方恰好满足它，就把它算作 \`contrived\`" "keeps unstated premises a user question"
+t22_has "$RC" "reviewAgent 本轮自己的报告是 \`no-changes-needed\`" "closes on reviewAgent's own zero-blocking report"
+t22_has "$RC" "拒绝或降级一条 reviewAgent 的阻断发现，本身不会关闭评审点" "keeps the reviewer re-check of rejections/downgrades"
+t22_has "$RC" "没有标为 \`requires-user-decision\` 的发现在等待用户回答" "holds the point open on a pending user decision"
+t22_has "$RC" "可达性不清楚，就按 \`blocking\` 处理" "defaults reachability doubt to blocking"
+t22_has "$RC" "\"拿不准\"不能用来给证据缺口升级" "keeps evidence gaps out of the doubt default"
+t22_has "$RC" "等级改变的是处置，不改变报告" "keeps reporting full"
+t22_has "$RC" "把评审者判为 \`blocking\` 的发现降级，要把那份证据写进处置" "demands evidence for a downgrade"
+t22_has "$RC" "**并且**没有任何当前调用方能触达它" "makes contrived a conjunction"
+t22_has "$RC" "\`non-blocking:contrived\`——不在本评审循环内修复" "never lands contrived findings in the loop"
+t22_has "$RC" "额外开一轮专门落地已接受的 \`non-blocking:normal\` 发现；这一轮照常 \`start\`、计入轮次上限" "bounds the normal-fix round by the round cap"
+t22_has "$RC" "从第 3 轮起，每满 3 轮做一次收口检查" "triggers the strict-tier convergence check every 3 rounds"
+t22_has "$RC" "只有当它的每一个产生者都落在该条目已经排查过的调用点之内时" "re-checks reachability per variant"
+t22_has "$RC" "威胁模型和每一条范围外条款都由用户决定" "reserves the scope boundary to the user"
+t22_has "$RC" "不能因为今天的调用方恰好满足它，就把它算作 \`contrived\`" "keeps unstated premises a user question"
 t22_has "$S" "并不算收窄目标" "states contrived deferral is not goal narrowing"
 t22_has "$S" "让一项域内需求没有得到满足，无论给它贴了什么等级标签，都是在收窄目标" "keeps in-domain deferral as goal narrowing"
 t22_has "$S" "每条移入加固 SubTask 的阻断发现都已落地" "verifies moved findings at delivery"
-t22_has skills/execute-task/prompts/main-agent.md "**级别绝不收窄派发。**" "keeps tiers from narrowing a dispatch"
+t22_has skills/execute-task/prompts/main-agent.md "**等级不收窄派发。**" "keeps tiers from narrowing a dispatch"
+t22_has skills/execute-task/prompts/main-agent.md "全量轮里这种限缩会被 L5 拒绝" "ties the tier rule to the L5 scope guard"
 t22_has skills/execute-task/prompts/main-agent.md "拒绝或降级一个 reviewAgent 的阻断发现，本身并不能关闭评审点" "keeps the reviewer re-check"
 for f in subagents/review-agent.md agents/review-agent.md; do
     if grep -qE '^## 发现分级$' "$f" 2>/dev/null; then pass "T6 $f has the finding-tiers heading (#22)"; else fail "T6 $f has the finding-tiers heading (#22)"; fi
     t22_has "$f" "当且仅当你报告了至少一条 \`blocking\` 发现时，\`结果\` 为 \`changes-requested\`；只有非阻断发现时，结果为 \`no-changes-needed\`" "ties Result to blocking findings both ways"
     t22_has "$f" "在 \`blocking\` 和 \`contrived\` 之间存疑时，报告 \`blocking\`" "defaults doubt to blocking"
     t22_has "$f" "两者都做不到，它就是 \`blocking\`" "does not default an untraced producer to contrived"
-    t22_has "$f" "分级改变的是一条发现的去向，绝不改变你是否报告它" "tiers without narrowing the report"
+    t22_has "$f" "分级改变的是一条发现的去向，不改变你是否报告它" "tiers without narrowing the report"
     t22_has "$f" "把它报告为 \`blocking\` + \`requires-user-decision\`" "keeps unresolved scope questions blocking"
     t22_has "$f" "recurring: <class>" "marks recurring classes"
 done
@@ -1096,6 +1148,71 @@ t22_has subagents/implementation-agent.md "\`non-blocking:contrived\`——不�
 t22_has agents/implementation-agent.md "\`non-blocking:contrived\`——不要在这个循环里修复它" "leaves contrived findings to the register"
 t22_has subagents/test-agent.md "不要在这个循环里为它修改测试" "leaves contrived findings to the register"
 t22_has agents/test-agent.md "不要在这个循环里为它修改测试" "leaves contrived findings to the register"
+# ---- Tiers rework (docs/design/execute-task-tiers-design.md §10): pin the
+# ---- prompt surfaces that tell the main agent and the reviewer to drive the
+# ---- round ledger. The ledger/gate BEHAVIOUR is scripts/test-review-round.sh's
+# ---- job; these only guard the instructions against silent deletion. Each
+# ---- literal carries the command or field shape the scripts actually parse.
+tier_has() { # <file> <fixed-string> <label>
+    if grep -qF -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (tiers)"; else fail "T6 $1 $3 (tiers)" "missing: $2"; fi
+}
+tier_heading() { # <file> <anchored-ERE> <label>
+    if grep -qE -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (tiers)"; else fail "T6 $1 $3 (tiers)" "missing heading: $2"; fi
+}
+M=skills/execute-task/prompts/main-agent.md
+tier_heading "$S" '^## 档位$' "has the tier section"
+tier_heading "$S" '^## 并行模型$' "has the parallel-model section"
+tier_has "$S" '- Tier: fast|standard|strict' "names the Tier status row"
+tier_has "$S" 'review-point=<id> round=<n> mode=<full|incremental>' "states the review dispatch marker"
+tier_has "$S" '另起一行 `Tier: <评审点生效档位>`' "states the dispatch tier line"
+tier_has "$S" '上一轮先 `result` 再开新一轮' "records a round's result before the next start"
+tier_has "$S" '--point <id> --round <n> --mode <start 输出的 mode>' "passes the round to cross-review.sh"
+tier_has "$S" '结论 `escalate` 时交用户，批准继续后 `grant`' "routes a strict escalate through grant"
+# Old rule deliberately removed: the fast tier writes change-note.md, not a design doc.
+if grep -qF '无论任务大小' "$S" 2>/dev/null; then
+    fail "T6 $S no longer demands a design doc regardless of task size (tiers reverse guard)"
+else
+    pass "T6 $S no longer demands a design doc regardless of task size (tiers reverse guard)"
+fi
+tier_has "$M" 'review-point=<id> round=<n> mode=<full|incremental>' "states the review dispatch marker"
+tier_has "$M" 'Tier: <fast|standard|strict>' "states the dispatch tier line"
+tier_has "$M" '上一轮已 `result` 后运行 `review-round.sh start <point>`' "records a round's result before the next start"
+tier_has "$M" '--point <id> --round <n> --mode <m>' "passes the round to cross-review.sh"
+tier_has "$M" 'review-round.sh close <point> --outcome passed' "closes a passed point through the script"
+tier_has "$M" 'close <point> --outcome residual --by user' "closes at-cap residuals only by user"
+tier_has "$M" '用户同意继续后 `grant` 放行下一轮' "routes a strict escalate through grant"
+tier_has "$M" 'review-round.sh tier <fast|standard|strict> --reason' "writes the tier through the script"
+tier_heading "$M" '^### 实现中发现偏离$' "owns the deviation decision table"
+tier_has "$RC" 'review-round.sh close <point> --outcome residual --by user' "closes at-cap residuals only by user"
+tier_has "$RC" '`--tier` 只能比任务级 `- Tier:` 更严' "allows per-point tier raises only"
+tier_has skills/execute-task/references/recovery.md '**增量复审不属于缩范围。**' "keeps incremental re-review out of scope reduction"
+for f in subagents/review-agent.md agents/review-agent.md; do
+    tier_heading "$f" '^## 按档位的评审范围$' "has the per-tier review scope"
+    tier_has "$f" 'review-point=<id> round=<n> mode=<full|incremental>' "echoes the dispatch marker"
+    tier_has "$f" '档位单独一行 `Tier: <fast|standard|strict>`' "reads the dispatch tier line"
+    tier_has "$f" '这是规定的范围，不是缩范围' "scopes incremental rounds without narrowing"
+    tier_has "$f" '`blocking` 只有三类' "admits blocking on three classes only"
+done
+tier_heading skills/execute-task/templates/review-report.md '^## 补证请求$' "has the evidence-request table"
+tier_heading skills/execute-task/templates/review-report.md '^## 修复落地核实$' "has the fix-landed table"
+tier_heading skills/execute-task/templates/design-doc.md '^## 关键机制$' "has the critical-mechanisms section"
+tier_heading skills/execute-task/templates/design-doc.md '^## 评审点划分$' "has the review-point split"
+tier_has skills/execute-task/templates/change-note.md '- 负对照:' "asks for the negative control"
+tier_has skills/execute-task/templates/change-note.md '- 回滚方式:' "asks for the rollback"
+# review_round.py and the gate read the first non-comment `- Tier:` line, and
+# `tier` inserts it under `- Current Phase:` — the template must keep that order.
+if python3 - <<'PYEOF'
+import sys
+ls = open('skills/execute-task/templates/task-status.md', encoding='utf-8').read().splitlines()
+i = [n for n, l in enumerate(ls) if l.startswith('- Current Phase:')]
+t = [n for n, l in enumerate(ls) if l.startswith('- Tier:')]
+sys.exit(0 if len(i) == 1 and len(t) == 1 and t[0] == i[0] + 1 else 1)
+PYEOF
+then
+    pass "T6 task-status template puts the single - Tier: row right under - Current Phase: (tiers)"
+else
+    fail "T6 task-status template puts the single - Tier: row right under - Current Phase: (tiers)"
+fi
 rr_tmpl=skills/execute-task/templates/residual-risks.md
 for field in Origin Tier Reproduction Impact 'Hardening Plan' Status; do
     if grep -q "^- $field:" "$rr_tmpl" 2>/dev/null; then

@@ -96,7 +96,7 @@ claude 恰好只启动一次，是这里正确性的关键。同一个 worker �
 
 当 worker 的容器被复用时，L1 会派发你到这里。`reuse-agent-effective`（`true | false | n/a`）决定走哪个分支；没有时回退到旧字段 `reuse-claude-effective`。以新 dispatch 中的 `agent-runtime` 为准。一次复用会转移已完成任务的整套 worktree 集合。
 
-**带内运行时配置块**（供下面的同一 claude 分支和重启分支使用）就是下面这段确切的、结构化的、人类可读的文本，原样送入 pane（字段名小写、用连字符；它们**必须**与 `orch-reuse-worker.sh` 以及 execute-task 的 `## 编排模式` 契约逐字节一致）：
+**带内运行时配置块**（供下面的同一 claude 分支和重启分支使用）就是下面这段确切的、结构化的、人类可读的文本，原样送入 pane（字段名小写、用连字符；它们**必须**与 `orch-reuse-worker.sh` 以及 execute-task 的编排模式契约 `skills/execute-task/references/orchestration-mode.md` 逐字节一致）：
 
 ```text
 [zyz-worker reuse-runtime-config]

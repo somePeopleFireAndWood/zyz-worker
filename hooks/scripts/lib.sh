@@ -63,6 +63,11 @@
 #                               0 when <text> commits to delivering the
 #                               remainder ("then continue", "分步", "step 1
 #                               of 4"), making a capped installment legit.
+# - zyz_review_incremental_ok <text> <roots>
+#                               0 when <text> carries a `mode=incremental`
+#                               review marker backed by a started round >= 2
+#                               in review_round.py (L5 lets it through).
+# - zyz_review_round_cli        path of review-round.sh, for messages.
 # - zyz_role_of <agent_type>    agent_type with plugin scope prefix stripped.
 # - zyz_phase_of <status.md>    lowercased "Current Phase" value, or empty.
 # - zyz_phase_terminal <phase>  0 when phase is a terminal spelling (done/
@@ -833,6 +838,33 @@ zyz_expect_cli() {
     local lib_dir
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
     printf '%s' "${lib_dir:-<plugin-root>/hooks/scripts}/expect.sh"
+}
+
+# How to invoke review-round.sh from the main agent's shell, for messages.
+zyz_review_round_cli() {
+    local lib_dir
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    printf '%s' "${lib_dir:-<plugin-root>/hooks/scripts}/review-round.sh"
+}
+
+# 0 when <prompt> carries `review-point=<id> round=<n> mode=incremental` and
+# that is the latest started round (n >= 2) of <id> in one of the task dirs
+# (newline-separated) — a recorded incremental re-review, which L5 lets
+# through (§4.2). A bare claim with no recorded round never passes; nor does
+# anything when python3 or the parser is unavailable.
+zyz_review_incremental_ok() {
+    case "${1:-}" in *mode=incremental*) ;; *) return 1 ;; esac
+    command -v python3 >/dev/null 2>&1 || return 1
+    local lib_dir r
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || return 1
+    local -a files=()
+    while IFS= read -r r; do
+        [ -n "$r" ] && [ -f "$r/status.md" ] && files+=("$r/status.md")
+    done <<ZYZ_ROOTS
+${2:-}
+ZYZ_ROOTS
+    [ "${#files[@]}" -gt 0 ] || return 1
+    printf '%s' "$1" | python3 "$lib_dir/review_round.py" incremental "${files[@]}" >/dev/null 2>&1
 }
 
 # Ids of the session crons/wakeups in a Stop ZYZ_HOOK_INPUT, comma-joined.

@@ -150,6 +150,7 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
 - `runtime/user-prompt-epoch`——最近一次用户发言的 epoch（`UserPromptSubmit`，`<task-notification>` 轮次除外；`kind=user` 声明的失效点）。
 - `runtime/activity`——`<epoch> <main|agent_id>`，本会话最近一次工具调用（任何 agent），`heartbeat.sh` 写；会话静默的输入。
 - `runtime/api-failures/*.rec` / `runtime/api-failures/reported/*.rec`——StopFailure 记录（待报告 / 已报告），`api-failure.sh` 写、watchdog 移动。
+- `runtime/review-gate.log`——评审轮次闸门拒绝过的派发（`<ISO 时间>\t<理由>`），`review-gate.sh` 写，只供审计。
 
 ## scripts/lib.sh
 
@@ -205,11 +206,52 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
   2. **引号剥离**——限缩匹配针对的是一份把 `"…"`、`` `…` `` 和 `'…'` 片段清空后的副本，因此一个*引用*限缩短语的提示词（关于这个守卫本身的文档、测试、changelog 工作——在这里很常见）不会被当成在*发出*限缩。`'` 只有在空白或标点之后才会开启一个片段，所以英文缩写不会吞掉真实文本。有意的取舍：一个*完全*由被引用的限缩短语构成的提示词会被放行。
   3. **限缩必须指向一个评审交付物**（`findings|issues|problems`）。没有这一条，普通的领域需求也会被匹配上——"no more than 3 items per page"、"cap it at 3 attempts"。
 - 失败行为：输入/解析器/指针缺失时 fail open（放行）。匹配天然是启发式的，因此才有上面的豁免和逐守卫的禁用开关；T7 钉住了 23 种必须被拒绝的限缩写法和 28 种必须放行的正当写法。T7 的载荷构造器会对提示词做 JSON 转义——如果直接插值一个包含 `"` 的 fixture，会得到非法 JSON，守卫随之 fail open，断言就会空转通过。
+- **增量复审放行（分档改造 §4.2）。** 派发给 review-agent、且 prompt 带 `review-point=<id> round=<n> mode=incremental` 标记时，只要 `review-round.sh` 确实记录了这一轮（n ≥ 2，是该评审点最新开始、尚未 `result` 的一轮，且不是 `start --full` 的全量轮），就直接放行：增量复审按设计只核实上一轮被接受的 blocking、复核被拒绝的 blocking、评审修复 diff，"只核实这几条"不是缩范围。判定交给 `review_round.py incremental`（`lib.sh zyz_review_incremental_ok`），所以光写 `mode=incremental` 几个字、标记指向没开始的轮次、`mode=full` 标记、或者派发给其它角色，都照旧检查——"恢复卡住的角色时缩减范围"仍然被拒。旧任务（没有 `Tier:`）同样适用：只要轮次是用 `review-round.sh` 记的。用例在 `scripts/test-review-round.sh` 的 I 节。
 - 支持的 agent：派发 implementation-agent / test-agent / review-agent 的主 agent。
+
+## scripts/review-round.sh — 评审轮次账本
+
+评审轮次上限和严格档收口检查原来只写在提示词里，复盘里 6 个该做收口检查的点只做了 1 个，有一次设计评审跑到 14 轮才被用户叫停。这个脚本把每一轮记下来，并拒绝档位不允许的那一轮；`review-gate.sh` 再拒绝没有记录在案的评审派发。规格见 `docs/design/execute-task-tiers-design.md` §10.3–§10.5 与 §10.7 第 1、2、9 条。
+
+- 触发点：由**主 agent** 在自己的 Bash 里运行，从不由 hook 调用，也不交给 subagent。
+- 用法（`--task <task-dir>` 可选，默认本会话主任务，解析方式同 `expect.sh`）：
+  - `open <point> --stage design|impl|aggregate [--kind main|aux] [--tier standard|strict [--by user]]`：登记评审点（`<point>` 为 `[a-z0-9-]+`，例如 `design-main`、`design-replay`、`impl-st2`、`aggregate`）。写一行 `round=0`；同 stage/kind 重复 open 不重复写，换 stage/kind 以 exit 2 拒绝。`--tier` 给这个评审点单独升档：只能比任务的 `Tier:` 更严（更低、或任务还没有 `Tier:` 时 exit 2），写成该点 `Review` 行上的 `tier=<t>` 字段，之后 `start` 的每一行都带着它；对已打开的点再 `open <point> --tier …` 是改档（只能升；降回任务档位要 `--by user`，否则 exit 3）。生效档位取任务档位与评审点档位中更严的那个，上限、`mode`、`cross-harness`、闸门都按它算。对已关闭的点 `open` 会生成新的一组记录（stage/kind 不写时沿用原来的），并保留该点原来的单点档位；重开时用 `--tier` 把它降低同样算降档，要 `--by user`，否则 exit 3（§10.8-6）。
+  - `start <point> [--full --reason …]`：开新的一轮，成功时输出 `round=<n> mode=full|incremental cross-harness=yes|no`。`--full`：结构性修复之后强制本轮全量复审，行尾记 `mode=full; reason=…`；轮次照常计数，上限不变，impl 的全量轮 `cross-harness=yes`，aggregate 的 `--full` 轮仍是 `no`。被拒时 exit 3，stdout 写明下一步：评审点已关闭（先 `open`）；上一轮还没 `result`；超过上限且没有本轮授权（交给用户三选一：再开一轮 → `grant`；接受为遗留风险 → `close --outcome residual --by user`；拆成加固任务 → `close --outcome split --by user`）；严格档缺收口检查（先 `check`）；最近一次收口检查结论是 `escalate`——不论档位和轮次，直到用户批准下一轮（`grant`）或之后已开过新的一轮（§10.8-5）。被拒时不写任何东西。
+  - `result <point> --blocking N [--rejected R] [--behavior M]`：把结果填进最新一轮那一行（可以重填更正）。`N` 是本轮被接受的 blocking 条数；`R` 是评审者报告为 blocking、但被裁决者拒绝或降级的条数（§10.8-1），这些要在下一轮交给评审者复核；`M` ≤ `N`，是被接受的 blocking 中会改变产品行为的条数。只有 `N=0` 且 `R=0` 时才提示可以 `close --outcome passed`；`R>0` 时提示开下一轮复核；没写 `--rejected` 时提示补上。
+  - `grant <point> --reason …`：用户批准**下一轮**，一次授权只管一轮（行里记的就是它放行的轮次号）。
+  - `check <point> --outcome continue|class-fix|reorder|escalate --reason …`：收口检查，记在最新一轮上。
+  - `close <point> --outcome passed|residual|split [--by user] --reason …`：关闭评审点，记在最新一轮上。`passed` 要求最近一轮已 `result` 且 `blocking=0`、`rejected=0`（没写 `--rejected` 也不行）；`residual` / `split` 是用户在三选一里的处置，要求 `--by user`；不满足时 exit 3、不写。关闭后 `start` 被拒（exit 3），`result` / `grant` / `check` / `close` 以 exit 2 拒绝。交付核验要求每个登记过的评审点都有 `Review-Close`。
+  - `tier fast|standard|strict --reason … [--by user|agent]`：改 `- Tier:` 行（没有就插在第一行非注释的 `- Current Phase:` 下面），并在 `<task-dir>/log/tier.md` 追加一条 `- <ISO 时间> <旧|-> -> <新>; by=<by>; reason=<text>`。降档（strict > standard > fast）要求 `--by user`，否则 exit 3；档位不变时什么都不写。
+  - `status [<point>]`：任务档位，以及每个评审点的生效档位、轮次、每轮 blocking 走势、上限、是否已关闭（`closed=<outcome>@<round>|no`）、下一轮的轮次 / 模式 / 是否跨 harness / 能否开（`gate=ok|closed|needs-result|needs-grant|needs-check|escalated`）；最后一行是 `unclosed: …` 或 `all review points closed`（交付核验用它）；格式错误的行列为 `INVALID`。
+- 行格式（`## 评审收口` 小节，每轮一行 `Review`）：
+
+  ```text
+  - Review: point=<id>; stage=<s>; kind=<main|aux>[; tier=<t>]; round=<n>; started=<unix>; blocking=<n|->; rejected=<n|->; behavior=<n|->[; mode=full; reason=<text>]
+  - Review-Grant: point=<id>; round=<n>; at=<unix>; reason=<text>
+  - Review-Check: point=<id>; round=<n>; outcome=<o>; at=<unix>; reason=<text>
+  - Review-Close: point=<id>; round=<n>; outcome=<passed|residual|split>; at=<unix>; reason=<text>
+  ```
+
+  行按时间顺序追加，文件顺序就是历史：`Review-Close` 之后出现的 `round=0` 行开始该评审点的新一组记录，判定只看最新一组；`Review-Grant` 记的是它放行的轮次号，只管那一轮。
+
+- 上限（同一评审点的总轮数，含首轮）：fast design 0 / impl 2 / aggregate 1；standard 2 / 3 / 3；strict 不设上限，但开第 n 轮（n = 4、7、10…）之前要有一条 `round == n-1` 的 `Review-Check`——刚完成的这组三轮结束后做的检查才算，更早做的不算（§10.8-5）。模式：第 1 轮 `full`，之后 `incremental`（`start --full` 的轮次除外）。`cross-harness`：design 各轮 `yes`（fast 为 `no`）；impl 只有全量轮（第 1 轮和 `--full` 轮）为 `yes`；aggregate 只有第 1 轮为 `yes`，`--full` 轮也是 `no`（§10.8-7）；`ZYZ_CROSS_REVIEW=off` 时一律 `no`。
+- 档位读取：第一行不在 HTML 注释里的 `- Tier:`。没有这一行、值为空或不是 `fast|standard|strict`（例如模板占位）时按旧任务处理：`start` 不设上限、不要求收口检查，照常记录（fail open）。
+- 写入：持有 `<task-dir>/runtime/expect.lock`（与 `expect.sh` 同一把锁——两者都对 status.md 做读-改-写，并行调用不会丢行），解析器跳过 HTML 注释（模板在注释里写着示例行），新行追加在小节最后一行非注释内容之后（没有这个小节就在文件末尾新建），写完重新解析确认新行生效、否则拒写；tmpfile + rename 原子写入，保留原有换行风格（CRLF 不变）。每一行各自独立：格式错误、重复轮次、stage 与首行不一致、出现在已关闭评审点之后（重开之前）的行被忽略并在 `status` 里标为 `INVALID`，脚本从不改写它们；有两个 `## 评审收口` 小节时拒绝写入（exit 2）。
+- 退出码：0 成功；2 输入无效（stderr 一行诊断）；3 被轮次规则拒绝（stdout 写明下一步）。
+- 实现：`review_round.py`（复用 `expect_state.py` 的锁、原子写入和字段解析）。用例：`scripts/test-review-round.sh`。
+
+## scripts/review-gate.sh — 评审轮次闸门
+
+- 触发点：`PreToolUse`，与 L5 共用派发 matcher `^(Agent|spawn_agent|collaboration\.spawn_agent)$`（Claude 的 `Agent` 与 Codex 的 `spawn_agent`），排在 `dispatch-scope-guard.sh` 之后，同步（deny 要求同步）。只处理派发给 review-agent 的调用（`subagent_type`，Codex 为 `task_name`；带不带 `zyz-worker:` 前缀都算）。
+- 输入：stdin 上的 hook JSON（`cwd`、`session_id`、`tool_input.prompt|message`、`tool_input.subagent_type|task_name`）；`ZYZ_REVIEW_GATE_DISABLE=1` 只关这个闸门，`ZYZ_HOOKS_DISABLE=1` 关整个层。
+- 判定：本会话的任务（`zyz_task_roots`，多任务会话看全部任务）里至少有一个带有效 `Tier:` 时，prompt 里要有 `review-point=<id> round=<n> mode=<full|incremental>`，并且每个标记都等于 `review-round.sh` 已 `start` 的该评审点（未关闭的最新一组记录）最新一轮，`mode` 也要等于那一轮记录的模式：第 1 轮和 `start --full` 的轮次为 `full`，其余为 `incremental`。要全量复审就用 `start --full` 开一轮，而不是在增量轮上写 `mode=full`——那一轮的跨 harness 评审已经被跳过了。此外 prompt 里要另起一行写 `Tier: <fast|standard|strict>`（评审者按它选评审清单），值必须等于被标记评审点的**生效档位**（`status <point>` 的 `tier=`），不是任务级 `Tier:`；只认独占一行的 `Tier: <t>`（可以包在反引号里），简报里引用的 `- Tier:` 状态行不算。评审点的生效档位（任务档位与评审点 `tier=` 中更严的那个）决定上限；轮次上限、收口检查和关闭由 `start` 把关，所以这里只需确认派发背后有一轮已开始、尚未 `result`、且模式一致的记录。最新一轮已经记录了结果时，同一标记不能再派发（§10.8-2）：要再评审就先 `start` 开新的一轮——否则复用最后一轮的标记就能越过上限。同一轮在 `result` 之前的重派（评审者死掉、按维度并行）不受影响。L5 的增量放行也只认尚未出结果的那一轮。
+- 输出：通过时无输出。缺标记、标记格式不对、评审点未登记或已关闭、已登记但没开始、轮次比记录的新（先 `start`）或旧（给出正确的标记）、模式与记录不一致、那一轮已经 `result`、缺 `Tier:` 行或它与评审点的生效档位不一致时，输出 `PreToolUse` deny，理由以 `[zyz-worker watchdog]` 开头、写明要先运行的命令；这次尝试追加到主任务的 `runtime/review-gate.log`。
+- 失败行为：fail open——输入、python3、指针缺失，没有任何任务带有效 `Tier:`（分档之前的旧任务；`- Tier:` 为空、只有空白或是模板占位都按没有处理），JSON 格式错误，或解析出错时放行。
+- 支持的 agent：派发 review-agent 的主 agent。用例：`scripts/test-review-round.sh` 的 H 节。
 
 ## scripts/task-pointer.sh
 
-- 触发点：由**主 agent** 在自己的 Bash 中运行（execute-task §1 第 4 步）；从不由 hook 调用，也绝不交给 subagent（Codex sub-agent 的 shell 里 `$CODEX_THREAD_ID` 是它自己的子线程 id）。
+- 触发点：由**主 agent** 在自己的 Bash 中运行（`SKILL.md` `## 工作流` §1 第 2 步）；从不由 hook 调用，也绝不交给 subagent（Codex sub-agent 的 shell 里 `$CODEX_THREAD_ID` 是它自己的子线程 id）。
 - 用法：`task-pointer.sh arm <task-dir>` 把任务目录的绝对路径追加到 `.zyz-worker/sessions/<session-id>`（重复 arm 不重复写）；`disarm <task-dir>` 移除该行（文件空了就删掉）；`show` 打印会话 id、指针文件和 hooks 为本会话解析到的全部任务；`session-id` 只打印会话 id。`--base <dir>` 默认 `$PWD`（必须是会话 cwd），`--session-id <id>` / `$ZYZ_SESSION_ID` 可以显式指定。
 - 会话 id：按最近的 `claude` / `codex` 祖先进程判定 harness，再取 `$CLAUDE_CODE_SESSION_ID`（外加 `~/.claude/sessions/<pid>.json` 里与之不同的实时 id）或 `$CODEX_THREAD_ID`。之所以看祖先进程而不是看变量是否存在，是因为这两个变量都会泄漏进嵌套启动的另一个 harness（例如由 Claude 会话启动的编排 worker 里跑的 Codex）。
 - 失败行为：拿不到会话 id 时退回写共享的 `.zyz-worker/current-task`，并在 stderr 上提示它会被同目录下的其它会话覆盖、而且能拿到会话 id 的 hooks 不会读它；用法错误或任务目录不存在时以 exit 2 退出。绝不触碰其它会话的指针。`show` 在有会话 id 时会用一行 `ignored:` 标出目录里残留的 `current-task`。
@@ -246,10 +288,10 @@ Runtime 簿记数据存放在 `<task-dir>/runtime/` 下：
 - 触发点：`Stop`（主 agent 完成一次响应）。
 - 输入：stdin 上的 hook JSON（`stop_hook_active`、`background_tasks`、`session_crons`）；`ZYZ_ROLE_STALE_SEC`（默认 900）、`ZYZ_ROLE_STALE_HORIZON_SEC`（默认 21600）、`ZYZ_STOP_STATUS_STALE_SEC`（默认 1200）、`ZYZ_STOP_GATE_COOLDOWN_SEC`（默认 600）。
 - 输出：在活跃阶段，如果经过认证的观测器报告某个非终止角色的存活信号陈旧或跟踪尚未建立，且它并不在运行中的后台 subagent 任务列表里，或者状态文件严重陈旧，就输出 `{"decision":"block","reason":...}`。理由会列出需要检查的确切角色。通过 `runtime/nag/stopgate.last` 限频。
-- **终止但未收取检查（主层）。** 除了上述理由之外，当某个角色已到达终止状态（按观测器的权威判定，为正常 DONE 或已裁决的 FINALIZED），但主 agent 自它完成以来一直空闲时，L4 也会阻断这次空闲——这是 subagent 完成通知丢失的症状：结果已经落盘，主 agent 却从未处理。判定条件（逐实例，三者同时满足）：`terminal` 为 true，**并且** `main_heartbeat_epoch <= terminal_epoch`（主 agent 最后一次工具调用早于完成时间），**并且** `status.md` 的 mtime `<= terminal_epoch`（此后没有写过状态）。用 `<=` 是有意为之：恰好相等时倾向于报出。每个 epoch 都有 `isinstance(int)` 守卫——缺少顶层 `main_heartbeat_epoch` 时退出过滤，缺少某个实例的 `terminal_epoch` 时跳过该实例——所以不可用的 epoch 绝不会抛异常。阻断理由会写明已完成的角色以及它的结果在哪里（它的 subtask 状态文件 / 持久日志），并指示：先读取结果并记录下来，再进入空闲。它**可以被满足且会自行解除**——读取结果再加上任意一次状态写入，都会把 `main_heartbeat_epoch`/mtime 推进到 `terminal_epoch` 之后，于是下一次停止时条件不再成立，阻断随之消失；它遵守 `stop_hook_active`，并与 角色陈旧阻断共用同一个 `runtime/nag/stopgate.last` 600 秒冷却令牌（在同一个窗口内，两者可能互相压制——这是被接受的）。这是作为**主层**的 L4：一次同步的 Stop-hook 检查，不依赖不可靠的完成通知通道，所以能确定地捕获常见情况（角色已结束、通知丢失、主 agent 想进入空闲）。它是一项**缓解措施**——减少主 agent 对已丢失的完成路径的依赖，而不是从根本上修复 harness 的投递层。和所有基于观测器的检查一样，它**在 macOS 上失效**（观测器返回 `genesis-capability-unavailable`），在 Linux 上生效——与死亡角色扫描的边界相同。
+- **终止但未收取检查（主层）。** 除了上述理由之外，当某个角色已到达终止状态（按观测器的权威判定，为正常 DONE 或已裁决的 FINALIZED），但主 agent 自它完成以来一直空闲时，L4 也会阻断这次空闲——这是 subagent 完成通知丢失的症状：结果已经落盘，主 agent 却从未处理。判定条件（逐实例，三者同时满足）：`terminal` 为 true，**并且** `main_heartbeat_epoch <= terminal_epoch`（主 agent 最后一次工具调用早于完成时间），**并且** `status.md` 的 mtime `<= terminal_epoch`（此后没有写过状态）。用 `<=` 是有意为之：恰好相等时倾向于报出。每个 epoch 都有 `isinstance(int)` 守卫——缺少顶层 `main_heartbeat_epoch` 时退出过滤，缺少某个实例的 `terminal_epoch` 时跳过该实例——所以不可用的 epoch 绝不会抛异常。阻断理由会写明已完成的角色以及它的结果在哪里（任务目录 `lanes/` 下的 lane 报告，旧任务为 `subtasks/` 下的 SubTask 文件 / 持久日志；L3 的同类提醒措辞相同），并指示：先读取结果并记录下来，再进入空闲。它**可以被满足且会自行解除**——读取结果再加上任意一次状态写入，都会把 `main_heartbeat_epoch`/mtime 推进到 `terminal_epoch` 之后，于是下一次停止时条件不再成立，阻断随之消失；它遵守 `stop_hook_active`，并与 角色陈旧阻断共用同一个 `runtime/nag/stopgate.last` 600 秒冷却令牌（在同一个窗口内，两者可能互相压制——这是被接受的）。这是作为**主层**的 L4：一次同步的 Stop-hook 检查，不依赖不可靠的完成通知通道，所以能确定地捕获常见情况（角色已结束、通知丢失、主 agent 想进入空闲）。它是一项**缓解措施**——减少主 agent 对已丢失的完成路径的依赖，而不是从根本上修复 harness 的投递层。和所有基于观测器的检查一样，它**在 macOS 上失效**（观测器返回 `genesis-capability-unavailable`），在 Linux 上生效——与死亡角色扫描的边界相同。
 - **无执行者检查（#24）。** 前面每一条都只看**某个角色**有没有异常，于是有一种整体状态谁都不管：任务还有活，却没有任何执行者。真实事故：implementation-agent 在后台启动 60 分钟的全量用例后以“等待通知”收尾、被记为 DONE；用例跑绿时没有任何东西唤醒它；主 agent 一直在处理别的通道，所以“已完成未收取”不成立、状态文件也是新的；最后主 agent 说“数仓还在跑”然后停下，Stop 门放行，任务空等约 30 分钟。判定（逐任务，同时满足）：本任务处于活跃阶段且**还有活**（非 delivery 阶段，或 `## SubTasks` 记分板里还有 `Committed` 为空 / 占位 / 否定的行——列表和表格两种写法都解析）；宿主报告的 `background_tasks` 里没有未结束的任务、`session_crons` 为空（插件 monitor 不算执行者：本 watchdog 自己就以一个 `running` 的 shell 任务出现在列表里，已在 Claude Code 2.1.251 上实测；判据是命令路径含 `/monitors/watchdog.sh`，或同时含 `/plugins/` 和 `/monitors/`）；观察器看不到任何未结束、且在 horizon 内的已派发角色（会话级求和；观察器不可用时这一项不参与）；状态文件里没有有效的 `wait` / `user` 声明（见 `## 声明`）；声明为 `resident` 的后台任务不算执行者。**不**受 main-state 门控——空闲正是症状，不能当豁免。输入里没有 `background_tasks` 数组（Codex、任务注册表不可达）时视为未知，fail open。阻断理由点名未提交的 SubTask，并给出三条出路：派发下一步；核实你以为在跑的通道（ps / ListAgents / 后台任务输出）；或者用 `expect.sh` 声明在等什么。与其它子句共用 `stopgate.last` 冷却。三个 `## Agent State` 解析器都跳过 HTML 注释里的行——状态模板就在这个小节的注释里写着两种声明的示例行，否则它们会被当成格式错误的声明，让真实声明全部失效（这一点同样修正了 `Waiting On` 的旧问题）。记分板解析：`Committed` 的值里出现 commit sha（7–40 位十六进制，含多仓库写法里缩进的 `<repo>:<sha>` 续行、Markdown 链接、"本地 commit xxx"）就算已提交；空值、模板占位和否定词算未提交；其它文字（记录下来的提交失败）不算未提交。
 - **无执行者检查的已知局限（如实说明）。** (1) **没有声明为 `resident` 的**常驻条目（主 agent 自己的 `tail -f` 类 Monitor、`run_in_background` 起的开发服务器、路径里不含 `/plugins/` 加 `/monitors/` 的其它插件 monitor、无关的循环 cron）一直在 `background_tasks` / `session_crons` 里，检查因此不会触发——只会漏报；声明之后就按 id 扣除。(2) 已结束的后台 subagent / shell 会从 `background_tasks` 里**消失**（已实测）；状态词表（`complet|fail|kill|stop|cancel|idle|done|error|exit|finish`）只是兜底。agent teams 的 teammate 只要还在就以 `running` 列出，空闲也一样；而空闲的 teammate 不会被它自己起的后台任务结束叫醒，完成通知一直排在它的队列里，直到有人给它发消息（Claude Code 2.1.251 实测，见 `scripts/fixtures/teammate-live-2.1.251.jsonl`；11-17 的事故里排了 30 分钟）。所以**空闲 teammate 和它起的后台任务都不算执行者**：`teammate-track.sh` / `heartbeat.sh` 记下每个 teammate 这一轮是否结束、它起了哪些后台任务，本门据此扣除（见 `## scripts/teammate-track.sh`）。插件没见过的 teammate（会话 arm 之前就派出的、描述对不上的）仍算执行者，只会漏报，由会话静默兜底。(3) `Awaiting-User` 的失效依赖 `UserPromptSubmit` 只在用户发言时触发。宿主的后台任务通知也会触发它，`main-state.sh` 按 `<task-notification>` 前缀把它排除；其它不带这个前缀的唤醒（例如 ScheduleWakeup / loop 重新送入的提示词）仍会让声明提前作废，代价是多拦一次（会自愈）。(4) 被本门拦下的那次 Stop，`main-state.sh` 仍会照常写 `idle`（两个 hook 并行运行）；它只在交付阶段或 design 阶段才发 IM：执行阶段被拦的 Stop 不发；observing 阶段因没有排定检查被拦时，那次 Stop 仍会发一次「已交付」（每次进入只发一次，补上 `wait` 再停不会重复）。
-- **"活跃阶段"排除任何带有 `design` 字样的阶段。** 单用 `*review*` 会匹配上 `design review`，导致这个门在 §2 第 8 步阻止主 agent 进入空闲——那是工作流唯一要求无限期等待人工批准的闸门——而提示词承诺在设计期间保持安静。`zyz_phase_active` 会先应用 `design` 排除。
+- **"活跃阶段"排除任何带有 `design` 字样的阶段。** 单用 `*review*` 会匹配上 `design review`，导致这个门在设计批准闸门（`SKILL.md` `## 工作流` §2 的"设计批准闸门是硬性停止点"）阻止主 agent 进入空闲——那是工作流唯一要求无限期等待人工批准的闸门——而提示词承诺在设计期间保持安静。`zyz_phase_active` 会先应用 `design` 排除。
 - **状态陈旧受双重门控（主 agent 状态机）。** 状态陈旧归因子句只有在 agent 的声明（旧 `Waiting On:` 行，或有效的 `wait` / `user` 声明）和信号驱动的 main-state 压制（`zyz_main_state_suppresses`，主 agent 处于 `awaiting-user` / `idle` 时为 true）都未生效时才会触发——所以这个门绝不会仅仅因为主 agent 正当地停下来等用户或交还控制权而阻止空闲。角色陈旧子句和未收取子句归因于 subagent，**不**受门控：即使处于压制状态，L4 仍会阻断并点名死亡/未收取的 subagent（A 方案）。L4 只读 main-state；main-state.sh（同样挂在 `Stop` 上）只写它，所以两者与执行顺序无关；又因为 `idle` 和 `awaiting-user` 对 状态陈旧 的压制完全相同，无论哪个先运行，阻断理由都一样。
 - **阻断必须能通过遵守规则来解除。** 这个门绝不要求调用方手工编辑 runtime。正常结束的角色通过 SubagentStop 提交 DONE；经平台/probe 证据确认死亡的角色，在重新派发之前用受支持的辅助命令 finalize；持久化的 start/stop 诊断只能通过它确切的 `reconcile-*` 事件 token 来处理。
 - 失败行为：fail open（允许停止）。
@@ -311,6 +353,6 @@ IM 停止通知器。把"agent 停下来了"这类事件转发给用户配置的
 
 ## 降级环境
 
-插件 hook 可能被托管策略阻止，monitor 在某些平台/版本上也不可用。无论如何，工作流在提示词层面的职责（`## 长期运行工作`、`## 核心规则` 中的刷新规则）依然有效，并在那些环境中成为唯一的强制手段——watchdog 是兜底，而不是替代。
+插件 hook 可能被托管策略阻止，monitor 在某些平台/版本上也不可用。无论如何，工作流在提示词层面的职责（`skills/execute-task/SKILL.md` `## 核心规则` 的状态持久化规则，以及 `skills/execute-task/references/recovery.md` `## 长期运行工作`、`references/watchdog.md` 的刷新规则）依然有效，并在那些环境中成为唯一的强制手段——watchdog 是兜底，而不是替代。
 
 **对 fixed-pack 跟踪层而言，macOS（Darwin）是降级平台。** catalog genesis 需要原生的逐 vnode 挂载标识，而 macOS 没有任何 API 能区分第二个同 FSID 的挂载实例，所以在 Darwin 上，每一个跟踪状态操作（`hook-start`、`hook-stop`、`hook-heartbeat`、`hook-observe`、`finalize`、probe、`gc-step`）都会以 `genesis-capability-unavailable` fail closed。后果是：不会写入任何实例状态，L3 watchdog 和 L4 停止门都拿不到角色观测——**在 macOS 上，死亡角色检测处于禁用状态**，包括被 API 错误杀死的情况。一切仍保持 fail-open（不会阻断、崩溃，除了约 100 毫秒的 hook 启动开销之外也不会拖慢），仍在工作的层是状态文件陈旧分支（L1/L3/L4）、无执行者与声明相关的检查、0.32.0 起的会话静默与 API 错误中断（被 API 错误杀死的角色在 macOS 上由后者报告）、L2 的最终消息过短门，以及提示词纪律。主 agent 提示词要求在任务开始时核实 `main_heartbeat_epoch`，无法核实时声明 watchdog 失效——在 macOS 上这项检查会如实失败，于是每个任务都会给出这条披露。Linux 宿主（包括容器）完全受支持。

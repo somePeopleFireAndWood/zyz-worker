@@ -278,9 +278,9 @@ except Exception:pass
             unharvested)
                 zyz_cooldown_ok "$root/runtime/nag/watchdog-unharvested-$key.last" "$COOLDOWN" || continue
                 if [ -n "$scope_note" ]; then
-                    printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。到它所属任务的 subtasks/ 下读取它的结果 SubTask 文件及其持久日志，记录到该任务的 status.md，然后继续。%s\n' "$key" "$role_line" "$scope_note"
+                    printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。到它所属任务的 lanes/ 下读取它的 lane 报告（旧任务在所属任务的 subtasks/ 下，是结果 SubTask 文件）及其持久日志，记录到该任务的 status.md，然后继续。%s\n' "$key" "$role_line" "$scope_note"
                 else
-                    printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。读取 %s/subtasks/ 下它的结果 SubTask 文件及其持久日志，记录到 %s，然后继续。\n' "$key" "$role_line" "$root" "$status_file"
+                    printf '[zyz-worker watchdog] 角色 %s（%s）已完成（DONE/FINALIZED），但看起来没有被处理——它结束后主 agent 一直空闲，所以它的完成通知可能没有送达（这是 watchdog 路径上的备份信号）。读取 %s/lanes/ 下它的 lane 报告（旧任务为 %s/subtasks/ 下的结果 SubTask 文件）及其持久日志，记录到 %s，然后继续。\n' "$key" "$role_line" "$root" "$root" "$status_file"
                 fi
                 notify_stuck "$root" "角色 ${role_line} 已结束，但其结果尚未处理" subagent "$im_task"
                 ;;

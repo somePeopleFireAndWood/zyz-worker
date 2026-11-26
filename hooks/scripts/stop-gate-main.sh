@@ -309,7 +309,7 @@ except Exception:pass
             if [ -n "$scope_note" ]; then
                 udetail="${udetail}${role}（${key}）；"
             else
-                udetail="${udetail}${role}（${key}；它在 ${root}/subtasks/ 下的结果 SubTask 文件及其持久日志）；"
+                udetail="${udetail}${role}（${key}；它在 ${root}/lanes/ 下的 lane 报告（旧任务为 ${root}/subtasks/ 下的结果 SubTask 文件）及其持久日志）；"
             fi
         done <<EOF
 $unharvested_roles
@@ -317,7 +317,7 @@ EOF
         if [ -n "$udetail" ]; then
             [ -n "$reason" ] && reason="${reason} "
             if [ -n "$scope_note" ]; then
-                reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就到它所属任务的 subtasks/ 下读取它的结果 SubTask 文件及其持久日志，记录到该任务的 status.md，然后继续——这样即可解除本次阻断。${scope_note}"
+                reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就到它所属任务的 lanes/ 下读取它的 lane 报告（旧任务在所属任务的 subtasks/ 下，是结果 SubTask 文件）及其持久日志，记录到该任务的 status.md，然后继续——这样即可解除本次阻断。${scope_note}"
             else
                 reason="${reason}已完成的角色看起来没有被收取——它们已到达终止状态（DONE/FINALIZED），但主 agent 此后一直空闲，所以这次完成可能没有被处理（完成通知丢失）：${udetail}现在就读取上面列出的每个结果，记录到 ${status_file}，然后继续——这样即可解除本次阻断。"
             fi

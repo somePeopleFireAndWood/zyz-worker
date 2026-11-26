@@ -21,6 +21,14 @@
 #   M7 report-partial never `yes`                            1 FAIL
 #   M8 last-output age forced to 0                           2 FAIL
 #   M9 timeout/timeout-requested/timeout-raised not in meta  9 FAIL
+#
+# Mutation record (execute-task tiers, 2026-11-26; out-of-tree copy, each one
+# turns a check red; M17/M19/M27/M28 re-run against the --mode contract):
+# M17 skip on --mode full too; M18 drop the task-dir exclusion from
+# tree_fingerprint; M19 ignore ZYZ_CROSS_REVIEW_FORCE; M27 skip every impl
+# point regardless of --mode; M28 trust --kind over the point's stage row;
+# M33 no legacy fallback without --mode; M34 legacy fallback ignores a
+# mode=full row.
 set -u
 # Never reach the user's real IM (~/.zyz-worker/notify.json): checks that
 # exercise the notifier point ZYZ_NOTIFY_CONFIG at their own capture config.
@@ -76,6 +84,7 @@ case "${FAKE_CODEX_MODE:-ok}" in
     mcpbad)
         case " $* " in *mcp_servers*) echo "Error loading config.toml: invalid transport" >&2; exit 1 ;; esac ;;
     mutate) printf 'changed\n' >> tracked.txt ;;
+    taskwrite) printf 'written during review\n' >> "$FAKE_TASK_WRITE" ;;
 esac
 printf '# Review Report\n\n## Result\n- Reviewer: cross-harness:codex\n' > "$out"
 printf '{"type":"thread.started"}\n'
@@ -329,6 +338,79 @@ reset_logs
 out="$(run_xr "$BOTH" codex ZYZ_CROSS_REVIEW_TIMEOUT=6 ZYZ_CROSS_REVIEW_TIMEOUT_FLOOR=0 -- run --task-dir "$TASK" --kind design --brief "$TASK/brief.md" --cwd "$REPO" --label dok 2>/dev/null)"
 lacks "$out" "diagnosis=" "diagnosis: an ok run carries none"
 lacks "$(cat "$TASK/reviews/cross/dok.claude.meta" 2>/dev/null)" "timeout-diagnosis" "diagnosis: an ok run's meta carries none"
+
+# --- incremental impl rounds skip cross-harness review (tiers §10.4/§10.7) ---
+# The skip follows --mode (copied from review-round.sh start), not the round.
+XR=(run --task-dir "$TASK" --brief "$TASK/brief.md" --cwd "$REPO")
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label inc --point impl-main --round 2 --mode incremental)"; rc=$?
+[ "$rc" -eq 0 ] && ok "incremental: skip exits 0" || bad "incremental: rc=$rc"
+has "$out" "cross-review status=skipped reason=incremental-round point=impl-main round=2" "incremental: impl --mode incremental skipped"
+[ ! -e "$FAKE_LOG/codex.args.0" ] && ok "incremental: no reviewer launched" || bad "incremental: a reviewer was launched"
+[ ! -d "$TASK/reviews/cross" ] && ok "incremental: no review artifacts written" || bad "incremental: artifacts written"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label inc1 --point impl-main --round 1 --mode full)"
+has "$out" "harness=codex status=ok" "incremental: impl round 1 (full) runs"
+meta="$(cat "$TASK/reviews/cross/inc1.codex.meta" 2>/dev/null)"
+has "$meta" $'review-point=impl-main\nreview-round=1\nreview-mode=full' "incremental: point/round/mode recorded in meta"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label full3 --point impl-main --round 3 --mode full)"
+has "$out" "harness=codex status=ok" "incremental: a start --full impl round (round 3, --mode full) runs without FORCE"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label nomode --point impl-main --round 2)"
+has "$out" "status=skipped reason=incremental-round point=impl-main round=2" "incremental: no --mode, impl round 2 -> legacy round>=2 skip"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label nomode1 --point impl-main --round 1)"
+has "$out" "harness=codex status=ok" "incremental: no --mode, impl round 1 -> runs"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label nomode0)"
+has "$out" "harness=codex status=ok" "incremental: no --mode and no --round -> runs"
+reset_logs
+printf -- '- Current Phase: review\n\n## 评审收口\n\n- Review: point=fz; stage=impl; kind=main; round=2; started=1700000000; blocking=-; behavior=-; mode=full; reason=结构改了\n' > "$TASK/status.md"
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label nomodefz --point fz --round 2)"
+has "$out" "harness=codex status=ok" "incremental: no --mode, a start --full row (mode=full) -> runs"
+rm -f "$TASK/status.md"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind design --label d2 --point design-main --round 2 --mode incremental)"
+has "$out" "harness=codex status=ok" "incremental: design incremental round still runs"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind aggregate --label a2 --point aggregate --round 2 --mode incremental)"
+has "$out" "harness=codex status=ok" "incremental: aggregate is not an impl point"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_FORCE=1 ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label f2 --point impl-main --round 3 --mode incremental)"
+has "$out" "harness=codex status=ok" "incremental: ZYZ_CROSS_REVIEW_FORCE=1 runs an incremental impl round"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label nopt --mode incremental)"
+has "$out" "status=skipped reason=incremental-round point=- round=-" "incremental: no --point -> --kind implementation decides"
+# The point's stage comes from review-round.sh's rows when there are any.
+reset_logs
+printf -- '- Current Phase: review\n\n## 评审收口\n\n- Review: point=st2; stage=impl; kind=aux; round=2; started=1700000000; blocking=-; behavior=-\n' > "$TASK/status.md"
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind aggregate --label st2 --point st2 --round 2 --mode incremental)"
+has "$out" "status=skipped reason=incremental-round point=st2 round=2" "incremental: stage=impl row wins over --kind"
+printf -- '- Current Phase: review\n\n## 评审收口\n\n- Review: point=dz; stage=design; kind=main; round=2; started=1700000000; blocking=-; behavior=-\n' > "$TASK/status.md"
+reset_logs
+out="$(run_xr "$BOTH" claude ZYZ_CROSS_REVIEW_MCP=inherit -- "${XR[@]}" --kind implementation --label dz --point dz --round 2 --mode incremental)"
+has "$out" "harness=codex status=ok" "incremental: stage=design row wins over --kind implementation"
+rm -f "$TASK/status.md"
+for bad_args in "--point Bad_Point" "--round 0" "--round x" "--mode partial" "--mode"; do
+    # shellcheck disable=SC2086
+    run_xr "$BOTH" claude -- "${XR[@]}" --kind implementation $bad_args >/dev/null 2>&1
+    [ "$?" -eq 2 ] && ok "incremental: usage error for '$bad_args'" || bad "incremental: '$bad_args' not rejected"
+done
+
+# --- tree fingerprint excludes the task dir wherever it lives ----------------
+# A task dir outside .zyz-worker/ (e.g. <repo>/tasks/t2) still gets status.md
+# writes while the review runs; that is not a change of the reviewed tree.
+TASK2="$REPO/tasks/t2"
+mkdir -p "$TASK2"
+cp "$TASK/brief.md" "$TASK2/brief.md"
+reset_logs
+out="$(run_xr "$BOTH" claude FAKE_CODEX_MODE=taskwrite FAKE_TASK_WRITE="$TASK2/status.md" ZYZ_CROSS_REVIEW_MCP=inherit -- run --task-dir "$TASK2" --kind implementation --brief "$TASK2/brief.md" --cwd "$REPO" --label tw)"
+has "$out" "tree-stable=yes" "fingerprint: writes into a task dir outside .zyz-worker/ excluded"
+reset_logs
+out="$(run_xr "$BOTH" claude FAKE_CODEX_MODE=taskwrite FAKE_TASK_WRITE="$REPO/tasks/other.md" ZYZ_CROSS_REVIEW_MCP=inherit -- run --task-dir "$TASK2" --kind implementation --brief "$TASK2/brief.md" --cwd "$REPO" --label tw2)"
+has "$out" "tree-stable=no" "fingerprint: a write next to (not inside) the task dir still flagged"
+rm -rf "$REPO/tasks"
 
 # --- the live tree is never written by the script ----------------------------
 [ -z "$(git -C "$REPO" status --porcelain -- . ':(exclude).zyz-worker')" ] && ok "script leaves the work tree untouched outside .zyz-worker/" || bad "work tree modified"

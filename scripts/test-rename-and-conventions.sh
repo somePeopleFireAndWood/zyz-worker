@@ -154,6 +154,7 @@ run_T2() {
     local wl_full=(
         "commands/code-development.md"
         "docs/design/execute-task-skill-design.md"
+        "docs/design/execute-task-tiers-design.md"
         "docs/design/initial-design.md"
         "docs/conventions/project-structure.md"
         "docs/automation-todo.md"

@@ -585,6 +585,8 @@ check "S8 multi-task note names where the runtime records live (for finalize)" \
     "$(printf '%s\n' "$out" | grep '已静默' | grep -qF "运行时记录在 $T1 下"; echo $?)" "got [$out]"
 check "S8 multi-task unharvested finding points at the owning task, not the primary's files" \
     "$(printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -q '所属任务的 subtasks/' && ! printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -qF "$T1/subtasks"; echo $?)" "got [$out]"
+check "S8 multi-task unharvested finding names the owning task's lanes/ first" \
+    "$(printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -q '所属任务的 lanes/ 下读取它的 lane 报告' && ! printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -qF "$T1/lanes"; echo $?)" "got [$out]"
 # The page is an escalation (0.32.0): the same findings, unanswered, on the
 # next scan (ESCALATE=0 here).
 m_wd "$D" CLAUDE_CODE_SESSION_ID="$SA" ZYZ_WATCHDOG_ESCALATE_SEC=0 >/dev/null
@@ -604,6 +606,8 @@ out="$(env ZYZ_ROLE_STALE_SEC=1 ZYZ_STOP_STATUS_STALE_SEC=1 bash -c 'printf "%s"
     "{\"cwd\":\"$D\",\"session_id\":\"$SA\",\"hook_event_name\":\"Stop\"}" "$M/hooks/scripts/stop-gate-main.sh" 2>/dev/null)"
 check "S8 Stop gate: subagent clauses carry the no-owner note in a multi-task session" \
     "$(printf '%s' "$out" | grep -qF "$NOTE" && printf '%s' "$out" | grep -q '所属任务的 subtasks/'; echo $?)" "got [$out]"
+check "S8 Stop gate: the unharvested clause names lanes/ first" \
+    "$(printf '%s' "$out" | grep -q '所属任务的 lanes/ 下读取它的 lane 报告'; echo $?)" "got [$out]"
 check "S8 Stop gate: no status clause for the design-phase primary" \
     "$(! printf '%s' "$out" | grep -qF "（$T1/status.md）"; echo $?)" "got [$out]"
 
@@ -624,6 +628,9 @@ check "S8 single-task stale finding has no no-owner note" \
     "$(printf '%s\n' "$out" | grep '已静默' >/dev/null && ! printf '%s' "$out" | grep -qF "$NOTE"; echo $?)" "got [$out]"
 check "S8 single-task unharvested finding names the task's own subtasks/ and status.md" \
     "$(printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -qF "$TO/subtasks/" ; echo $?)" "got [$out]"
+# Lane reports live in lanes/<id>.md (tiers §10.6); subtasks/ is kept for old tasks.
+check "S8 single-task unharvested finding names the task's lanes/ first" \
+    "$(printf '%s\n' "$out" | grep 'DONE/FINALIZED' | grep -qF "读取 $TO/lanes/ 下它的 lane 报告" ; echo $?)" "got [$out]"
 check "S8 single-task IM keeps the default task id" "$(! grep -q -- '--task-id' "$TMP/s8-notify.log"; echo $?)" "log=[$(cat "$TMP/s8-notify.log")]"
 
 # Hook-mode IM (needs_input) belongs to the session: in a multi-task session
