@@ -73,11 +73,11 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 
 ## 评审收口
 
-<!-- 本节只放 `review-round.sh` 写入的机器行（登记、轮次、额外轮授权、收口检查、关闭），不要手写，也不要放表格；命令、上限和闸门见 SKILL.md `## 评审收口`。到上限交用户时，用户的选择记入 `decisions.md`。真实的行由脚本追加在本节，不在注释里。示例：
-- Review: point=design-main; stage=design; kind=main; round=2; started=1764120000; blocking=1; behavior=1
+<!-- 本节只放 `review-round.sh` 写入的机器行（登记、轮次、额外轮授权、收口检查、关闭），不要手写，也不要放表格；命令、上限和闸门见 SKILL.md `## 评审收口`。到上限交用户时，用户的选择记入 `decisions.md`。真实的行由脚本追加在本节，不在注释里。`blocking` = 本轮被接受的 blocking 条数，`rejected` = 评审者报为 blocking、被裁决者拒绝或降级的条数；`passed` 关闭要求最近一轮 blocking=0 且 rejected=0。示例：
+- Review: point=design-main; stage=design; kind=main; round=2; started=1764120000; blocking=0; behavior=-; rejected=0
 - Review-Grant: point=impl-st2; round=4; at=1764200000; reason=用户批准再开一轮：剩余 blocking 涉及数据删除
 - Review-Check: point=impl-st2; round=3; outcome=class-fix; at=1764190000; reason=同一类缺陷第三次出现，改做类级修复
-- Review-Close: point=design-main; round=2; outcome=passed; at=1764123000; reason=第 2 轮 blocking=0
+- Review-Close: point=design-main; round=2; outcome=passed; at=1764123000; reason=第 2 轮 blocking=0 且 rejected=0
 -->
 
 ## 发现台账
@@ -151,6 +151,7 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 8. 范围：本轮确立的每条规则都扫过了所有同形态位置，附逐位置结论；声称覆盖或不变量的注释与代码现状一致。
 9. 披露：最终报告 `## 最薄弱环节` 已填；移入加固的 blocking 都已落地；遗留风险清单每条字段齐全，最终报告 `## 已知风险` / `## 后续工作` 指向它；按推荐执行的决定已列给用户。
 10. 一致性：本文件与 `git log`、`lanes/*.md` 一致（`## 状态新鲜度` 已记录核对）；watchdog 已启用——没启用就直说，这里没有任何结论可以依赖它。
+11. 反复出现的类：评审中标为 `recurring: <class>` 的每个类，都由一个类级修复（附落地的 commit/file）或单独一条遗留风险清单条目（RR-n）回应。
 
 ## 下一步行动
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test-review-round.sh — the execute-task tier mechanics (design §10.3–§10.5,
-# §10.7 items 1, 2, 9):
+# §10.7 items 1, 2, 9, §10.8 items 1, 2, 5, 6, 7):
 #   * hooks/scripts/review-round.sh (+ review_round.py): open / start / result /
 #     grant / check / close / tier / status, the per-tier caps, the strict-tier
 #     convergence-check gate, mode and cross-harness, forced full rounds,
@@ -30,8 +30,7 @@
 #  M2  review_round.py decide(): a grant authorizes every later round
 #      (`(point, n) in grants` -> any grant for the point)
 #  M3  review_round.py decide(): strict check window one round too wide
-#      (`range(n - 3, n)` -> `range(n - 4, n)`: a round-3 check would count
-#      for round 7)
+#      (superseded by M39 once §10.8-5 required round == n-1)
 #  M4  review_round.py decide(): ignore an escalate outcome
 #  M5  review_round.py decide(): skip the needs-result rule
 #  M6  review_round.py cross_harness(): impl/aggregate yes on every round
@@ -63,6 +62,21 @@
 #  M32 review_round.py cmd_gate(): drop the invalid-value message (first
 #      survived — the mismatch check still denied; a check on the message
 #      was added)
+#  M35 cmd_open(): reopening drops the point's own tier (F1)
+#  M36 cmd_open(): lowering the tier on reopen without --by user (F1)
+#  M37 decide(): escalate only checked at the strict 3-round boundary (F2)
+#  M38 decide(): escalate never spent by a later started round (F2)
+#  M39 decide(): any check in rounds n-3..n-1 counts again (F3)
+#  M40 cross_harness(): aggregate full rounds get cross-harness (F5)
+#  M41 _match(): a round that already has a result still dispatches (B1)
+#  M42 cmd_close(): passed with rejected blockings (B2)
+#  M43 cmd_close(): passed without a recorded rejected count (B2)
+#  M44 cmd_result(): close hint on blocking=0 regardless of rejected (B2)
+#  M45 cmd_result(): --rejected not written to the row (B2)
+#  M49 append_rows(): silently drops an unrelated line (F6; only the
+#      byte-for-byte G check catches it)
+# M46–M48 (N11, lanes/ in the unharvested texts of watchdog.sh and
+# stop-gate-main.sh) are caught by scripts/test-session-pointer.sh S8.
 # The cross-review.sh mutants (M17–M19, M27, M28) are recorded in
 # test-cross-review.sh.
 #
@@ -139,8 +153,8 @@ has "$out" "task-pointer.sh arm" "A2 says how to arm"
 printf 't1\n' > "$PROJ/.zyz-worker/current-task"
 out="$( (cd "$PROJ" && bash "$RR" open impl-main --stage impl) 2>&1)"; rc=$?
 rc_is "$rc" 0 "A3 default task = this session's pointer"
-grep -q '^- Review: point=impl-main; stage=impl; kind=main; round=0; started=[0-9]*; blocking=-; behavior=-$' "$T/status.md" \
-    && pass "A3 open writes a round=0 row in the §10.4 format" || fail "A3 open row format" "$(grep 'point=impl-main' "$T/status.md")"
+grep -q '^- Review: point=impl-main; stage=impl; kind=main; round=0; started=[0-9]*; blocking=-; rejected=-; behavior=-$' "$T/status.md" \
+    && pass "A3 open writes a round=0 row in the §10.4 format (+ rejected=, §10.8-1)" || fail "A3 open row format" "$(grep 'point=impl-main' "$T/status.md")"
 for bad in "open Bad_Point --stage impl" "open x --stage build" "open x --stage impl --kind side" "open x" "open -x --stage impl" \
            "start nope" "result impl-main --blocking 1" "grant impl-main" "check impl-main --outcome later --reason r" \
            "tier quick --reason r" "tier fast" "frobnicate" "start impl-main extra"; do
@@ -163,12 +177,30 @@ out="$(rr start impl-main 2>&1)"; rc=$?
 rc_is "$rc" 3 "A7 next start before the last round's result -> exit 3"
 has "$out" "result impl-main --blocking" "A7 says to record the result first"
 rr result impl-main --blocking 2 --behavior 1 >/dev/null
-grep -q 'point=impl-main; stage=impl; kind=main; round=1; started=[0-9]*; blocking=2; behavior=1$' "$T/status.md" \
+grep -q 'point=impl-main; stage=impl; kind=main; round=1; started=[0-9]*; blocking=2; rejected=-; behavior=1$' "$T/status.md" \
     && pass "A8 result fills blocking/behavior in place" || fail "A8 result in place"
-rr result impl-main --blocking 3 >/dev/null
-grep -q 'round=1; started=[0-9]*; blocking=3; behavior=-$' "$T/status.md" && pass "A8 result can be corrected" || fail "A8 result correction"
+rr result impl-main --blocking 3 --rejected 1 >/dev/null
+grep -q 'round=1; started=[0-9]*; blocking=3; rejected=1; behavior=-$' "$T/status.md" && pass "A8 result can be corrected, rejected= recorded" || fail "A8 result correction"
+rr result impl-main --blocking 0 --rejected x >/dev/null 2>&1; rc_is "$?" 2 "A8 --rejected must be a count"
+# rejected= sits between blocking= and behavior= (lane E's template order);
+# reading does not depend on field order, so rows in the other order still count.
+python3 - "$T/status.md" <<'PY'
+import io, re, sys
+p = sys.argv[1]
+s = io.open(p, encoding="utf-8").read()
+s = re.sub(r"(point=impl-main; .*round=1; started=\d+); blocking=3; rejected=1; behavior=-", r"\1; blocking=0; behavior=-; rejected=0", s)
+io.open(p, "w", encoding="utf-8").write(s)
+PY
+has "$(rr status impl-main)" "round=1 blocking=0 rejected=0 behavior=-" "A8 a row with rejected= after behavior= still parses"
+# B2 (§10.8-1): the close hint only when the reviewer's blockings are all gone.
+out="$(rr result impl-main --blocking 0 --rejected 0)"
+has "$out" "close impl-main --outcome passed" "A8 blocking=0 rejected=0 points at close --outcome passed"
 out="$(rr result impl-main --blocking 0)"
-has "$out" "close impl-main --outcome passed" "A8 zero blocking points at close --outcome passed"
+lacks "$out" "--outcome passed --reason" "A8 blocking=0 without --rejected: no close hint"
+has "$out" "--rejected 0" "A8 ... and asks for --rejected"
+out="$(rr result impl-main --blocking 0 --rejected 2)"
+lacks "$out" "--outcome passed --reason" "A8 blocking=0 rejected=2: no close hint"
+has "$out" "复核" "A8 ... and says the rejections go to the next round for review"
 
 # ---------------------------------------------------------------------------
 # B — caps per tier, grants, strict convergence checks
@@ -228,12 +260,48 @@ rc_is "$rc" 3 "B strict: an escalate check holds round 10 for the user"
 has "$out" "escalate" "B strict: refusal says why"
 rr grant design-main --reason "用户决定继续" >/dev/null
 rr start design-main >/dev/null 2>&1; rc_is "$?" 0 "B strict: the user's grant releases round 10"
-# A check made early inside the window still counts.
+# F3 (§10.8-5): only a check made after round n-1 opens round n; an early
+# check inside the window does not count.
 mk_status "$T" "- Tier: strict"
 rr open impl-a --stage impl --kind aux >/dev/null
 run_rounds impl-a 2 >/dev/null
 rr check impl-a --outcome reorder --reason early >/dev/null
-rc="$(run_rounds impl-a 2)"; rc_is "$rc" 0 "B strict: a check at round 2 covers round 4 (window 1..3)"
+rc="$(run_rounds impl-a 1)"; rc_is "$rc" 0 "B strict: a continue-type check at round 2 does not hold round 3"
+out="$(rr start impl-a 2>&1)"; rc=$?
+rc_is "$rc" 3 "B strict: a check at round 2 does NOT cover round 4"
+has "$out" "第 3 轮之后" "B strict: ... the refusal asks for a check after round 3"
+rr check impl-a --outcome continue --reason "第 3 轮后" >/dev/null
+rr start impl-a >/dev/null 2>&1; rc_is "$?" 0 "B strict: the round-3 check opens round 4"
+rr result impl-a --blocking 1 >/dev/null
+rc="$(run_rounds impl-a 2)"; rc_is "$rc" 0 "B strict: rounds 5..6 need no check"
+# The next period: a check after round 5 (one round early) does not open 7.
+mk_status "$T" "- Tier: strict"
+rr open impl-b --stage impl >/dev/null
+run_rounds impl-b 3 >/dev/null; rr check impl-b --outcome continue --reason r3 >/dev/null
+run_rounds impl-b 2 >/dev/null; rr check impl-b --outcome continue --reason r5 >/dev/null
+run_rounds impl-b 1 >/dev/null
+rr start impl-b >/dev/null 2>&1; rc_is "$?" 3 "B strict: a check at round 5 does not open round 7"
+# F2 (§10.8-5): escalate holds the next round at any round, any tier.
+for tier in strict standard; do
+    mk_status "$T" "- Tier: $tier"
+    rr open esc --stage impl >/dev/null
+    run_rounds esc 1 >/dev/null
+    rr check esc --outcome escalate --reason "交用户" >/dev/null
+    out="$(rr start esc 2>&1)"; rc=$?
+    rc_is "$rc" 3 "B $tier: escalate after round 1 holds round 2"
+    has "$out" "escalate" "B $tier: ... and says why"
+    has "$(rr status esc)" "gate=escalated" "B $tier: status shows gate=escalated"
+    rr grant esc --reason "用户：继续" >/dev/null
+    rr start esc >/dev/null 2>&1; rc_is "$?" 0 "B $tier: the user's grant releases round 2"
+    rr result esc --blocking 1 >/dev/null
+    rr start esc >/dev/null 2>&1; rc_is "$?" 0 "B $tier: the escalate is spent once a later round started"
+done
+mk_status "$T" "- Tier: strict"
+rr open esc --stage impl >/dev/null
+run_rounds esc 2 >/dev/null
+rr check esc --outcome escalate --reason a >/dev/null
+rr check esc --outcome continue --reason "用户说继续" >/dev/null
+rr start esc >/dev/null 2>&1; rc_is "$?" 0 "B strict: a later non-escalate check at the same round replaces the escalate"
 
 # ---------------------------------------------------------------------------
 # C — mode and cross-harness
@@ -247,6 +315,9 @@ for p in d:design i:impl a:aggregate; do rr open "${p%%:*}" --stage "${p#*:}" >/
 [ "$(startline i)" = "round=2 mode=incremental cross-harness=no" ] && pass "C impl r2: incremental, no cross-harness" || fail "C impl r2"
 [ "$(startline a)" = "round=1 mode=full cross-harness=yes" ] && pass "C aggregate r1: cross-harness" || fail "C aggregate r1"
 [ "$(startline a)" = "round=2 mode=incremental cross-harness=no" ] && pass "C aggregate r2: no cross-harness" || fail "C aggregate r2"
+[ "$(rr start a --full --reason "结构改了" 2>&1)" = "round=3 mode=full cross-harness=no" ] && pass "C aggregate forced full round: still no cross-harness (§10.8-7)" || fail "C aggregate forced full"
+rr result a --blocking 1 >/dev/null
+has "$(rr status a)" "next=4 mode=incremental cross-harness=no" "C status agrees for aggregate"
 mk_status "$T" "- Tier: strict"
 rr open d --stage design >/dev/null; startline d >/dev/null; startline d >/dev/null
 [ "$(startline d)" = "round=3 mode=incremental cross-harness=yes" ] && pass "C strict design r3: cross-harness" || fail "C strict design r3"
@@ -308,7 +379,7 @@ rr open impl-main --stage impl >/dev/null
 run_rounds impl-main 3 >/dev/null
 out="$(rr status)"
 has "$out" "Tier: standard" "F status shows the tier"
-has "$out" "impl-main stage=impl kind=main tier=standard round=3 blocking=1 behavior=- history=1→1→1 cap=3 closed=no next=4 mode=incremental cross-harness=no gate=needs-grant" "F status line"
+has "$out" "impl-main stage=impl kind=main tier=standard round=3 blocking=1 rejected=- behavior=- history=1→1→1 cap=3 closed=no next=4 mode=incremental cross-harness=no gate=needs-grant" "F status line"
 has "$out" "三选一" "F status explains a blocked next round"
 out="$(rr status impl-main)"; rc_is "$?" 0 "F status <point>"
 rr status nope >/dev/null 2>&1; rc_is "$?" 2 "F status <unknown point> -> exit 2"
@@ -334,19 +405,24 @@ has "$out" "INVALID  - Review: point=bad; stage=bogus" "G a malformed row is rep
 has "$out" "duplicate round" "G a duplicate round row is reported"
 has "$out" "Review-Grant: point=ok; round=1; at=1700000000  <- fields must be" "G a grant without a reason is reported"
 has "$out" "ok stage=impl" "G the valid point still parses"
+G_BEFORE="$SANDBOX/g-before.md"; cp "$T/status.md" "$G_BEFORE"
 rr start ok >/dev/null; rc_is "$?" 0 "G writes go on next to bad rows"
 grep -qx -- '- Review: point=bad; stage=bogus; kind=main; round=1; started=1700000000; blocking=-; behavior=-' "$T/status.md" \
     && pass "G the bad row is kept byte-for-byte" || fail "G bad row rewritten"
-# Every original line survives, in order, and the new row sits inside the
-# section (before `## 下一步`), not inside the comment.
-python3 - "$T/status.md" <<'PY' && pass "G only rows added, inside the section" || fail "G layout"
+# Byte-for-byte: drop the one row this start added and the file must equal
+# the text before it; the row sits inside the section (before `## 下一步`),
+# right after the section's last pre-existing line, not inside the comment.
+python3 - "$T/status.md" "$G_BEFORE" <<'PY' && pass "G only the new row added, everything else byte-for-byte" || fail "G layout"
 import sys
-lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
-i_sec, i_next = lines.index("## 评审收口"), lines.index("## 下一步")
+after = open(sys.argv[1], encoding="utf-8", newline="").read()
+before = open(sys.argv[2], encoding="utf-8", newline="").read()
+lines = after.split("\n")
 new = [i for i, l in enumerate(lines) if l.startswith("- Review: point=ok; stage=impl; kind=main; round=1;")]
-end_comment = lines.index("-->")
-assert len(new) == 1 and end_comment < new[0] < i_next and i_sec < new[0], (new, end_comment, i_next)
-assert lines[-3:] == ["## 下一步", "", "- 继续"] or lines[-4:-1] == ["## 下一步", "", "- 继续"], lines[-4:]
+assert len(new) == 1, new
+i = new[0]
+assert "\n".join(lines[:i] + lines[i + 1:]) == before, "text other than the new row changed"
+assert lines.index("-->") < i < lines.index("## 下一步") and lines.index("## 评审收口") < i, i
+assert lines[i - 1].startswith("- Review-Grant: point=ok; round=1;"), lines[i - 1]
 PY
 # No section at all -> created at the end.
 printf '# s\n\n## 元数据\n\n- Current Phase: implementation\n- Tier: fast\n' > "$T/status.md"
@@ -395,6 +471,7 @@ print(json.dumps({"cwd":sys.argv[1],"session_id":sys.argv[4],"tool_name":"Agent"
 # gate <type> <prompt> [field]: the prompt gets a `Tier: $GATE_TIER` line of
 # its own (as main-agent.md writes it) unless GATE_TIER is set to "".
 GATE_TIER=standard
+l5() { payload "$@" | bash "$L5"; }
 gate() {
     local p="$2"
     [ -z "$GATE_TIER" ] || p="$p
@@ -426,6 +503,24 @@ out="$(gate zyz-worker:review-agent "$P1")"
 denied "$out" && pass "H stale marker (round 1 after round 2 started) -> deny" || fail "H stale"
 has "$out" "review-point=impl-main round=2 mode=incremental" "H ... and gives the right marker"
 out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=incremental")"; [ -z "$out" ] && pass "H round 2 incremental -> allow" || fail "H r2 incremental"
+# B1 (§10.8-2): once the round has a result, its marker no longer dispatches.
+rr result impl-main --blocking 1 >/dev/null
+out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=incremental")"
+denied "$out" && pass "H a round that already has a result -> deny" || fail "H resulted round allowed" "$out"
+has "$out" "已经记录了结果" "H ... and says so"
+has "$out" "start impl-main" "H ... and points at start"
+out="$(l5 zyz-worker:review-agent "增量复审：只核实上一轮的 blocking 是否落地，重点问题就行。 review-point=impl-main round=2 mode=incremental")"
+denied "$out" && pass "H L5: no incremental exemption for a round that has a result" || fail "H L5 resulted round"
+# The over-cap replay from the final review: cap reached, reuse the last marker.
+rr result impl-main --blocking 2 >/dev/null; rr start impl-main >/dev/null; rr result impl-main --blocking 2 >/dev/null
+rr start impl-main >/dev/null 2>&1; rc_is "$?" 3 "H (B1 replay) round 4 refused at the cap"
+out="$(gate zyz-worker:review-agent "review-point=impl-main round=3 mode=incremental")"
+denied "$out" && pass "H (B1 replay) reusing round 3's marker past the cap -> deny" || fail "H B1 replay allowed" "$out"
+rr result impl-main --blocking 2 >/dev/null
+mk_status "$T" "- Tier: standard"
+rr open impl-main --stage impl >/dev/null
+rr open design-main --stage design >/dev/null
+rr start impl-main >/dev/null; rr result impl-main --blocking 2 >/dev/null; rr start impl-main >/dev/null
 out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=full")"
 denied "$out" && pass "H mode=full on an incremental round -> deny" || fail "H r2 full"
 has "$out" "start impl-main --full" "H ... and points at start --full for a full re-review"
@@ -497,7 +592,6 @@ printf 't1\n' > "$PROJ/.zyz-worker/current-task"
 # ---------------------------------------------------------------------------
 # I — L5 lets a recorded incremental re-review through, nothing else
 # ---------------------------------------------------------------------------
-l5() { payload "$@" | bash "$L5"; }
 CAP="增量复审：只核实上一轮的 blocking 是否落地，重点问题就行。"
 mk_status "$T" "- Tier: standard"
 rr open impl-main --stage impl >/dev/null
@@ -536,14 +630,14 @@ rr start impl-main --full >/dev/null 2>&1; rc_is "$?" 2 "J --full needs --reason
 rr start impl-main --reason x >/dev/null 2>&1; rc_is "$?" 2 "J --reason without --full -> exit 2"
 out="$(rr start impl-main --full --reason "结构改了")"
 [ "$out" = "round=2 mode=full cross-harness=yes" ] && pass "J start --full: round 2 full, impl full round gets cross-harness" || fail "J start --full" "$out"
-rr result impl-main --blocking 1 >/dev/null
-grep -q '^- Review: point=impl-main; stage=impl; kind=main; round=2; started=[0-9]*; blocking=1; behavior=-; mode=full; reason=结构改了$' "$T/status.md" \
-    && pass "J forced-full row keeps mode=full through result" || fail "J forced row" "$(grep 'round=2' "$T/status.md")"
-out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=full")"; [ -z "$out" ] && pass "J gate: forced-full round with mode=full -> allow" || fail "J gate forced full"
+out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=full")"; [ -z "$out" ] && pass "J gate: forced-full round with mode=full -> allow" || fail "J gate forced full" "$out"
 out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=incremental")"
 denied "$out" && pass "J gate: forced-full round marked incremental -> deny" || fail "J gate forced incremental"
 out="$(l5 zyz-worker:review-agent "$CAP review-point=impl-main round=2 mode=incremental")"
 denied "$out" && pass "J L5: no incremental exemption on a forced-full round" || fail "J L5 forced"
+rr result impl-main --blocking 1 >/dev/null
+grep -q '^- Review: point=impl-main; stage=impl; kind=main; round=2; started=[0-9]*; blocking=1; rejected=-; behavior=-; mode=full; reason=结构改了$' "$T/status.md" \
+    && pass "J forced-full row keeps mode=full through result" || fail "J forced row" "$(grep 'round=2' "$T/status.md")"
 out="$(rr start impl-main)"; [ "$out" = "round=3 mode=incremental cross-harness=no" ] && pass "J the round after a forced one is incremental again" || fail "J r3" "$out"
 rr result impl-main --blocking 1 >/dev/null
 rr start impl-main >/dev/null 2>&1; rc_is "$?" 3 "J a forced-full round counts toward the cap"
@@ -574,7 +668,13 @@ rr open other --stage aggregate >/dev/null
 has "$(rr status)" "unclosed: other" "J status lists unclosed points"
 # passed
 rr start other >/dev/null; rr result other --blocking 0 >/dev/null
-rr close other --outcome passed --reason "零 blocking" >/dev/null; rc_is "$?" 0 "J close passed after a zero-blocking round"
+rr close other --outcome passed --reason "零 blocking" >/dev/null; rc_is "$?" 3 "J close passed without a recorded rejected count -> exit 3"
+rr result other --blocking 0 --rejected 1 >/dev/null
+out="$(rr close other --outcome passed --reason "零 blocking")"; rc=$?
+rc_is "$rc" 3 "J close passed with rejected blockings -> exit 3 (§10.8-1)"
+has "$out" "复核" "J ... and says the rejections need an independent re-check"
+rr result other --blocking 0 --rejected 0 >/dev/null
+rr close other --outcome passed --reason "零 blocking" >/dev/null; rc_is "$?" 0 "J close passed after blocking=0 rejected=0"
 rr start other >/dev/null 2>&1; rc_is "$?" 3 "J a closed point under its cap still refuses start"
 # reopen: a new set of records, the old ones kept
 rr open impl-main >/dev/null; rc_is "$?" 0 "J reopen a closed point (stage taken from its records)"
@@ -588,15 +688,17 @@ rr start impl-main >/dev/null 2>&1; rc_is "$?" 3 "J ... and is capped again at 3
 mk_status "$T" "- Tier: standard"
 rr open design-replay --stage design --kind aux --tier strict >/dev/null; rc_is "$?" 0 "J open --tier strict on a standard task"
 grep -q '^- Review: point=design-replay; stage=design; kind=aux; tier=strict; round=0;' "$T/status.md" && pass "J tier= field on the point's row" || fail "J tier field"
-rc="$(run_rounds design-replay 3)"; rc_is "$rc" 0 "J strict point: past the standard design cap of 2"
+rc="$(run_rounds design-replay 2)"; rr start design-replay >/dev/null 2>&1; rc="$rc$?"
+rc_is "$rc" 00 "J strict point: past the standard design cap of 2"
 grep -q '^- Review: point=design-replay; .*tier=strict; round=3;' "$T/status.md" && pass "J start carries the point tier onto new rows" || fail "J tier carried"
-rr start design-replay >/dev/null 2>&1; rc_is "$?" 3 "J strict point: round 4 needs a convergence check"
-has "$(rr status design-replay)" "tier=strict" "J status shows the point's effective tier"
 out="$(GATE_TIER=strict gate zyz-worker:review-agent "review-point=design-replay round=3 mode=incremental")"
 [ -z "$out" ] && pass "J gate: dispatch Tier = the point's effective tier (strict) -> allow" || fail "J gate point tier" "$out"
 out="$(GATE_TIER=standard gate zyz-worker:review-agent "review-point=design-replay round=3 mode=incremental")"
 denied "$out" && pass "J gate: dispatch Tier = the task tier, not the point's -> deny" || fail "J gate task tier accepted"
 has "$out" "Tier: strict" "J ... and names the point's tier"
+rr result design-replay --blocking 1 >/dev/null
+rr start design-replay >/dev/null 2>&1; rc_is "$?" 3 "J strict point: round 4 needs a convergence check"
+has "$(rr status design-replay)" "tier=strict" "J status shows the point's effective tier"
 rr open d2 --stage design --tier fast >/dev/null 2>&1; rc_is "$?" 2 "J --tier below the task tier -> exit 2"
 rr open i2 --stage impl >/dev/null; run_rounds i2 3 >/dev/null
 rr start i2 >/dev/null 2>&1; rc_is "$?" 3 "J standard point capped at 3"
@@ -609,6 +711,27 @@ rr open i2 --tier standard >/dev/null; rc_is "$?" 3 "J lowering a point's tier w
 rr open i2 --tier standard --by user >/dev/null; rc_is "$?" 0 "J back to the task tier with --by user"
 has "$(rr status i2)" "tier=standard" "J ... the override is gone"
 rr open i2 --stage design >/dev/null 2>&1; rc_is "$?" 2 "J re-open with another stage -> exit 2"
+# F1 (§10.8-6): reopening a closed point keeps its own tier; lowering it on
+# reopen is a downgrade and needs --by user.
+close_passed() { rr start "$1" >/dev/null; rr result "$1" --blocking 0 --rejected 0 >/dev/null; rr close "$1" --outcome passed --reason ok >/dev/null; }
+rr open up --stage impl --tier strict >/dev/null
+close_passed up
+rr open up >/dev/null; rc_is "$?" 0 "J reopen a strict point without --tier"
+has "$(rr status up)" "tier=strict" "J ... keeps its strict tier"
+[ "$(grep -c '^- Review: point=up; stage=impl; kind=main; tier=strict; round=0;' "$T/status.md")" -eq 2 ] \
+    && pass "J ... the new round=0 row carries tier=strict" || fail "J reopen tier row"
+close_passed up
+rr open up --stage impl >/dev/null; has "$(rr status up)" "tier=strict" "J reopen with --stage only still keeps the tier"
+close_passed up
+before="$(sha "$T/status.md")"
+out="$(rr open up --tier standard)"; rc=$?
+rc_is "$rc" 3 "J reopen with a lower --tier without --by user -> exit 3"
+has "$out" "--by user" "J ... and names --by user"
+[ "$before" = "$(sha "$T/status.md")" ] && pass "J ... writes nothing" || fail "J lowering reopen wrote"
+rr open up --tier standard --by user >/dev/null; rc_is "$?" 0 "J reopen lower with --by user"
+has "$(rr status up)" "tier=standard" "J ... the point is back on the task tier"
+close_passed up
+rr open up --tier strict >/dev/null; rc_is "$?" 0 "J reopen with a higher --tier needs no --by user"
 mk_status "$T" "- Tier: fast"
 rr open dz --stage design --tier standard >/dev/null
 [ "$(rr start dz)" = "round=1 mode=full cross-harness=yes" ] && pass "J fast task, standard design point: allowed, with cross-harness" || fail "J fast task standard point"

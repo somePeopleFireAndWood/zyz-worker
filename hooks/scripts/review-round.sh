@@ -16,22 +16,27 @@
 #                   [--tier standard|strict [--by user]]
 #             --tier gives this point a stricter tier than the task's; on an
 #             open point it re-tiers it (up only; back down needs --by user).
-#             Opening a closed point starts a new set of records.
+#             Opening a closed point starts a new set of records and keeps
+#             the point's own tier (lowering it needs --by user).
 #   review-round.sh start <point> [--full --reason <text>]
 #             prints `round=<n> mode=full|incremental cross-harness=yes|no`;
 #             --full forces a full re-review (after a structural fix; counts
 #             as a round like any other). Exit 3 with the next step when the
 #             round is not allowed (cap reached without a grant -> hand to the
-#             user; strict tier without a convergence check -> run `check`;
-#             last round has no result; point closed).
-#   review-round.sh result <point> --blocking N [--behavior M]
-#             M = accepted blocking findings of this round that change product
-#             behaviour (M <= N).
+#             user; strict tier without a convergence check after round n-1
+#             -> run `check`; an escalate check not yet granted; last round
+#             has no result; point closed).
+#   review-round.sh result <point> --blocking N [--rejected R] [--behavior M]
+#             N = accepted blocking findings; R = blocking findings the
+#             reviewer reported but you rejected or downgraded (they go to
+#             the next round for review); M = accepted ones that change
+#             product behaviour (M <= N).
 #   review-round.sh grant <point> --reason <text>
 #             the user approved ONE extra round (the next one).
 #   review-round.sh check <point> --outcome continue|class-fix|reorder|escalate --reason <text>
 #   review-round.sh close <point> --outcome passed|residual|split [--by user] --reason <text>
-#             passed: the latest round has a result with blocking=0;
+#             passed: the latest round has a result with blocking=0 and
+#             rejected=0;
 #             residual / split: the user's choice at the cap, --by user.
 #   review-round.sh tier fast|standard|strict --reason <text> [--by user|agent]
 #             a downgrade needs --by user.
@@ -46,7 +51,8 @@
 #             design  impl  aggregate
 #   fast        0      2       1
 #   standard    2      3       3
-#   strict      -      -       -     (a Review-Check before rounds 4, 7, 10, ...)
+#   strict      -      -       -     (round n = 4, 7, 10, ... needs a Review-Check
+#                                     made at round n-1)
 # A task without a valid `- Tier:` line (from before the tiers) is recorded
 # without a cap.
 #

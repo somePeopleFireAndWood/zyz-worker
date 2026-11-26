@@ -6,7 +6,7 @@
 
 ## 范围
 
-<!-- 评审对象（文件、diff 基准、评审点）。写明评审开始时记录、结束时复核的被评审文件 mtime / 哈希。评审过程中有文件变了，本报告作废——报告给主 agent 以便重新派发，不修补发现。mode=incremental 时写明上一轮 blocking 清单的来源和修复 diff 的范围。 -->
+<!-- 评审对象（文件、diff 基准、评审点）。写明评审开始时记录、结束时复核的被评审文件 mtime / 哈希。评审过程中有文件变了，本报告作废——报告给主 agent 以便重新派发，不修补发现。mode=incremental 时写明上一轮被接受的 blocking 清单、被拒绝的 blocking 及理由的来源，以及修复 diff 的范围。 -->
 
 ## 覆盖维度
 
@@ -31,6 +31,7 @@
 
 - 修复落地核实: (covered | not-covered: <reason>)
 - diff 新问题: (covered | not-covered: <reason>)
+- 被拒绝 blocking 复核: (covered | not-covered: <reason> | n/a: none rejected)
 - 其余维度: n/a: incremental round
 
 ## 结果
@@ -88,7 +89,10 @@
 
 ## 已复核的被拒绝建议
 
-<!-- 作者附理由拒绝的发现逐条复核；已登记在遗留风险清单或评审历史文件中的条目凭 id 答复一次。 -->
+<!-- mode=incremental：上一轮被拒绝或降级的每条 blocking 一行，二选一：认可这次拒绝（写明依据），或重新提为 blocking（同时在 ## 发现 里记一条，附证据）。没有被拒绝的条目写 none。已登记在遗留风险清单或评审历史文件中的条目凭 id 答复一次。 -->
+
+| 上轮编号 | 内容（一句话） | 拒绝理由（摘要） | 结论（认可拒绝 / 重新提为 blocking → ## 发现 #<n>） | 依据 |
+|---|---|---|---|---|
 
 ## 遗留风险
 

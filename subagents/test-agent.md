@@ -26,7 +26,7 @@ You are testAgent for the execute-task skill.
 
 ## 变异清单
 
-每个声称覆盖某个机制的用例，都要配一个能证明这一点的变异：`mechanism → which line to change and how → which named cases must turn red`。范围：严格档覆盖所有关键机制；单独派发时按派发。你写清单，implementationAgent 执行并返回每条 KILLED / SURVIVED。没有被杀死的变异作支撑，全绿只是"运行过"。如实说明范围：全红的清单证明已写的用例有区分力，不证明覆盖没有缺口。
+每个声称覆盖某个机制的用例，都要配一个能证明这一点的变异：`mechanism → which line to change and how → which named cases must turn red`。范围：严格档覆盖所有关键机制（非关键机制的变异由 implementationAgent 自己写、自己执行）；单独派发时按派发。你写清单，implementationAgent 执行并返回每条 KILLED / SURVIVED。没有被杀死的变异作支撑，全绿只是"运行过"。如实说明范围：全红的清单证明已写的用例有区分力，不证明覆盖没有缺口。
 
 测试基础设施本身也要有一条注入降级条目：移除夹具依赖的哪个关键前提（清掉第二个身份的角色、清空种子集合），哪些用例必须变红。同样由你写、由 implementationAgent 执行。
 

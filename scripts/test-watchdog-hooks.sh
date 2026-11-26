@@ -1128,7 +1128,7 @@ t22_has "$S" "并不算收窄目标" "states contrived deferral is not goal narr
 t22_has "$S" "让一项域内需求没有得到满足，无论给它贴了什么等级标签，都是在收窄目标" "keeps in-domain deferral as goal narrowing"
 t22_has "$S" "每条移入加固 SubTask 的阻断发现都已落地" "verifies moved findings at delivery"
 t22_has skills/execute-task/prompts/main-agent.md "**等级不收窄派发。**" "keeps tiers from narrowing a dispatch"
-t22_has skills/execute-task/prompts/main-agent.md "只要 blocking 的派发是范围限缩，L5 会拒绝" "ties the tier rule to the L5 scope guard"
+t22_has skills/execute-task/prompts/main-agent.md "全量轮里这种限缩会被 L5 拒绝" "ties the tier rule to the L5 scope guard"
 t22_has skills/execute-task/prompts/main-agent.md "拒绝或降级一个 reviewAgent 的阻断发现，本身并不能关闭评审点" "keeps the reviewer re-check"
 for f in subagents/review-agent.md agents/review-agent.md; do
     if grep -qE '^## 发现分级$' "$f" 2>/dev/null; then pass "T6 $f has the finding-tiers heading (#22)"; else fail "T6 $f has the finding-tiers heading (#22)"; fi

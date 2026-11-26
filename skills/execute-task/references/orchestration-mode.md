@@ -22,8 +22,10 @@
 - **`phase` 可以回退，但 `done` 是吸收态。** `phase` **可以**在 `design`、`implementation`、`testing`、`review`、`delivery` 和 `awaiting-confirmation` 之间前进或后退，以反映真实的迭代——例如对一个处于 `awaiting-confirmation` 的 worker 做的评审要求修改时，phase 回退到 `implementation`。**唯一**不可逆的阶段是 `done`：一旦写入，它就是**吸收**终态，永远不会再改成更早的阶段。`done` 表示**用户已确认交付**；worker **只有**在用户明确确认之后（独立模式下在 worker 窗口中，编排模式下经由 L1 转达）才写入 `done`——**绝不**自主写入，也绝不在没有用户确认的情况下从 `awaiting-confirmation` 自行推进。`awaiting-confirmation` 表示 worker 自我声明已完成、正在等待那次确认，它仍然是可逆的。`error` 也是可逆的——错误修复后，恢复到某个工作阶段。
 - **`wait-state` 与 `phase` 相互正交。** 独立于 `phase` 设置 `wait-state`。挂起之前设置 `wait-state=waiting-user`/`waiting-subagent`/`waiting-resource`，并附非空的 `waiting-reason`；恢复后立即设置 `wait-state=none`。
 - **确认会把 worker 推进到 `done`。** 生成最终报告后，worker 进入 `phase=awaiting-confirmation`（自我声明已完成）并**等待**。**只有**在用户确认时它才推进到 `phase=done`——用户可以直接在 worker 窗口/对话中确认，也可以通过 L1 转达、到达 pane 中的确认消息来确认（用户写下 `confirmed` 令牌时，编排器会派发一个带 `intent=relay-confirmation` 的 `orch-driver-agent`）。worker 绝不自行推进到 `done`。用户确认后，worker 写入 `phase=done`（原子写入，frontmatter 有效）；编排器在下一次轮询时把它同步为 `state: completed`。
-- **设计→实现是一道硬性的用户批准闸门。** 进入实现之前，worker **必须**写入 `wait-state=waiting-user`（保持 `phase=design`），并且在明确的用户批准到达之前，**不得**写入 `phase=implementation`，也不得派发实现角色（implementation-agent 或 lane），快速档里主 agent 也不得开始直接改动。合法的批准渠道**只有**：用户接入 worker 的 pane，或者一份匹配的 `answer.md`（worker 先向 `ZYZ_QUESTION_FILE` 发出一个带 question-id 的批准请求；只有回答了该 id 的 `answer.md` 才算——过时或无关的答复不算）。编排器从不转达设计批准。worker 在写入 `phase=implementation` **之前**，把批准事件（或事先明确的跳过指令原文）记入磁盘上 `.zyz-worker/tasks/<task-id>/status.md` 的 `## 设计评审 > 设计批准记录`；一个恢复中或重新装载的 worker，**只有**在磁盘上存在该记录时才进入实现——绝不单凭 `phase` 进入。各档位的这道闸门：标准档、严格档是设计批准，快速档是改法确认（`SKILL.md` `## 自动执行策略`）。
+- **设计→实现是一道硬性的用户批准闸门。** 进入实现之前，worker **必须**写入 `wait-state=waiting-user`（保持 `phase=design`），并且在明确的用户批准到达之前，**不得**写入 `phase=implementation`，也不得派发实现角色（implementation-agent 或 lane），快速档里主 agent 也不得开始直接改动。合法的批准渠道**只有**：用户接入 worker 的 pane，或者一份匹配的 `answer.md`（worker 先向 `ZYZ_QUESTION_FILE` 发出一个带 question-id 的批准请求；只有回答了该 id 的 `answer.md` 才算——过时或无关的答复不算）。编排器从不转达设计批准。worker 在写入 `phase=implementation` **之前**，把批准事件（或事先明确的跳过指令原文）记入磁盘上 `.zyz-worker/tasks/<task-id>/status.md` 的 `## 设计评审 > 设计批准记录`；一个恢复中或重新装载的 worker，**只有**在磁盘上存在该记录时才进入实现——绝不单凭 `phase` 进入。各档位的这道闸门：标准档、严格档是设计批准，快速档是改法确认（`SKILL.md` `## 工作流` §2）。
 - **异步的用户问答走文件。** 用户没有接入 tmux pane 时，使用 `ZYZ_QUESTION_FILE` 和 `ZYZ_ANSWER_FILE`。写完问题后，在后台轮询回答文件（例如后台 Bash 运行 `until [ -f "$ZYZ_ANSWER_FILE" ]; do sleep 30; done`）：回答写入对话之外，不会有任何东西把你叫醒，这个后台任务就是那个会叫醒你的执行者，它在跑时 watchdog 也不会把任务当成搁置。消费完一份 `answer.md` 后，把它重命名为 `answer.md.consumed.<question-id>`。评审点到达轮次上限、严格档收口检查结论为升级，同样通过这一问答进行。
+- **定档。** 编排器只下发 task-id，主条目没有档位字段，也没有人在 pane 里看 worker 的第一条回复。所以 worker 按 `SKILL.md` `## 档位` 选定档位后，把所选档位和一句理由写进第一份交给用户的确认问题里（`ZYZ_QUESTION_FILE`；快速档是改法确认，标准档和严格档是设计批准），由用户确认或改档；用户改档时以用户的回答为准，用 `review-round.sh tier … --by user` 写入。用户确认之前档位只是提议，设计→实现闸门照常挡着。主条目不新增字段。
+- **lane 与合并边界。** worker 内部按 `SKILL.md` `## 并行模型` 开的 lane（含集成 lane）只服务于 worker 自己的任务分支：lane 分支并回 worker 的任务分支，不直接合到基线分支；模板 2 用 `git-worktree` skill 建的 lane worktree，由 worker 在 lane 分支并回之后自己清理（编排器的 `orch-cleanup-worker.sh` 不知道它们）。集成 lane 在编排模式下负责把各 lane 并进任务分支、跟进 CI、转发评审意见，不合 base。合到基线分支仍然只由编排器在收到 `## Pending Merge Approval` 令牌后执行（`references/version-control.md`）。
 - **两个状态文件，而不是一个。** 编排模式保留现有的 `.zyz-worker/tasks/<task-id>/status.md` 作为 worker 的详细任务状态（供 execute-task 工作流使用），并在 `ZYZ_WORKER_STATUS_FILE` 所指的路径上新增 `worker-status.md`，作为面向编排器的快照。两个文件互不替代。
 
 ## 复用块：带内的运行时配置块优先于启动时的环境变量
@@ -55,7 +57,7 @@
 | §3.A 第 1 步 / §3.B 第 1 步——主 agent 开始直接改动，或派发 lane / implementation-agent | `implementation`（仅在用户批准后——绝不自主；见设计→实现硬性闸门规则） | 开始改动或派发之前 |
 | 单独派发的测试运行或 test-agent（§3.A 第 1 步的自验证、§3.B 第 2 步）；lane 在内部自验证时保持 `implementation` | `testing` | 派发之前 / 运行之前 |
 | §3.A 第 2 步 / §3.B 第 3 步——工作区冻结，然后派发 review-agent | `review` | 派发之前 |
-| 评审 → 修复循环（§3.A 第 2 步、§3.B 第 3–4 步） | `review`（默认保持；如果确实回到了大量实现工作，**可以**回退到 `implementation`——允许回退） | 不写盘 |
+| 评审 → 修复循环（§3.A 第 2 步、§3.B 第 3 步） | `review`（默认保持；如果确实回到了大量实现工作，**可以**回退到 `implementation`——允许回退） | 不写盘 |
 | §3.C 汇总测试 | `testing` | 进入时 |
 | §3.C 汇总评审 | `review` | 进入时 |
 | §4 交付 | `delivery` | 进入时 |
@@ -70,3 +72,5 @@ worker **只有**在用户明确确认之后才写入 `phase=done`（绝不自�
 ## 维护说明
 
 本文件与 `orchestration-scheduling-task` skill 的约定相耦合。如果 execute-task 工作流新增了一个阶段，要同步扩展这里、`SKILL.md` `## 编排模式` 的要点和 `skills/orchestration-scheduling-task/templates/worker-status.md` 中的 `phase` 枚举，并同步扩展这里的阶段映射表。
+
+**语义变化记录（0.33.0）。** 阶段映射表的 `testing` 行原来是"派发 test-agent / 运行测试之前写 `testing`"。lane 模型下，lane 在内部同时写代码、写测试并自验证，这段时间 phase 保持 `implementation`；只有单独进行的测试运行或单独派发的 test-agent（快速档主 agent 直接改后的自验证、严格档关键机制的 test-agent、§3.C 汇总测试）才写 `testing`。编排器脚本不按 `testing` 分支，这一变化不影响编排器的行为；字段、取值、批准渠道和 `done` 吸收态都没有变。

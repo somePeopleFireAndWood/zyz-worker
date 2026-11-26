@@ -11,13 +11,15 @@ scope guard call ``gate`` and ``incremental``.
 
 Rows live in the single ``## 评审收口`` section of ``status.md``:
 
-    - Review: point=<id>; stage=<s>; kind=<main|aux>[; tier=<t>]; round=<n>; started=<unix>; blocking=<n|->; behavior=<n|->[; mode=full; reason=<text>]
+    - Review: point=<id>; stage=<s>; kind=<main|aux>[; tier=<t>]; round=<n>; started=<unix>; blocking=<n|->; rejected=<n|->; behavior=<n|->[; mode=full; reason=<text>]
     - Review-Grant: point=<id>; round=<n>; at=<unix>; reason=<text>
     - Review-Check: point=<id>; round=<n>; outcome=<o>; at=<unix>; reason=<text>
     - Review-Close: point=<id>; round=<n>; outcome=<passed|residual|split>; at=<unix>; reason=<text>
 
 One ``Review`` row per round; ``open`` writes ``round=0`` (registered, not yet
-started). ``tier=`` is the point's own tier (only ever stricter than the
+started). ``blocking`` counts the accepted blocking findings of the round,
+``rejected`` the ones the reviewer reported as blocking but the adjudicator
+rejected or downgraded (§10.8-1). ``tier=`` is the point's own tier (only ever stricter than the
 task's); ``mode=full`` marks a round forced to a full review after a
 structural fix. A ``Review-Grant`` names the round it authorizes, so it covers
 that one round only. A ``Review-Check`` / ``Review-Close`` names the round it
@@ -70,7 +72,7 @@ MARKER_RE = re.compile(r"review-point=(\S*)\s+round=(\S*)\s+mode=([A-Za-z]*)")
 # `- Tier:` status row, which may be quoted in a brief and name the task tier).
 DISPATCH_TIER_RE = re.compile(r"^[ \t>]*`?Tier:[ \t]*([^`\s]*)`?[ \t]*$", re.M)
 FIELDS = {
-    "Review": ({"point", "stage", "kind", "round", "started", "blocking", "behavior"}, {"tier", "mode", "reason"}),
+    "Review": ({"point", "stage", "kind", "round", "started", "blocking", "behavior"}, {"tier", "rejected", "mode", "reason"}),
     "Review-Grant": ({"point", "round", "at", "reason"}, set()),
     "Review-Check": ({"point", "round", "outcome", "at", "reason"}, set()),
     "Review-Close": ({"point", "round", "outcome", "at", "reason"}, set()),
@@ -157,6 +159,10 @@ def parse_row(kind, body):
         row["behavior"] = None if m == "-" else int(need(f, "behavior", COUNT_RE, "a count or -"))
         if row["behavior"] is not None and (row["blocking"] is None or row["behavior"] > row["blocking"]):
             raise ValueError("behavior must not exceed blocking")
+        r = f.get("rejected", "-")
+        row["rejected"] = None if r == "-" else int(need(f, "rejected", COUNT_RE, "a count or -"))
+        if row["rejected"] is not None and row["blocking"] is None:
+            raise ValueError("rejected comes with a result")
         if ("mode" in f) != ("reason" in f) or ("mode" in f and (f["mode"] != "full" or not f["reason"])):
             raise ValueError("mode=full comes with a non-empty reason")
         row["forced"] = "mode" in f
@@ -277,11 +283,16 @@ def round_mode(n, forced):
     return "full" if n == 1 or forced else "incremental"
 
 
-def cross_harness(tier, stage, mode):
+def cross_harness(tier, stage, mode, n):
+    """design: every round (none on fast); impl: full rounds (round 1 and
+    `start --full`); aggregate: round 1 only, a forced full round too
+    (§10.8-7)."""
     if os.environ.get("ZYZ_CROSS_REVIEW", "auto") in ("off", "OFF", "0", "false", "no", "none"):
         return "no"
     if stage == "design":
         return "no" if tier == "fast" else "yes"
+    if stage == "aggregate":
+        return "yes" if n == 1 else "no"
     return "yes" if mode == "full" else "no"
 
 
@@ -297,8 +308,17 @@ def decide(st, task_tier, point):
             % (point, pt["closed"]["round"], pt["closed"]["outcome"], cli(), point, pt["stage"]))
     if last >= 1 and pt["rounds"][last]["blocking"] is None:
         return "needs-result", (
-            "评审点 %s 第 %d 轮还没有记录结果。先运行 `%s result %s --blocking <N> [--behavior <M>]`，再开第 %d 轮。"
+            "评审点 %s 第 %d 轮还没有记录结果。先运行 `%s result %s --blocking <N> --rejected <R> [--behavior <M>]`，再开第 %d 轮。"
             % (point, last, cli(), point, n))
+    # An escalate check holds the next round at any round, on any tier, until
+    # the user grants it (§10.8-5). Only the newest check counts, and only
+    # until a round after it has started.
+    if pt["checks"] and pt["checks"][-1]["outcome"] == "escalate" and pt["checks"][-1]["round"] == last \
+            and n not in pt["grants"]:
+        return "escalated", (
+            "评审点 %s 第 %d 轮之后的收口检查结论是 escalate：先把情况交给用户决定。用户批准继续后运行 "
+            "`%s grant %s --reason <用户批准的原话要点>`，再 start；或者按用户的决定 close。"
+            % (point, last, cli(), point))
     tier = effective(task_tier, pt)
     if tier is None:
         return "ok", ""
@@ -312,30 +332,26 @@ def decide(st, task_tier, point):
                 "或者经用户批准后运行 `%s grant %s --reason <用户批准的原话要点>` 再 start。"
                 % (point, cli(), point, cli(), cli(), point))
         prev = pt["rounds"].get(last) or {}
-        b, m = prev.get("blocking"), prev.get("behavior")
+        b, m, r = prev.get("blocking"), prev.get("behavior"), prev.get("rejected")
         return "needs-grant", (
             "评审点 %s（%s，Tier: %s）已用满上限 %d 轮，第 %d 轮没有用户授权。不要自行继续，也不要悄悄关闭："
-            "用一条消息交给用户——列出剩余 blocking（第 %d 轮 blocking=%s，其中改变产品行为的 %s 条），每条写明可达性和影响，"
+            "用一条消息交给用户——列出剩余 blocking（第 %d 轮 blocking=%s，其中改变产品行为的 %s 条；"
+            "被裁决者拒绝或降级、仍有争议的 %s 条），每条写明可达性和影响，"
             "给出你的建议，请用户三选一：(1) 再开一轮（剩余问题涉及安全或数据、真实路径的缺陷还在减少时建议这一项）——"
             "用户批准后运行 `%s grant %s --reason <用户批准的原话要点>`，再 `%s start %s`；"
             "(2) 接受为遗留风险（写进 residual-risks.md，然后 `%s close %s --outcome residual --by user --reason …`）；"
             "(3) 拆成加固任务（`close %s --outcome split --by user --reason …`）。"
             % (point, stage, tier, cap, n, last, "-" if b is None else b, "-" if m is None else m,
-               cli(), point, cli(), point, cli(), point, point))
-    if tier == "strict" and n >= 4 and (n - 1) % 3 == 0:
-        window = range(n - 3, n)
-        done = [c for c in pt["checks"] if c["round"] in window]
-        if not done:
-            return "needs-check", (
-                "严格档开第 %d 轮之前，要先对第 %d–%d 轮做一次收口检查（§4.5）：看 blocking 是否在收敛、"
-                "反复出现的类是否该做类级修复、剩下的是否属于极端构造（进遗留清单），然后运行 "
-                "`%s check %s --outcome continue|class-fix|reorder|escalate --reason <依据>`，再 start。"
-                % (n, n - 3, n - 1, cli(), point))
-        if done[-1]["outcome"] == "escalate" and n not in pt["grants"]:
-            return "escalated", (
-                "评审点 %s 上一次收口检查的结论是 escalate：先把情况交给用户决定。用户批准继续后运行 "
-                "`%s grant %s --reason <用户批准的原话要点>`，再 start；或者按用户的决定 close。"
-                % (point, cli(), point))
+               "-" if r is None else r, cli(), point, cli(), point, cli(), point, point))
+    # Only a check made after the group of three just finished counts
+    # (§10.8-5): an early check in the window does not cover it.
+    if tier == "strict" and n >= 4 and (n - 1) % 3 == 0 \
+            and not any(c["round"] == n - 1 for c in pt["checks"]):
+        return "needs-check", (
+            "严格档开第 %d 轮之前，要在第 %d 轮之后对第 %d–%d 轮做一次收口检查（§4.5；更早做的检查不算）："
+            "看 blocking 是否在收敛、反复出现的类是否该做类级修复、剩下的是否属于极端构造（进遗留清单），然后运行 "
+            "`%s check %s --outcome continue|class-fix|reorder|escalate --reason <依据>`，再 start。"
+            % (n, n - 1, n - 3, n - 1, cli(), point))
     return "ok", ""
 
 
@@ -346,11 +362,12 @@ def now():
     return int(raw) if re.fullmatch(EPOCH_RE, raw) else int(time.time())
 
 
-def review_line(point, stage, kind, n, started, blocking=None, behavior=None, tier=None, reason=None):
+def review_line(point, stage, kind, n, started, blocking=None, behavior=None, tier=None, reason=None,
+                rejected=None):
     dash = lambda v: "-" if v is None else str(v)
-    return "- Review: point=%s; stage=%s; kind=%s%s; round=%d; started=%d; blocking=%s; behavior=%s%s" % (
-        point, stage, kind, "; tier=" + tier if tier else "", n, started, dash(blocking), dash(behavior),
-        "; mode=full; reason=" + reason if reason else "")
+    return "- Review: point=%s; stage=%s; kind=%s%s; round=%d; started=%d; blocking=%s; rejected=%s; behavior=%s%s" % (
+        point, stage, kind, "; tier=" + tier if tier else "", n, started, dash(blocking), dash(rejected),
+        dash(behavior), "; mode=full; reason=" + reason if reason else "")
 
 
 def rewrite(pt, n, **change):
@@ -358,7 +375,7 @@ def rewrite(pt, n, **change):
     r = dict(pt["rounds"][n])
     r.update(change)
     return review_line(r["point"], r["stage"], r["kind"], r["round"], r["started"], r["blocking"],
-                       r["behavior"], r["tier"], r["reason"] if r["forced"] else None)
+                       r["behavior"], r["tier"], r["reason"] if r["forced"] else None, r["rejected"])
 
 
 def edit(path, change):
@@ -463,13 +480,14 @@ def describe(st, task_tier, point):
     n = last + 1
     mode = round_mode(n, False)
     closed = "%s@%d" % (pt["closed"]["outcome"], pt["closed"]["round"]) if pt["closed"] else "no"
-    return ("%s stage=%s kind=%s tier=%s round=%d blocking=%s behavior=%s history=%s cap=%s closed=%s "
+    return ("%s stage=%s kind=%s tier=%s round=%d blocking=%s rejected=%s behavior=%s history=%s cap=%s closed=%s "
             "next=%d mode=%s cross-harness=%s gate=%s"
             % (point, pt["stage"], pt["kind"], tier or "none", last,
                "-" if row["blocking"] is None else row["blocking"],
+               "-" if row["rejected"] is None else row["rejected"],
                "-" if row["behavior"] is None else row["behavior"], hist,
                "none" if cap is None else cap, closed, n, mode,
-               cross_harness(tier, pt["stage"], mode), code))
+               cross_harness(tier, pt["stage"], mode, n), code))
 
 
 def cmd_open(path, args):
@@ -495,6 +513,17 @@ def cmd_open(path, args):
             if not stage:
                 die("--stage design|impl|aggregate is required to open %s" % point)
             kind = o.get("kind") or (pt["kind"] if pt else "main")
+            if pt is not None:
+                # Reopening keeps the point's own tier (§10.8-6); lowering it
+                # here is a downgrade like any other.
+                if not want:
+                    own = point_tier(pt)
+                was, will = effective(task_tier, pt), max([t for t in (task_tier, own) if t] or [None],
+                                                          key=lambda t: RANK.get(t, -1))
+                if was and will and RANK[will] < RANK[was] and by != "user":
+                    raise Refused("重开评审点 %s 会把它的档位从 %s 降到 %s，降档只能由用户决定。用户明确同意后再运行 "
+                                  "`%s open %s --tier %s --by user`；不想降档就不写 --tier（重开时保留原档位）。"
+                                  % (point, was, will, cli(), point, will))
             new = append_rows(text, [review_line(point, stage, kind, 0, now(), tier=own)])
             verify(new, lambda s: point in s["points"] and s["points"][point]["closed"] is None)
             return new, (read_state(new), task_tier, [])
@@ -547,7 +576,7 @@ def cmd_start(path, args):
                                              reason=reason if forced else None)])
         verify(new, lambda s: point in s["points"] and latest(s["points"][point]) == n)
         mode = round_mode(n, forced)
-        return new, (n, mode, cross_harness(effective(task_tier, pt), pt["stage"], mode))
+        return new, (n, mode, cross_harness(effective(task_tier, pt), pt["stage"], mode, n))
 
     n, mode, xh = edit(path, change)
     print("round=%d mode=%s cross-harness=%s" % (n, mode, xh))
@@ -555,9 +584,9 @@ def cmd_start(path, args):
 
 def cmd_result(path, args):
     if not args:
-        die("usage: review-round.sh result <point> --blocking N [--behavior M]")
+        die("usage: review-round.sh result <point> --blocking N [--rejected R] [--behavior M]")
     point = valid_point(args[0])
-    o = opts_of(args[1:], ("--blocking", "--behavior"))
+    o = opts_of(args[1:], ("--blocking", "--rejected", "--behavior"))
     if not re.fullmatch(COUNT_RE, o.get("blocking", "")):
         die("--blocking must be a count (0..9999)")
     b = int(o["blocking"])
@@ -566,22 +595,36 @@ def cmd_result(path, args):
         if not re.fullmatch(COUNT_RE, o["behavior"]) or int(o["behavior"]) > b:
             die("--behavior must be a count no larger than --blocking")
         m = int(o["behavior"])
+    rj = None
+    if "rejected" in o:
+        if not re.fullmatch(COUNT_RE, o["rejected"]):
+            die("--rejected must be a count (0..9999)")
+        rj = int(o["rejected"])
 
     def change(text, st, task_tier):
         pt = open_point(st, point)
         n = latest(pt) or 0
         if n < 1:
             die("point %s has not started a round — run `%s start %s` first" % (point, cli(), point))
-        line = rewrite(pt, n, blocking=b, behavior=m)
+        line = rewrite(pt, n, blocking=b, behavior=m, rejected=rj)
         new = replace_line(text, pt["index"][n], line)
         verify(new, lambda s: s["points"][point]["rounds"].get(n, {}).get("blocking") == b)
         return new, (line, n, read_state(new), task_tier)
 
     line, n, st, task_tier = edit(path, change)
     print(line)
-    if b == 0:
-        print("note: 第 %d 轮没有 blocking——没有未处置的跨 harness 发现和待定用户决定时，用 `%s close %s --outcome passed --reason …` 关闭这个评审点"
-              % (n, cli(), point))
+    if b == 0 and rj == 0:
+        print("note: 第 %d 轮评审者报告的 blocking 全部为零（被接受 0 条、被拒绝 0 条）——没有未处置的跨 harness 发现和待定用户决定时，"
+              "用 `%s close %s --outcome passed --reason …` 关闭这个评审点" % (n, cli(), point))
+    elif b == 0 and rj is None:
+        print("note: 没有记录被拒绝的 blocking 条数。评审者报告的 blocking 里有被你拒绝或降级的，用 `--rejected <R>` 重填；"
+              "没有就写 `--rejected 0`。不写时这个评审点不能以 passed 关闭。")
+    elif b == 0:
+        print("note: 第 %d 轮有 %d 条 blocking 被拒绝或降级，不能以 passed 关闭：下一轮（增量）把这些被拒绝的 blocking 及理由交给评审者复核，"
+              "评审者认可拒绝或重新提出（§10.8-1）。开下一轮：`%s start %s`。" % (n, rj, cli(), point))
+        code, msg = decide(st, task_tier, point)
+        if code != "ok":
+            print("note: 下一轮现在还不能开——" + msg)
     else:
         code, msg = decide(st, task_tier, point)
         if code != "ok":
@@ -646,11 +689,19 @@ def cmd_close(path, args):
         pt = open_point(st, point)
         n = latest(pt) or 0
         if outcome == "passed":
-            if n < 1 or pt["rounds"][n]["blocking"] is None:
-                raise Refused("评审点 %s 要以 passed 关闭，最近一轮要先 `result`，并且 blocking=0。" % point)
-            if pt["rounds"][n]["blocking"] != 0:
+            row = pt["rounds"].get(n) or {}
+            if n < 1 or row.get("blocking") is None:
+                raise Refused("评审点 %s 要以 passed 关闭，最近一轮要先 `result`，并且 blocking=0、rejected=0。" % point)
+            if row["blocking"] != 0:
                 raise Refused("评审点 %s 第 %d 轮还有 %d 条 blocking，不能以 passed 关闭。修复后再开一轮；到上限时交用户三选一。"
-                              % (point, n, pt["rounds"][n]["blocking"]))
+                              % (point, n, row["blocking"]))
+            if row.get("rejected") is None:
+                raise Refused("评审点 %s 第 %d 轮没有记录被拒绝的 blocking 条数：先 `%s result %s --blocking 0 --rejected <R>`"
+                              "（没有被拒绝的就写 0），再 close。" % (point, n, cli(), point))
+            if row["rejected"] != 0:
+                raise Refused("评审点 %s 第 %d 轮有 %d 条 blocking 被拒绝或降级，还没有独立方复核，不能以 passed 关闭（§10.8-1）。"
+                              "开下一轮，把被拒绝的 blocking 及理由交给评审者复核；僵持到上限时交用户三选一。"
+                              % (point, n, row["rejected"]))
         elif by != "user":
             raise Refused("以 %s 关闭评审点 %s 是用户在三选一里做的决定（§4.4）。用户明确选择后再运行 "
                           "`%s close %s --outcome %s --by user --reason <用户的原话要点>`。" % (outcome, point, cli(), point, outcome))
@@ -770,10 +821,15 @@ def _match(tasks, point, rnd, mode):
             point, cli(), point, cli(), point)
     for pt, t in found:
         last = latest(pt) or 0
-        if pt["closed"] is None and last == n and round_mode(n, pt["rounds"][n]["forced"]) == mode:
+        if pt["closed"] is None and last == n and round_mode(n, pt["rounds"][n]["forced"]) == mode \
+                and pt["rounds"][n]["blocking"] is None:
             return ("ok", effective(t, pt))
     pt = found[0][0]
     last = latest(pt) or 0
+    if pt["closed"] is None and last == n and n >= 1 and pt["rounds"][n]["blocking"] is not None:
+        return ("评审点 %s 第 %d 轮已经记录了结果（result），不能再用这一轮的标记派发评审（§10.8-2）。"
+                "需要再评审就先 `%s start %s` 开新的一轮（它会检查轮次上限），再用它输出的标记派发"
+                % (point, n, cli(), point))
     if pt["closed"] is not None:
         return "评审点 %s 已经关闭（%s）：要重开先 `%s open %s`，再 start" % (point, pt["closed"]["outcome"], cli(), point)
     if last < 1:

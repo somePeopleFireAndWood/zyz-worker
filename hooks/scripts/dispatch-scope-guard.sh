@@ -29,8 +29,8 @@
 #   output volume is fine; reducing the total deliverable is not.
 # - Exception (§4.2 of execute-task-tiers-design): a review-agent dispatch
 #   carrying `review-point=<id> round=<n> mode=incremental` passes when
-#   review-round.sh recorded that round (n >= 2, the point's latest, not a
-#   `start --full` round) — an
+#   review-round.sh recorded that round (n >= 2, the point's latest, no
+#   result yet, not a `start --full` round) — an
 #   incremental re-review checks the last round's accepted blockers plus the
 #   fix diff by design. Only a recorded round counts: the bare words, or a
 #   marker for a round that was never started, still get the check, so

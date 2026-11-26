@@ -17,7 +17,9 @@
 #
 # matching the latest round review-round.sh started for <id> and that round's
 # recorded mode (full for round 1 and `start --full` rounds, incremental
-# otherwise); a closed point accepts no marker until it is reopened.
+# otherwise), as long as that round has no result yet (§10.8-2: a resulted
+# round's marker would let reviews go past the cap); a closed point accepts no
+# marker until it is reopened.
 #
 # ## Inputs
 #

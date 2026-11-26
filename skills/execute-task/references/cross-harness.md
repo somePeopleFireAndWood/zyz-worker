@@ -10,10 +10,10 @@
 |---|---|
 | design（标准档、严格档；快速档没有设计评审） | 每一轮 |
 | impl | 第 1 轮和用 `start --full` 开的全量轮；增量轮不跑 |
-| aggregate | 第 1 轮 |
+| aggregate（含快速档多 lane 时的契约一致性检查） | 只有第 1 轮；`start --full` 开的 aggregate 轮也不跑 |
 | 任意 | `ZYZ_CROSS_REVIEW=off` 时一律不跑 |
 
-快速档的 impl 第 1 轮就是"和那 1 轮评审并发一次"。复盘数据：实现第 1 轮跨 harness 独有的真缺陷有 39 条，第 2 轮起只有 3 条，所以增量轮取消。
+快速档的 impl 第 1 轮就是"和那 1 轮实现评审并发一次"；快速档多 lane 时，aggregate 第 1 轮也跑。复盘数据：实现第 1 轮跨 harness 独有的真缺陷有 39 条，第 2 轮起只有 3 条，所以增量轮取消。
 
 跑的时候，与 review-agent 的派发放在**同一**批次里启动；它是独立的工作，并发运行，不放在之前或之后。
 
@@ -25,7 +25,7 @@
 <plugin-root>/scripts/cross-review.sh run --task-dir <task-dir> --kind <design|implementation|aggregate> --brief <brief-file> --label <round-label> --point <id> --round <n> --mode <full|incremental> [--cwd <primary-worktree>]
 ```
 
-- `--point` / `--round` / `--mode` 取自 `review-round.sh start` 的输出。只有 impl 评审点且 `--mode incremental` 时，脚本直接输出 `status=skipped reason=incremental-round`，不启动评审者；用 `start --full` 开的 impl 全量轮是 `--mode full`，照常运行。
+- `--point` / `--round` / `--mode` 取自 `review-round.sh start` 的输出。只有 impl 评审点且 `--mode incremental` 时，脚本直接输出 `status=skipped reason=incremental-round`，不启动评审者；用 `start --full` 开的 impl 全量轮是 `--mode full`，照常运行。aggregate 的第 2 轮起 `start` 输出 `cross-harness=no`，不启动。
 - 平台没有后台工具调用时，以分离方式启动它，把 stdout 重定向到 `<task-dir>/reviews/cross/<label>.summary`（先创建目录），等 reviewAgent 返回后再读取该文件和 `.meta` 文件。一个评审者可能跑几十分钟；不要让 reviewAgent 的派发因它阻塞。
 - 简报包含 reviewAgent 派发时会给的内容：最终态设计文档路径；设计复审时附评审历史文件路径；实现评审时附 lane id、冻结文件集、diff 基线 / 提交范围；之前各轮已被拒绝的带编号发现及其理由；遗留风险清单路径（一旦存在）。范围与 reviewAgent 派发相同，不缩小。
 - 脚本检测宿主 harness，选出所有其他已安装的 harness（`cross-review.sh detect` 显示选择结果），渲染 `templates/cross-review-prompt.md` + 简报，并发运行每个评审者。输出落在 `<task-dir>/reviews/cross/<label>.<harness>.{md,meta,jsonl,stderr,prompt.md}`；每个评审者在 stdout 上输出一行摘要：`status=ok|empty|failed|timeout|skipped`，外加 `tree-stable=yes|no|n/a`。tree-stable 的指纹排除 `.zyz-worker/` 和 `--task-dir` 所在目录，评审期间写 `status.md` 不会被误判为评审对象变了。
