@@ -17,7 +17,7 @@ skills/
 
 现有 skill：
 
-- `execute-task/` —— 设计先行的单任务工作流（`SKILL.md` + `prompts/` + `templates/`）
+- `execute-task/` —— 设计先行、按风险分档的单任务工作流（`SKILL.md` + `prompts/` + `references/` + `templates/`）
 - `orchestration-scheduling-task/` —— 基于主清单的多任务调度（`SKILL.md` + `prompts/` + `templates/`）
 - `git-worktree/` —— worktree 创建/列出/移动/删除的辅助约定（只有 `SKILL.md`）
 - `clean-tmp/` —— 跨平台的临时文件 / Docker / 编译缓存清理（`SKILL.md` + `references/`）

@@ -567,18 +567,25 @@ run_T3() {
     # would FAIL if the old awaiting-confirmation-absorbing wording were still in
     # place — i.e. they are non-vacuous.
     #
+    # Tiers rework: the orchestration-mode contract moved verbatim from
+    # SKILL.md into references/orchestration-mode.md (SKILL.md keeps the
+    # `## 编排模式` heading, the phase enum and "done 是吸收态" as a summary),
+    # so anchors (1) and (3) target the reference; (2) is checked on both.
+    local etsk_orch="skills/execute-task/references/orchestration-mode.md"
     # (1) The non-reversible phase is `done` (NOT awaiting-confirmation).
-    check_grep "$etsk" "absorbing rule: the non-reversible phase is \`done\`" \
+    check_grep "$etsk_orch" "absorbing rule: the non-reversible phase is \`done\`" \
         '\*\*唯一\*\*不可逆的阶段是 `done`'
     # (2) `done` is tied to the word "absorbing" (the new roll-back-rule heading
     #     reads "phase may roll back, except \`done\` which is absorbing").
     check_grep_fixed "$etsk" "absorbing rule: \`done\` is the absorbing terminal" \
         '但 `done` 是吸收态'
+    check_grep_fixed "$etsk_orch" "absorbing rule: \`done\` is the absorbing terminal" \
+        '但 `done` 是吸收态'
     # (3) `awaiting-confirmation` is explicitly REVERSIBLE.  ERE: from the
     #     awaiting-confirmation token to "remains reversible" within one
     #     sentence (no intervening period), so a future edit that re-froze
     #     awaiting-confirmation as absorbing would no longer match.
-    check_grep "$etsk" "absorbing rule: \`awaiting-confirmation\` remains reversible" \
+    check_grep "$etsk_orch" "absorbing rule: \`awaiting-confirmation\` remains reversible" \
         '`awaiting-confirmation` 表示[^。]*它仍然是可逆的'
 
     # ---- delivery test-gate (registration-style hard gate) --------------

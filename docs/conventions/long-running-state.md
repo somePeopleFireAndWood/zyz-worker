@@ -13,7 +13,7 @@
 - **每个长期运行的任务都把状态写进文件。** 跨越不止一个 LLM 轮次、或不止一轮工具调用的任务，必须把当前进度、已做的决策、遇到的阻塞以及明确的下一步持久化到状态文件中。每次阶段变化时都要更新，而不只是在结束时更新。
 - **对话上下文负责执行，文件负责记忆。** 把活跃上下文当作 CPU，把状态文件当作磁盘。不要只把长期的任务知识存放在聊天记录里。
 - **状态文件必须自包含。** 一个只拿到状态文件的读者（没有聊天记录、没有回滚缓冲）必须能够恢复任务。如果只读这个文件还不够，说明这个文件不完整。
-- **所有权是显式的。** 每个状态文件都要写明谁写它、谁读它，以及是否可能存在并发写者。默认情况是：负责派发的主 agent 拥有整体任务状态；每个 subagent 通过该文件，或通过主 agent 指定的专用 subtask 状态文件回报。
+- **所有权是显式的。** 每个状态文件都要写明谁写它、谁读它，以及是否可能存在并发写者。默认情况是：负责派发的主 agent 拥有整体任务状态；每个 subagent 通过该文件，或通过主 agent 指定的专用报告文件回报（`execute-task` 里是 lane 报告 `<task-dir>/lanes/<id>.md`）。
 - **在任何挂起、交接或上下文切换之前先刷盘。** 在把控制权交还给用户、切换角色、派发 subagent、因外部资源暂停、结束一个可能无法在同一上下文中恢复的轮次，或进入任何其他被动等待状态之前，先把最新状态写入磁盘。把这次文件写入视为提交点。
 
 ## 推荐位置
@@ -24,7 +24,7 @@
 .zyz-worker/tasks/<task-id>/status.md
 ```
 
-`execute-task` skill 已经遵循这一布局。派发 subagent 时，由负责派发的 agent 提供具体的状态文件路径；subagent 不得自行编造路径。
+`execute-task` skill 已经遵循这一布局。`status.md` 只放当前状态；追加型的记录放在同一任务目录下：用户决策在 `decisions.md`，lane 报告在 `lanes/<id>.md`，重启、档位变更、已关闭的发现等日志在 `log/`（完整布局见 `docs/design/execute-task-tiers-design.md` §10.6）。派发 subagent 时，由负责派发的 agent 提供具体的状态文件路径；subagent 不得自行编造路径。
 
 ## 与编排的关系
 
@@ -40,7 +40,7 @@
 
 ## 另见
 
-- `skills/execute-task/SKILL.md` —— execute-task 工作流端到端地使用本约定。
+- `skills/execute-task/SKILL.md` —— execute-task 工作流端到端地使用本约定（`## 核心规则` 的状态持久化规则；细则见 `skills/execute-task/references/recovery.md` 的 `## 长期运行工作`）。
 - `skills/execute-task/prompts/main-agent.md` —— 主 agent 提示词强制执行本约定。
 - `skills/orchestration-scheduling-task/SKILL.md` —— 编排层的文件协议（主条目、worker-status、heartbeat、question/answer）建立在本约定之上。
 - `subagents/*.md` 与 `agents/*.md` —— subagent 提示词包含一段指回这里的简短硬约束块，以及一个面向编排器快照的 `## 编排模式钩子` 小节。

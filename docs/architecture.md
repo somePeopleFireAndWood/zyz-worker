@@ -39,8 +39,9 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
  │
  ├── /execute-task ────────► execute-task skill
  │                            ├─ 主控提示词  skills/execute-task/prompts/main-agent.md
- │                            ├─ 3 个 subAgent  implementation / test / review
- │                            ├─ 4 个模板  design-doc / task-status / final-report / review-report
+ │                            ├─ 3 个 subAgent  implementation（含 lane 模式）/ test / review
+ │                            ├─ 8 个模板  change-note / design-doc / task-status / decisions / review-report / final-report / residual-risks / cross-review-prompt
+ │                            ├─ references/  按需加载的专题细则（评审收口、跨 harness、watchdog、恢复、编排模式…）
  │                            └─ watchdog 强制层  hooks/ + monitors/     ← 确定性兜底
  │
  └── /orchestrate-tasks ───► orchestration-scheduling-task skill
@@ -60,14 +61,14 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 | 角色 | 身份 | 能做 | 明确不能做 |
 |---|---|---|---|
-| **主 agent** | 当前与用户对话的 agent（**不是** subAgent） | 协调、写设计文档、维护状态文件、派发角色、与用户交互 | 写实现代码、改测试、跑测试、自己做评审 |
-| **implementation-agent** | Claude Code subAgent | 写实现、**跑测试** | 改测试代码 |
-| **test-agent** | Claude Code subAgent | 写/维护测试、**自验编译**（编译/类型检查/vet/lint 自己的测试并自主修语法/导入/类型/arity 错）、**私有冒烟自查**（仅跑自己新写的轻量单测拿即时反馈，不接外部资源） | 报测试通过（认定绿）、把冒烟结果当交付/告知主控、执行变异或降级清单、跑重型/e2e/带库/并发测试、改实现 |
-| **review-agent** | Claude Code subAgent | 评审设计/实现/测试 | 改任何文件 |
+| **主 agent** | 当前与用户对话的 agent（**不是** subAgent） | 定档位、协调、写设计文档（快速档写变更说明）、维护状态文件、派发 lane 与评审、与用户交互；快速档单 lane 的小改动可以直接改并自验证；可以跑只读的验证命令核对 lane 结论 | 其余情况写实现代码或测试；自己做评审 |
+| **implementation-agent** | Claude Code subAgent | **lane 模式**（快速档、标准档）：同一个 agent 写实现和测试、自验证（构建、测试、负对照）、做到本地提交；严格档还执行 test-agent 为关键机制写的测试、负对照与变异清单 | push / 开 PR / 合并；严格档改 test-agent 写的测试 |
+| **test-agent** | Claude Code subAgent | 严格档：为设计 `## 关键机制` 写测试、负对照条目和变异清单；**自验编译**（编译/类型检查/vet/lint 自己的测试并自主修语法/导入/类型/arity 错）、**私有冒烟自查**（仅跑自己新写的轻量单测拿即时反馈，不接外部资源） | 报测试通过（认定绿）、把冒烟结果当交付/告知主控、执行变异或降级清单、跑重型/e2e/带库/并发测试、改实现 |
+| **review-agent** | Claude Code subAgent | 按档位和评审模式（第 1 轮全量、之后增量）评审设计/实现/测试 | 改任何文件 |
 
-「写测试的不**认定**测试结果，跑（认定）测试的不写测试」是刻意的：让测试的作者与**结果裁判**分离，避免为了让测试通过而改测试。test-agent 现在持有 `Bash`，但**仅限自验自己的测试代码**：(a) 必须编译/类型检查/vet/lint、自主修语法错，让「交付 ≠ 可编译」这一泄漏面在作者这一层就被堵住；(b) 可以**私有冒烟自查**——`-run` 限定到自己刚写的轻量用例、不接测试库/端口/网络、不跑重型/e2e/并发——纯粹当写脚本时的即时反馈，快速发现断言写反、缺 helper、fixture 坏掉。**这次冒烟不是裁判：结果不作为交付、不告知主控、绝不替代或短路 impl/主控的权威跑测试。**它仍**不**报绿、**不**执行变异清单、**不**跑重型/带库测试。变异注入沿用同一分离：test-agent **出变异清单**（机制 → 改哪行 → 哪些用例应转红），implementation-agent **执行**并逐条回报 KILLED/SURVIVED——所以「作者不当自己判定唯一裁判」的边界完好。review-agent 也拿到 Bash，但用途不同：它可以只读地复跑关键判定、注入**用完即还原**的互补面变异（必须字节级还原并验证）——因为实测中只读评审对「空转断言」的命中率是零，而作者不能当自己判定结果的唯一裁判。
+**分档改造（[design/execute-task-tiers-design.md](design/execute-task-tiers-design.md) §6.1）之后，下面这条作者 / 裁判分离只在严格档的关键机制上保留**；快速档和标准档由一个 lane agent 同时写代码和测试，「作者不当自己的裁判」改由独立的 review-agent 保证（它兼查断言形态）。「写测试的不**认定**测试结果，跑（认定）测试的不写测试」是刻意的：让测试的作者与**结果裁判**分离，避免为了让测试通过而改测试。test-agent 现在持有 `Bash`，但**仅限自验自己的测试代码**：(a) 必须编译/类型检查/vet/lint、自主修语法错，让「交付 ≠ 可编译」这一泄漏面在作者这一层就被堵住；(b) 可以**私有冒烟自查**——`-run` 限定到自己刚写的轻量用例、不接测试库/端口/网络、不跑重型/e2e/并发——纯粹当写脚本时的即时反馈，快速发现断言写反、缺 helper、fixture 坏掉。**这次冒烟不是裁判：结果不作为交付、不告知主控、绝不替代或短路 impl/主控的权威跑测试。**它仍**不**报绿、**不**执行变异清单、**不**跑重型/带库测试。变异注入沿用同一分离：test-agent **出变异清单**（机制 → 改哪行 → 哪些用例应转红），implementation-agent **执行**并逐条回报 KILLED/SURVIVED——所以「作者不当自己判定唯一裁判」的边界完好。review-agent 也拿到 Bash，但用途不同：它可以只读地复跑关键判定、注入**用完即还原**的互补面变异（必须字节级还原并验证）——因为实测中只读评审对「空转断言」的命中率是零，而作者不能当自己判定结果的唯一裁判。
 
-**「跑了 ≠ 测到了」是 0.16 之后整个测试纪律的核心**（来自一次 20 个 agent 实例、9 个 SubTask 的实战反馈）：`Tested: true` 的定义是「绿 **且** 每条覆盖声明有被杀变异实证」；报绿必须带四项坐标（完整命令/测试库/端口组/进程-源码新鲜度）；失败归因走四步顺序（改动面因果 → 工具层 → 他人在途 → 真回归）；并行 ≥2 路先分配资源租约；评审前冻结工作区；交付前逐条应答核查清单。原理一句话：**假的成功比假的失败更危险**——验证工具失效时产出的不是报错，而是「看起来像被测对象有问题」的结果。
+**「跑了 ≠ 测到了」是 0.16 之后整个测试纪律的核心**（来自一次 20 个 agent 实例、9 个 SubTask 的实战反馈）：`Tested: true` 的定义是「绿 **且** 每条覆盖声明有被杀变异实证」（分档后：严格档全套；标准档只对设计 `## 关键机制` 列出的机制；快速档只要负对照——新测试在旧代码上失败）；报绿必须带四项坐标（完整命令/测试库/端口组/进程-源码新鲜度）；失败归因走四步顺序（改动面因果 → 工具层 → 他人在途 → 真回归）；并行 ≥2 路先分配资源租约；评审前冻结工作区；交付前逐条应答核查清单。原理一句话：**假的成功比假的失败更危险**——验证工具失效时产出的不是报错，而是「看起来像被测对象有问题」的结果。
 
 角色定义存在**两份**：`agents/*.md`（带 YAML frontmatter，Claude Code 真正注册的 subAgent）与 `subagents/*.md`（无 frontmatter 的共享镜像，供 Codex 等其它端或无 subAgent 运行时的环境当角色提示词用）。两份的正文由测试逐字节比对，改一边必须改另一边。
 
@@ -75,14 +76,16 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 ```text
 §1 启动    建任务目录 + status.md + task-pointer.sh arm 写本会话指针 .zyz-worker/sessions/<session-id>（给 watchdog 上膛）
-   ↓
-§2 设计    与用户共同产出设计文档 → review-agent（+ 其它 harness 的只读交叉评审）自动循环评审直到无异议
-   ↓       ★ 唯一的人工闸门：必须等到用户明确批准才能进实现
-§3 实现    implementation-agent 与 test-agent **默认并行**（都从设计文档取活）
-   ↓       → 跑测试 + 跑变异清单 → 失败**四步归因**（改动面因果 → 工具层 →
-   ↓          他人在途/环境 → 才是真回归）→ 冻结工作区 → review → 循环
-   ↓       可选拆 SubTask；按**依赖图**而非列表顺序调度；并行 ≥2 路先分资源租约
-§3.C 汇总  汇总测试（类别由设计 `## 测试计划` 派生）+ 汇总评审（4 个覆盖维度）
+   ↓       定档位 fast / standard / strict（review-round.sh tier 写 `- Tier:`）
+§2 设计    快速档：一条消息 + change-note.md，用户确认改法即可，不做设计评审
+   ↓       标准/严格档：与用户共同产出设计文档 → 按评审点（主路径 / 附属子功能各一个）评审，
+   ↓          review-agent + 其它 harness 的只读交叉评审；标准档每个评审点最多 2 轮，到上限交用户
+   ↓       ★ 设计批准闸门：必须等到用户明确批准才能进实现
+§3 实现    按 lane 并行（端到端：实现 + 测试 + 自验证 + 本地提交）；解锁条件是「接口已冻结」
+   ↓       → 失败**四步归因**（改动面因果 → 工具层 → 他人在途/环境 → 才是真回归）
+   ↓       → 冻结工作区 → review（第 1 轮全量，之后增量）→ 修复回同一个 lane → 循环到关闭或到上限
+   ↓       按**依赖图**而非列表顺序调度；并行 ≥2 路先分资源租约
+§3.C 汇总  标准/严格档：汇总测试（类别由设计 `## 测试计划` 派生）+ 汇总评审（4 个覆盖维度）
    ↓
 §4 交付    核对总目标 → 校验注册完整 → 逐条答完交付前清单 →
    ↓          提交推送 → 出最终报告
@@ -103,13 +106,15 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 **d) 外部 PR 评审要逐条独立验证。** 收到 PR 上的评审意见时不盲从：逐条独立核实问题是否客观存在，成立的修、不成立的在 PR 上回帖说明理由。每条必须落到「已修」或「已明确拒绝并回帖」，不允许「不回也不改」。
 
-**d2) 跨 harness 交叉评审：多一双眼睛，但依旧逐条独立核实、可拒绝。** 每个评审点（设计评审每一轮、每个实现评审、汇总评审）在派发 review-agent 的同一批次里，由 `scripts/cross-review.sh` 为本机装着的**其它** agent 产品各起一个只读评审会话（主控跑在 Claude Code 就起 `codex exec`，跑在 Codex 就起 `claude -p`；宿主自身永远不重复起——那就是 review-agent）。不同产品的盲区不同，这是它的价值；也正因为它来自外部，它的报告按 PR 评审同一口径处理：逐条、由该评审点本来的裁决者（设计期主控、实现期 implementation/test-agent）对照真实产物独立核实后才可接受，不成立的带具体理由拒绝，每条都要落到「接受进 finding ledger」或「拒绝 + 理由」；两个评审者意见一致本身不算证据。收敛条件（见 g）：review-agent 本轮零 blocking，**且**本轮交叉评审每条 finding 都有处置、没有被接受为 blocking——交叉评审自己的 verdict 既不单独卡住、也不单独关闭循环。它是可选且不阻塞的：没装其它 harness、`ZYZ_CROSS_REVIEW=off`、失败/超时都只记录后继续。会话隔离：只读沙箱/工具白名单、清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，否则子会话的 hook 会把自己当成本任务的主 agent 写心跳/状态）、默认零 MCP；不注入变异、不复跑测试（那仍是 review-agent 的义务）。
+**d2) 跨 harness 交叉评审：多一双眼睛，但依旧逐条独立核实、可拒绝。** 跑的时机以 `review-round.sh start` 输出的 `cross-harness=yes|no` 为准：设计评审每一轮、实现评审第 1 轮（以及 `start --full` 开的全量轮）、汇总评审第 1 轮；实现的增量轮不跑（复盘：实现第 1 轮它独有的真缺陷 39 条，第 2 轮起只有 3 条），`cross-review.sh run … --point --round --mode incremental` 对 impl 评审点直接输出 `status=skipped reason=incremental-round`。跑的时候在派发 review-agent 的同一批次里，由 `scripts/cross-review.sh` 为本机装着的**其它** agent 产品各起一个只读评审会话（主控跑在 Claude Code 就起 `codex exec`，跑在 Codex 就起 `claude -p`；宿主自身永远不重复起——那就是 review-agent）。不同产品的盲区不同，这是它的价值；也正因为它来自外部，它的报告按 PR 评审同一口径处理：逐条、由该评审点本来的裁决者（设计期主控、实现期产物的作者——lane agent，或严格档关键机制的 implementation/test-agent）对照真实产物独立核实后才可接受，不成立的带具体理由拒绝，每条都要落到「接受进 finding ledger」或「拒绝 + 理由」；两个评审者意见一致本身不算证据。收敛条件（见 g）：review-agent 本轮零 blocking，**且**本轮交叉评审每条 finding 都有处置、没有被接受为 blocking——交叉评审自己的 verdict 既不单独卡住、也不单独关闭循环。它是可选且不阻塞的：没装其它 harness、`ZYZ_CROSS_REVIEW=off`、失败/超时都只记录后继续。会话隔离：只读沙箱/工具白名单、清空全部 `ZYZ_*` 并设 `ZYZ_HOOKS_DISABLE=1`（两端都装了本插件，否则子会话的 hook 会把自己当成本任务的主 agent 写心跳/状态）、默认零 MCP；不注入变异、不复跑测试（那仍是 review-agent 的义务）。
 
 **e) 版本控制自治且非阻塞。** 提交/推送自己做，不问用户；失败就记录进状态文件继续走，绝不阻塞。但 merge 到 base 永远需要用户显式指令，破坏性操作（force-push / reset --hard / 改历史）一律禁止。
 
 **f) 设计文档只记终态，修缺陷靠删改而非追加。** 设计文档是**被评审面**，review-history 文件不被评审、不产生 findings、想多长都行——所以留痕的正确载体是后者。实测反例：一次 21 轮设计评审里，主控把「修正缺陷」执行成「追加自我批注」，`design.md` 四轮内 127KB→148KB 而实质技术面无变更，432 行交付规格里堆出 81 处「第 N 轮」/77 处「前版」/21 处「订正」，修复速率与新增缺陷速率接近 1:1。机制在于：删掉一个腐烂的数字是 O(1) 无副作用，而追加一段「为何删掉」同时造出**新的被评审文本面 + 新的耦合点 + 一个自身可能写错的东西**（实测确实写错了）。配套两条：**检查文档自身文本的自查规则不写进设计文档**（grep 这个动作免费，写进交付物则它同时变成被评审面、自己的扫描对象和新耦合点——实测这类块捕获约 3 项问题、自身产生 20+ 项 findings）；以及 review-agent 的对应口径——finding 若唯一后果是「将来编辑设计文档的人可能被误导」（到不了实现/测试/交付行为），标为**非阻塞**并建议记入 review-history，不阻止 `no-changes-needed`。分界线是**能否到达产物**，不是措辞严重程度；能产出错代码、无法测的验收标准、遗漏需求、章节冲突、角色得靠猜的歧义，一律照旧阻塞。
 
-**g) 评审循环按「能否到达产物」收口，而不是等评审者无话可说。** 以「评审者说没问题了」为收口条件，在难缠的输入上不收敛：每次修复只回应一个构造，下一轮就在同类的下一个变体上找到「理论缺口」。实测：一个报错文本令牌脱敏子任务从第 10 轮走到第 20 轮——前几轮修的是真实路径上的泄漏，后面大量轮次在应对 `__str__` 抛异常、元类 `__name__` 抛异常、重写 `strip`/`startswith` 的 str 子类、环形上千层异常链、第 4 次调用才带令牌的有状态 `__str__`；评审自己多次标注 contrived，流程却没有规定何时收口。所以每条 finding（设计/实现/汇总，review-agent 与交叉评审一样）分三级：`blocking`（声明域或现有调用方能产生的输入可达：主路径缺陷、可复现的安全/正确性/数据/回归问题、域内边界值、缺失或违背设计）、`non-blocking:normal`（真实改进，但任何可达输入上都不出错）、`non-blocking:contrived`（只在声明域之外成立：要两处以上不自然改动叠加或依赖对抗性对象，且现有调用方无一可达）。**判据是设计文档 `## 范围边界` 声明的输入域与威胁模型，不是构造看起来多刁钻**——同一个敌意对象，对「只喂本程序自身异常」的脱敏函数是 contrived，对执行攻击者代码的沙箱就是 blocking；域未声明而又涉及安全/数据时，这是用户设计里的歧义，由用户决定。评审点在 review-agent **本轮报告零 blocking**、交叉评审没有被接受为 blocking 的 finding、也没有待用户决定的问题时收口。被裁决者拒绝或降级的 blocking 不会单凭裁决收口，要由下一轮 review-agent 确认或重提，这样「接受↔拒绝反复 3 次即升级」才依然有效；contrived 不在本循环内修，按类（不是按变体）记入 `<task-dir>/residual-risks.md`（复现构造、影响面、已验证的加固方案），作为后续补强任务的输入，后续评审者拿到它的路径、不再重复提出。同类第二个变体出现即标 `recurring`：域内就要求一个类级修复（一处总兜底 / 一处深度与环检测 / 一处归一化）加表驱动测试，不再逐个打补丁。每个评审点第 3 轮仍有 blocking 时（之后每 3 轮）主控做一次收敛检查并告知用户结果：继续 / 改类级修复 / 把域内的对抗性加固重排为主路径之后的独立 SubTask（仍在本任务内交付）/ 涉及范围或威胁模型的问题升级给用户。护栏：分级只改变处置、不改变上报——每条 finding 照报、各带证据（「只报 blocking」仍是 L5 拦截的范围缩减）；把评审者判的 blocking 降级，要像拒绝一样附调用方枚举证据；拿不准时按 blocking 处理。
+**g) 评审循环按「能否到达产物」收口，而不是等评审者无话可说。** 以「评审者说没问题了」为收口条件，在难缠的输入上不收敛：每次修复只回应一个构造，下一轮就在同类的下一个变体上找到「理论缺口」。实测：一个报错文本令牌脱敏子任务从第 10 轮走到第 20 轮——前几轮修的是真实路径上的泄漏，后面大量轮次在应对 `__str__` 抛异常、元类 `__name__` 抛异常、重写 `strip`/`startswith` 的 str 子类、环形上千层异常链、第 4 次调用才带令牌的有状态 `__str__`；评审自己多次标注 contrived，流程却没有规定何时收口。所以每条 finding（设计/实现/汇总，review-agent 与交叉评审一样）分三级：`blocking`（声明域或现有调用方能产生的输入可达：主路径缺陷、可复现的安全/正确性/数据/回归问题、域内边界值、缺失或违背设计）、`non-blocking:normal`（真实改进，但任何可达输入上都不出错）、`non-blocking:contrived`（只在声明域之外成立：要两处以上不自然改动叠加或依赖对抗性对象，且现有调用方无一可达）。**判据是设计文档 `## 范围边界` 声明的输入域与威胁模型，不是构造看起来多刁钻**——同一个敌意对象，对「只喂本程序自身异常」的脱敏函数是 contrived，对执行攻击者代码的沙箱就是 blocking；域未声明而又涉及安全/数据时，这是用户设计里的歧义，由用户决定。评审点在 review-agent **本轮报告零 blocking**、交叉评审没有被接受为 blocking 的 finding、也没有待用户决定的问题时收口。被裁决者拒绝或降级的 blocking 不会单凭裁决收口，要由下一轮 review-agent 确认或重提，这样「接受↔拒绝反复 3 次即升级」才依然有效；contrived 不在本循环内修，按类（不是按变体）记入 `<task-dir>/residual-risks.md`（复现构造、影响面、已验证的加固方案），作为后续补强任务的输入，后续评审者拿到它的路径、不再重复提出。同类第二个变体出现即标 `recurring`：域内就要求一个类级修复（一处总兜底 / 一处深度与环检测 / 一处归一化）加表驱动测试，不再逐个打补丁。每个评审点第 3 轮仍有 blocking 时（之后每 3 轮）主控做一次收敛检查并告知用户结果：继续 / 改类级修复 / 把域内的对抗性加固重排为主路径之后的独立 SubTask（仍在本任务内交付）/ 涉及范围或威胁模型的问题升级给用户。护栏：分级只改变处置、不改变上报——每条 finding 照报、各带证据（「只报 blocking」仍是 L5 拦截的范围缩减）；把评审者判的 blocking 降级，要像拒绝一样附调用方枚举证据；拿不准时按 blocking 处理。（「第 3 轮仍有 blocking 时做收敛检查」在分档改造后只适用于严格档，并由脚本强制，见 h。）
+
+**h) 按风险分档，收口用事先约定的有限退出条件（分档改造，[design/execute-task-tiers-design.md](design/execute-task-tiers-design.md)）。** g 解决了「什么不该阻塞」，但停止条件仍是「评审者找不出 blocking」：复盘里评审循环仍占重型任务活跃时间的 48%–60%，32% 的 blocking 修复没改变产品行为，同量级小改动走 execute-task 的中位时长约是直接开发的 5 倍。所以：(1) **三个档位** `fast` / `standard` / `strict` 决定设计载体、评审轮次上限、测试与变异要求、跨 harness 时机；档位记在 `status.md` 的 `- Tier:`，主 agent 可以提议升档、只有用户能降档，单个评审点可以单独升档。(2) **合同先行**：已批准的设计（快速档是 `change-note.md`）连同验收标准、测试计划、声明域就是合同；blocking 只有三类——可达的产品缺陷（附复现）、设计缺失或矛盾（指明章节）、违反合同（含违背已批准设计）；测试强度降为 `non-blocking:normal`，证据或流程缺口改为不开新一轮的**补证请求**，快速审阅漂移不进评审、由主 agent 在批准前机械地重新生成。(3) **首轮全量、之后增量**：第 2 轮起只核实上一轮被接受的 blocking 已落地、并评审修复 diff；结构性修复后用 `start --full` 改走全量。(4) **上限与交用户**：快速档 impl 2 轮，标准档 design 2 / impl 3 / aggregate 3；到上限不悄悄关闭也不自动继续，交用户三选一（再开一轮 → `grant`；接受为遗留风险 / 拆成加固任务 → `close --by user`）；严格档不设上限，但开第 4、7… 轮前要有收口检查记录，结论为 `escalate` 时要用户授权才能继续。(5) **机械化**：这些规则不再只写在提示词里（收口检查原来 6 个该做的点只做了 1 个），由 `review-round.sh` 记账并拒绝越限的轮次，由 `review-gate.sh` 拒绝没有记录在案的评审派发。没有 `Tier:` 的旧任务全部 fail open，按严格档的旧行为执行。
 
 ## 四、watchdog 强制层：为什么需要，怎么分层
 
@@ -130,19 +135,19 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 | **L2 子 agent 退出门** | `stop-gate-subagent.sh` | SubagentStop | 最终消息过短就拦一次，要求先给正式报告（主 agent 才有东西可落盘）。最多拦一次，不会循环 |
 | **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层。**兜底**再加一支「终态但未收割」扫描：某角色已到终态（DONE/FINALIZED）但主 agent 自那以后一直空闲（完成通知被丢），定时唤醒它去读结果——补 L4 抓不到的「角色在主 agent 空闲之后才终态」一例。0.32.0 起再加两条与平台、角色类型无关的**底线**：会话静默（活跃任务整个会话 `silence-sec` 没有任何工具调用且无声明）与 API 错误中断（subagent / teammate 的 StopFailure 记录，每条报一次） |
 | **L4 主 agent 停止门** | `stop-gate-main.sh` | Stop | 派出的角色看起来死了、或状态文件严重过期时，阻止主 agent 就这么闲下来。**主层**再加「终态但未收割」拦截：角色已终态、结果已落盘，但主 agent 自完成起零动作（`main_heartbeat_epoch<=terminal_epoch` 且 `status.md` mtime`<=terminal_epoch`）时拦一次，点名结果所在，逼它先读再落盘——同步、不依赖会丢的完成通知，故为主层 |
-| **L5 派发范围守卫** | `dispatch-scope-guard.sh` | PreToolUse (`^Agent$`) | 唯一**事前**层：检查派发提示词是否在压缩角色交付范围，是则 deny（除非同一提示词承诺了补齐剩余部分）。启发式匹配，三重防过度拦截：否决式表述免疫、引号内容不算下达指令、上限必须挂在评审交付物名词上 |
+| **L5 派发范围守卫** | `dispatch-scope-guard.sh` + `review-gate.sh` | PreToolUse（`Agent` 等派发工具） | 唯一**事前**层：检查派发提示词是否在压缩角色交付范围，是则 deny（除非同一提示词承诺了补齐剩余部分）。启发式匹配，三重防过度拦截：否决式表述免疫、引号内容不算下达指令、上限必须挂在评审交付物名词上。派发给 review-agent 的增量轮（`mode=incremental`，经 `review-round.sh` 核实）放行，它不是缩范围。同组的评审轮次闸门 `review-gate.sh`：任务有 `Tier:` 时，评审派发要带与最新一轮一致的 `review-point=… round=… mode=…` 行和评审点生效档位的 `Tier:` 行，否则 deny 并写明要先运行的命令 |
 | **L6 共享树回退守卫** | `checkout-guard.sh` | PreToolUse (`^Bash$`) | 拦截会摧毁**他人未提交成果**的 git 回退：`checkout/restore` 指向有未提交改动的文件、以及移动状态的 `stash` 形态。deny 消息里给出安全替代（改前 cp 备份、`git show HEAD:<file>` 只读、`git apply -R`）。源自真实事故：变异测试回退用 checkout 连带删掉另一 agent 约 5000 字符守卫代码，且 build 全绿 |
 
 ### 4.3 关键机制
 
 - **上膛靠指针，指针按会话区分。** 所有 hook 都先找 session cwd（及 session 项目目录）下**本会话的** `.zyz-worker/sessions/<session-id>`（一行一个任务）；没有再看共享的旧指针 `.zyz-worker/current-task`；再没有看编排 spawn 导出的 `$ZYZ_TASK_DIR`；都没有，整层静默 no-op。主 agent 在 §1 用 `task-pointer.sh arm` 写它。会话 id 来自 hook 输入的 `session_id`（实测 subagent 的 hook 里仍是父会话 id），watchdog 没有 hook 输入，用 `$CLAUDE_CODE_SESSION_ID` / Codex 启动器传入的 `$ZYZ_SESSION_ID`。**为什么按会话（issue #23）**：旧指针每个目录只有一份，同目录两个会话各跑 execute-task，后来者要么覆盖（先来者的 watchdog 悄悄挂到新任务上），要么不写（自己失效），两种都没有任何提示；而「多个指针、由 watchdog 挑一个」正是下面 #18 那种推断——归属只能靠会话身份。**踩过的坑（两个方向都踩过）**：本插件自己的 `git-worktree` skill 把 worktree 建在主 checkout 之外且不 cd 进去，于是任务在 worktree 里跑、指针也写在那里，而 session cwd 在主 checkout——**六层全部空转**（`runtime/` 从未创建、两个死掉的 subagent 无人上报、空闲闸门放行），而且外部完全看不出来（issue #5）。为此曾加过「兄弟 worktree 兜底」，结果反向翻车：同仓两个并发任务时，指针落空的会话**吸附到另一个会话的任务**，看门狗随即以命令式告警＋Stop 闸门推着主 agent 往不属于自己的 status.md 写「当前进度」（issue #18）——兜底把「确定性失败（静默，且已有 §1 armed 检查兜住）」换成了「概率性错挂且外观可信」，是最坏的交换，已删除。现行契约：任务目录不在 session cwd 下时指针内容**必须是绝对路径**（`task-pointer.sh` 一律写绝对路径）；编排场景用 `$ZYZ_TASK_DIR`；解析器**刻意不做任何搜索**（既不枚举兄弟 worktree，也不向上遍历——默认布局的祖先链会经过 `$HOME/.zyz-worker`，一个游离指针就能捕获 `$HOME` 下所有 session）。
-- **阶段分类：终态与 design 先排除，再匹配活跃。** 强制层只在活跃执行阶段（implementation/testing/review/delivery）出声，但活跃匹配用的是子串通配，两个方向都翻过车：`*review*` 曾把 `design review` 当活跃，让 L4 在 §2 第 8 步——工作流唯一要求无限期等人的闸门——推着主 agent 行动；`*deliver*` 曾把 `delivered` 当活跃，对永远不会再写状态的已交付任务无休止告警（#18 现场删指针的诱因正是想止住这种告警）。现行实现 `zyz_phase_terminal` 前缀匹配一组终态同义词（`done`/`delivered`/`completed`/`closed`/`finished`/`cancelled`/`abandoned`，含 `done(delivered)` 这类注记形态），`zyz_phase_active` 先排终态、再排 `design`、最后才匹配活跃；同一判定也让完结任务的遗留目录不再触发假的 NOT ARMED。
+- **阶段分类：终态与 design 先排除，再匹配活跃。** 强制层只在活跃执行阶段（implementation/testing/review/delivery）出声，但活跃匹配用的是子串通配，两个方向都翻过车：`*review*` 曾把 `design review` 当活跃，让 L4 在 §2 的设计批准闸门——工作流唯一要求无限期等人的闸门——推着主 agent 行动；`*deliver*` 曾把 `delivered` 当活跃，对永远不会再写状态的已交付任务无休止告警（#18 现场删指针的诱因正是想止住这种告警）。现行实现 `zyz_phase_terminal` 前缀匹配一组终态同义词（`done`/`delivered`/`completed`/`closed`/`finished`/`cancelled`/`abandoned`，含 `done(delivered)` 这类注记形态），`zyz_phase_active` 先排终态、再排 `design`、最后才匹配活跃；同一判定也让完结任务的遗留目录不再触发假的 NOT ARMED。
 - **看门狗输出是兜底,不是神谕。** 它既可能漏报（#9：`.done` 已写但投递失败）也曾误报过别人的任务（#18）。所以主 agent 收到点名 status 文件/任务目录的告警,先核对该路径属于本会话的任务（指针或 `$ZYZ_TASK_DIR` 所指），不属于就不写——往另一个会话的 status.md 写「当前进度」等于伪造那个任务的事实源——只向用户报告归属不符。
 - **「未武装」必须可见。** 一个没上膛的看门狗和一个健康安静的看门狗从外部无法区分。§1 要求通过只读 fixed-pack observer 确认 PACK_HEADER 中的 `main_heartbeat_epoch` 已推进；两端均使用同步心跳 hook，避免 Codex 当前跳过 async hook 导致整层假装已武装。
 - **固定 START 存在、无 DONE/FINALIZED、HEARTBEAT 仍在推进 = 该角色还活着，不要重派。** 这条同时是「存活 agent 登记表」——恢复会话据此区分「死了产出丢了」与「还在跑」，避免把新 agent 派进同一工作区与存活的原 agent 撞车。observer 无法验证 catalog/runtime 时只能报告 tracking unavailable，不能把静默当成健康。
 - **全部 fail-open。** 缺输入、缺 JSON 解析器（jq/python3）、写失败，一律静默 exit 0（畸形 JSON、空 stdin、无指针三种输入均已实测退出 0）。兜底层绝不能拖慢或弄坏它保护的流程。
 - **输出形状按事件类型区分。** `PostToolUse` / `PreToolUse` 这类注入或拦截，输出 `hookSpecificOutput` 且其中 `hookEventName` 必须与注册的事件一致（前者带 `additionalContext`，后者带 `permissionDecision`）；而 Stop / SubagentStop 两个停止门禁输出的是**不带**事件名的 `{decision:"block",reason}`——这是该事件族的约定，不是漏写。
-- **四个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5、`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关 L6（两者的匹配都是启发式的——用 shell 解析 shell 无法完美——必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。
+- **五个逃生开关。** `ZYZ_HOOKS_DISABLE=1` 关整层、`ZYZ_SCOPE_GUARD_DISABLE=1` 只关 L5 范围守卫、`ZYZ_REVIEW_GATE_DISABLE=1` 只关评审轮次闸门、`ZYZ_CHECKOUT_GUARD_DISABLE=1` 只关 L6（两者的匹配都是启发式的——用 shell 解析 shell 无法完美——必须留单独开关）、`stop_hook_active` 让已被拦过的停止直接放行。
 - **底线检查只依赖所有平台都有的事实（0.32.0）。** 逐角色检查要 fixed-pack（macOS 不可用）和角色名 matcher（用 `name` 派发的 teammate 匹配不上）；「无执行者」只信 Stop 时宿主的后台任务列表，列表里挂着死掉的 teammate 时永远不响。11-19 的真实事故就是这三者同时失效：一个评审 teammate 撞 402 死掉，列表里挂着 16 条，整个会话 6.5 小时没有一次工具调用，没有一层发声。所以加了会话静默（看 `runtime/activity`，任何 agent 的工具调用都会写）和 API 错误中断（StopFailure 落盘——宿主忽略该 hook 的输出，之前它只发了 IM）。顺带修正了 main-state 的语义冲突：`idle_prompt` 每次停下后都会来，不再记成 `awaiting-user`；Stop 一律记 `idle`。
 - **阈值分层且可调。** L3 的角色静默阈值（1200s）刻意高于 L4（900s），因为 L3 无法交叉验证 `background_tasks`，而健康角色可能长时间只思考不调工具——所以 L3 的措辞是「请核实」而不是「立即重启」。全部通过 `ZYZ_*` 环境变量可调，`ZYZ_HOOKS_DISABLE=1` 关掉整层。
 - **多层管同一条不变量不是冗余，是递进升级阶梯。** 状态文件新鲜度有三层管：600s 注入提醒（纯建议）→ 1200s 停止门禁（拦住 idle）→ 1800s 后台监视器（唤醒会话）。角色存活有两层：900s 停止门禁 → 1200s 监视器。每层阈值不同、触发点不同、手段强度不同（提醒 < 阻止 < 唤醒），后一层只在前一层已经失效时才够到。看起来重复的地方，实际是「先轻后重」。
@@ -284,7 +289,8 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 | `test-release-0-5-0.sh` | 发布门禁：三份清单版本一致、打包产物内容、tag 内容 |
 | `test-clean-tmp-skill.sh` | clean-tmp skill 的静态与烟测、文档接线 |
 | `test-codex-adaptation.sh` | Codex manifest、runtime adapter 与 hook 根目录契约；默认本地验证不消耗配额，`--real` 会重装 candidate 并启动真实 Codex smoke（消耗配额） |
-| `test-cross-review.sh` | 跨 harness 交叉评审脚本：用 PATH 上的假 `codex`/`claude` 验证宿主识别与「只起其它 harness」、只读参数、`ZYZ_*` 清空与 hook 关闭、MCP 隔离及 Codex 插件型 server 的回退、报告捕获、状态分类（ok/empty/failed/timeout/none）、工作树指纹；不消耗配额 |
+| `test-cross-review.sh` | 跨 harness 交叉评审脚本：用 PATH 上的假 `codex`/`claude` 验证宿主识别与「只起其它 harness」、只读参数、`ZYZ_*` 清空与 hook 关闭、MCP 隔离及 Codex 插件型 server 的回退、报告捕获、状态分类（ok/empty/failed/timeout/none/skipped）、impl 增量轮跳过与 `ZYZ_CROSS_REVIEW_FORCE`、工作树指纹（排除 `.zyz-worker/` 与任务目录）；不消耗配额 |
+| `test-review-round.sh` | 分档改造的评审账本与闸门：`review-round.sh` 的 open / start（含 `--full`）/ result / grant / check / close / tier / status，每档上限、严格档收口检查窗口、escalate 之后要 `grant`、关闭与重开、评审点级升档；`review-gate.sh` 的标记与 `Tier:` 行核对、角色过滤、关闭开关与旧任务 fail open；L5 对增量轮的放行；含变异记录 |
 | `test-e2e-layered.sh` | 真 claude 端到端验收（**消耗 API 配额**，需 tmux/git/claude 就位），验证 spawn → L2 起真 claude → 父 shell 不变量 → exactly-once 幂等 → dispatch-bound 绑定 |
 
 一个重要惯例：**文档串也被测试钉住**。SKILL.md 的分支名、README 的目录树条目、模板的枚举值都有 grep 断言——因为这套插件的「行为」很大一部分就写在提示词里，提示词漂移就是行为漂移。
@@ -297,11 +303,12 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 - **改 `dispatch.md` 字段**：模板、spawn 与 reuse 两个 Phase-1 写入点、check 的 Phase-2 回写（必须原样保留复用字段与编号仓字段组，否则首次轮询就会丢）、merge/cleanup/reuse 的仓集读取、崩溃恢复章节、T8 测试。
 - **改 L2 的 `intent` 枚举**：`agents/` 与 `subagents/` 两份驱动定义（`## 输入` 行 + 各 `## intent=…` 小节）、`templates/monitor.md` 模板的 `driver-intent`、L1 的每个派发点、对应测试。
 - **改角色提示词**：`agents/<role>.md` 与 `subagents/<role>.md` 必须同改（正文被逐字节比对）。
-- **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## 用户设计主导权` 与 §3.0.0、`prompts/main-agent.md` 的同名节、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
-- **改设计文档 `## 快速审阅`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`SKILL.md` 的 `## 快速审阅` 定义（含「正文为准 + 冲突时从正文重新生成」三条）、§2 步骤 1/6/8、`prompts/main-agent.md` 的维护职责、review-agent 两份镜像的一致性核对、以及 T6 断言。注意：摘要腐烂的机制与正文相同——**用追加代替改写**（在一句已过时的话旁边补「(现在是 5 个模块)」），不是「存在第二份描述」本身。所以规则是「改动时重写受影响的整块，冲突时按正文重新生成」，而非「保持同步」。
-- **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/prompts/main-agent.md` 与 `skills/execute-task/SKILL.md` 的 `## 设计文档编辑纪律` 两处口径、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
-- **改跨 harness 交叉评审**（§3.3 d2）：`scripts/cross-review.sh`、`skills/execute-task/templates/cross-review-prompt.md`、`SKILL.md` 的 `## 跨 harness 交叉评审` 及 §2/§3.A/§3.B/§3.C/§4 的挂点、`prompts/main-agent.md` 的同名节与设计工作流、实现工作流两节、implementation/test 两个角色提示词两份镜像的 cross-harness 段、`templates/task-status.md` 的 `## 跨 harness 交叉评审` 记录位、`templates/final-report.md` 与 `templates/review-report.md` 的 `评审者:` 字段、以及 `test-cross-review.sh`。新增一种 harness 时改脚本的 `KNOWN_HARNESSES`、`build_cmd` 与该 harness 的只读/隔离参数。
-- **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog 强制层` 三处口径要一致；告警、事实来源、声明有增减时，同步 `docs/design/watchdog-design.md` 的 §3 / §5 表格。
+- **改「用户设计主导」口径**（§3.3 a2）：`SKILL.md` 的 `## 用户设计主导权` 与 §3.0.0、`prompts/main-agent.md` 的同名节（含 `### 实现中发现偏离` 决策表，这条规则只写在这里）、`templates/decisions.md`、三个角色提示词两份镜像、`templates/task-status.md` 的 design-change 记录位、`templates/review-report.md` 的 design-conformance 维度、以及 `test-watchdog-hooks.sh` T6 的对应断言。
+- **改设计文档 `## 快速审阅`（快速审核区）**：`templates/design-doc.md` 的区块与两个子节、`skills/execute-task/references/design-doc-discipline.md` 的 `## 横幅与快速审阅`（含「正文为准 + 冲突时从正文重新生成」与「快速审阅不进入评审」）、`SKILL.md` §2 第 4 步与批准闸门、`prompts/main-agent.md` 的维护职责与批准闸门、以及 T6 断言（分档后 review-agent 不再核对快速审阅与正文的一致性，T6 对此有反向守卫）。注意：摘要腐烂的机制与正文相同——**用追加代替改写**（在一句已过时的话旁边补「(现在是 5 个模块)」），不是「存在第二份描述」本身。所以规则是「改动时重写受影响的整块，冲突时按正文重新生成」，而非「保持同步」。
+- **改设计阶段的文档纪律**（§3.3 f）：`skills/execute-task/references/design-doc-discipline.md`（规则正文）、`skills/execute-task/SKILL.md` 的 `## 设计文档编辑纪律` 与 `## 评审历史文件` 摘要、`prompts/main-agent.md` `## 设计` 里的引用、`templates/design-doc.md` 的尾注、review-agent 两份镜像的非阻塞口径、`templates/review-report.md` 与 `templates/task-status.md` 的记录位、以及 `test-watchdog-hooks.sh` T6 的对应断言。
+- **改跨 harness 交叉评审**（§3.3 d2）：`scripts/cross-review.sh`、`skills/execute-task/templates/cross-review-prompt.md`、`SKILL.md` 的 `## 跨 harness 交叉评审` 与 `references/cross-harness.md`、`hooks/scripts/review_round.py` 的 `cross-harness=` 判定、`prompts/main-agent.md` `## 评审收口` 第 3 步、implementation/test 两个角色提示词两份镜像的 cross-harness 段、`templates/task-status.md` `## 发现台账` 的 `跨 harness 运行` 行与来源列、`templates/final-report.md` 与 `templates/review-report.md` 的 `评审者:` 字段、以及 `test-cross-review.sh`。新增一种 harness 时改脚本的 `KNOWN_HARNESSES`、`build_cmd` 与该 harness 的只读/隔离参数。
+- **改档位或评审轮次规则**（§3.3 h）：`docs/design/execute-task-tiers-design.md` §10（契约）、`hooks/scripts/review_round.py`（上限表、mode、cross-harness、闸门判定的唯一实现）与 `review-round.sh` / `review-gate.sh`、`lib.sh` 的 L5 增量放行、`SKILL.md` 的 `## 档位` 与 `## 评审收口`、`references/review-closure.md`、`prompts/main-agent.md` `## 开局` 与 `## 评审收口`、review-agent 两份镜像的 `## 派发标记与评审模式` / `## 按档位的评审范围`、`templates/task-status.md` 的 `- Tier:` 与 `## 评审收口`、`templates/review-report.md`、`hooks/README.md`、`docs/design/watchdog-design.md` §5，以及 `test-review-round.sh` / `test-cross-review.sh`。
+- **改 watchdog 阈值/路径**：脚本、`hooks/README.md`、execute-task SKILL.md 的 `## Watchdog 强制层`（细则 `references/watchdog.md`）三处口径要一致；告警、事实来源、声明有增减时，同步 `docs/design/watchdog-design.md` 的 §3 / §5 表格。
 - **新增一种正当的安静场景**：先看能不能用一种声明表达（扩展 `expect_state.py` 的 kind / 参数 + `expect.sh` + 模板 + 文档），不要在 hook 里加针对该场景的硬编码豁免（`docs/design/watchdog-design.md` §2）。
 - **改 fixed-pack 运行时状态格式**（§4.4，`runtime_state.py`）：pack 记录 schema / 槽位布局 / 校验字段一旦变，必须同步 `runtime_native.py`（同一契约的加速实现，正文行为须一致）、observer 投影、以及 `test-watchdog-hooks.sh` 的 T45–T52 崩溃恢复门禁（新增持久化屏障要配套的注入行 + 不变量断言）。新增在终态 cell 里持久化的整数字段时注意 event_receipts 校验器是**精确集合相等 + 逐字段格式校验**：整数字段要进 allow-list 且排除在 hex/token 格式循环之外。
 

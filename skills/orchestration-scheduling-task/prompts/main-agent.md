@@ -93,7 +93,7 @@
 
 - 遍历 `blocked` 任务。依赖达到 `completed` 是必要条件，但由于 `completed` 不再意味着已合入 base，它**不能**机械地被当作充分条件。对每个 `blocked-by` 依赖全部 `completed` 的阻塞任务，逐个判断它是否真的能开始：每个依赖的产出对本任务是否确实可用（已合入本任务的 `base`，还是只存在于依赖自己的分支上）？它的其它 `blocked-by` 依赖是否都已满足？它的每个 worktree 应该基于哪个分支——如果依赖已合入就基于 `main`；如果某个依赖是 `completed` 但未合入、而本任务又需要它的代码，就把相关仓库的 `base:` / `base-N:` 设为该依赖的分支，接在它后面，而不是基于过时的 `main`。对多仓任务，这个判断是**逐仓**的：一个依赖可能已合入某个仓库的 base，却还没合入另一个仓库的 base，所以要针对真正需要其代码的那个仓库来判断是否可用。把判断结果和选定的 base 记录到该任务的 `## Orchestrator Analysis` 中；只有在它真的能开始时才设为 `ready`，否则保持 `blocked` 并记录原因。worker 仅仅达到 `phase=awaiting-confirmation`（还没到 `completed`）时，绝不解锁下游任务。
 - 按 `ZYZ_MAX_PARALLEL_WORKERS` 应用并行上限：
-  - **`-1`（默认，不限制）：** **不**设上限。本 tick 派发所有 `ready` 任务。一次派发多个新 worker 时，它们的 L2 driver 并行启动（一条消息里多个 `Agent` 调用），遵循与 execute-task SKILL.md §3.0.2 相同的依赖图并行纪律（按依赖图调度，而不是按清单顺序）。
+  - **`-1`（默认，不限制）：** **不**设上限。本 tick 派发所有 `ready` 任务。一次派发多个新 worker 时，它们的 L2 driver 并行启动（一条消息里多个 `Agent` 调用），遵循与 execute-task SKILL.md `## 并行模型` 调度一节相同的依赖图并行纪律（按依赖图调度，而不是按清单顺序）。
   - **正整数：** 照旧设上限。把当前 `in-progress` + `paused` 的任务数记为 `currentInFlight`。上限把 **`paused` 也算作占用一个槽位**，因为该 worker 的 tmux session 仍然存活。按优先级顺序（`high > normal > low`，再按 created-at 升序）遍历 `ready` 任务，最多挑出 `cap - currentInFlight` 个进行派发。
 
 ### 派发
@@ -110,7 +110,7 @@
   - 记下打印出的 `session-name=…` 和 `worktree=…`（主 worktree = pane 的 cwd），如果与主条目 frontmatter 不一致就同步过去（正常情况下应当一致）。对多仓任务，stdout 还会带上 `worktree-2=…`（…-N）和 `repo-count=<N>`；`repo-count` 只对多仓任务打印（单仓 spawn 的 stdout 与以前逐字节相同）。
   - 从该 worker 的 `dispatch.md` 读取 `tmux-pane-id`、`shell-pid`、`worktree`、编号的 worktree 集合、`plugin-root`、`agent-runtime` 和 `worker-runtime-args`（没有时回退到旧字段 `worker-mcp-args`）。
   - **以 `intent=first-dispatch` 派发一个 L2 `orch-driver-agent`**。它的提示词必须自包含，**必须**带有 `task-id`、`list-dir`、`tmux-session`、`tmux-pane-id`、`shell-pid`、主 `worktree`、用冒号连接的 worktree 集合、`plugin-root`、`agent-runtime`、`worker-runtime-args` 以及 intent。driver 通过 `scripts/orch-agent-runtime.sh launch-command` 渲染启动命令；只有 Claude 才走启动确认页 / 斜杠命令，Codex 则在初始提示词中收到 execute-task 请求。
-  - **多个新 worker → 把它们的 L2 放在一批里并行派发**（一条消息、多个 `Agent` 调用；遵循与 execute-task SKILL.md §3.0.2 相同的依赖图并行纪律）。L1 收集每个 L2 返回的一行摘要，而不是 pane 的原始内容。
+  - **多个新 worker → 把它们的 L2 放在一批里并行派发**（一条消息、多个 `Agent` 调用；遵循与 execute-task SKILL.md `## 并行模型` 调度一节相同的依赖图并行纪律）。L1 收集每个 L2 返回的一行摘要，而不是 pane 的原始内容。
 - 退出码非 0 时：
   - 设为 `state: blocked`。把脚本退出码和 stderr 摘要写进 `## Notes`。
   - 不要派发 L2（没有可驱动的容器）。节奏降到 180 s（`stale` 分支）。

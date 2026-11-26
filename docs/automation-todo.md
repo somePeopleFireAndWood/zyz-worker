@@ -60,9 +60,8 @@
 
 - 并入 `scripts/validate-plugin.sh`
 - 校验：
-  - 对每个 `agents/<x>.md`，必须存在 `.claude/agents/<x>.md`
-  - 两份文件的 frontmatter 字段值完全一致（`name`、`description`、`tools`）
-  - `.claude/agents/<x>.md` 的正文必须是单行 `@agents/<x>.md`
+  - `.claude/agents` 是指向 `../agents` 的符号链接（不是逐文件镜像）
+  - `agents/<x>.md` 与 `subagents/<x>.md` 的正文除 frontmatter 和身份行外逐字一致（已由 `scripts/test-orchestration-helpers.sh` 的 `t10_mirror_diff` 覆盖，lint 可直接复用）
 - 预估：~20 行（awk 或 python）
 
 ### E. README / CLAUDE.md 路径检查
@@ -86,7 +85,7 @@
 ### H. 角色/skill 生成器
 
 - 例如 `scripts/new-agent.sh <name>` 自动创建 `agents/<name>.md` 和 `.claude/agents/<name>.md` 镜像
-- 当前角色只有 3 个，新增频率极低
+- 当前角色只有 4 个（execute-task 3 个 + orchestration 的 `orch-driver-agent`），新增频率极低
 - 真要加角色时手动创建 + 跑 lint 即可
 
 ### I. 端到端集成测试

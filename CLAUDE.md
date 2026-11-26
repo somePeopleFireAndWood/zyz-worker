@@ -7,7 +7,7 @@
 当用户要求运行 execute-task 工作流时，使用项目斜杠命令：
 
 ```text
-/execute-task <task description>
+/execute-task [--fast|--standard|--strict] <task description>
 ```
 
 `/code-development` 作为同一工作流的别名保留。
@@ -17,7 +17,9 @@
 - `skills/execute-task/SKILL.md`
 - `skills/execute-task/prompts/main-agent.md`
 - `skills/execute-task/templates/`
-- `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md`（跨 harness 交叉评审：在每个评审点，除了 `review-agent` subagent 之外，还会在本机装着的每一个**其它** agent harness 里各起一个只读评审会话——宿主是 Claude Code 时起 Codex，宿主是 Codex 时起 Claude Code；它的发现只作参考，每一条都要先经过独立核实才能接受，也可以附上记录在案的理由予以拒绝——见 `skills/execute-task/SKILL.md` `## 跨 harness 交叉评审`）
+- `skills/execute-task/references/`（按需加载的专题细则：评审收口、跨 harness、watchdog、恢复、版本控制、PR 评审、编排模式、设计文档纪律）
+- `hooks/scripts/review-round.sh` + `hooks/scripts/review-gate.sh`（分档与评审轮次：任务按风险分 `fast` / `standard` / `strict` 三档，写在 `status.md` 的 `- Tier:`；`review-round.sh` 记录每个评审点的轮次、按档位拒绝越限的轮次，`review-gate.sh` 拒绝没有记录在案的 review-agent 派发——见 `skills/execute-task/SKILL.md` `## 档位`、`## 评审收口` 与 `docs/design/execute-task-tiers-design.md`）
+- `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md`（跨 harness 交叉评审：在评审点的设计各轮、实现第 1 轮与全量轮、汇总第 1 轮（以 `review-round.sh start` 输出的 `cross-harness=` 为准），除了 `review-agent` subagent 之外，还会在本机装着的每一个**其它** agent harness 里各起一个只读评审会话——宿主是 Claude Code 时起 Codex，宿主是 Codex 时起 Claude Code；它的发现只作参考，每一条都要先经过独立核实才能接受，也可以附上记录在案的理由予以拒绝——见 `skills/execute-task/SKILL.md` `## 跨 harness 交叉评审`）
 - `hooks/hooks.json` + `hooks/scripts/` 与 `monitors/`（watchdog 强制层：每次工具调用自动写心跳与会话活动、状态新鲜度提醒、subagent 退出门、后台 watchdog（死亡角色、会话静默、API 错误中断、无执行者、声明到点）、主 agent 停止门——见 `skills/execute-task/SKILL.md` `## Watchdog 强制层` 与 `hooks/README.md`；设计原则与长期方向「agent 主导，插件做工具与保障者」见 `docs/design/watchdog-design.md`）
 
 主 agent 在任务开始时用 `hooks/scripts/task-pointer.sh arm <任务目录>` 写入本会话的指针 `.zyz-worker/sessions/<session-id>`（拿不到会话 id 时退回共享的 `.zyz-worker/current-task`），从而启用 watchdog——同一目录下的多个会话各跑各的 execute-task，互不覆盖；`[zyz-worker watchdog]` 通知和注入的上下文都是需要立即执行的指令（重新派发被点名的角色，或马上刷新状态文件），不是噪音。

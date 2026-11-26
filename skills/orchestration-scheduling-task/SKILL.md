@@ -312,7 +312,7 @@ worker 到达 `phase=awaiting-confirmation` 时投影为 `state: awaiting-user-c
 
 并非每个分支都合并到 `main`，有些还需要 PR + 人工评审。原生的 PR 创建不在范围内。要通过 PR 完成任务：让 worker 到达 `phase=awaiting-confirmation`，自己（在 zyz-worker 之外）开 PR、评审并合并——多仓库任务每个仓库一个 PR，因为每个仓库都有自己的分支——然后在 `## Pending Merge Approval` 中写入 `confirmed`（**不是** `merge`），这样编排器会记录 `state: completed`，而不执行任何 git 合并。编排器绝不开 PR，也绝不合并 PR。
 
-如果 PR 评审返回了修改请求，worker 主 agent 会对其进行评估，而不是盲目接受——修复成立的发现，对不成立的发现在 PR 上发布有理有据的拒绝说明（参见 `skills/execute-task/prompts/main-agent.md` 的 `## PR 评审处理（外部评审反馈）`）。根据 PR 反馈采取行动的 worker 会按需把 `phase` 从 `awaiting-confirmation` 回滚到 `implementation`/`testing`/`review`；只有在你对处理后的 PR 满意时，才写入 `confirmed`。
+如果 PR 评审返回了修改请求，worker 主 agent 会对其进行评估，而不是盲目接受——修复成立的发现，对不成立的发现在 PR 上发布有理有据的拒绝说明（参见 `skills/execute-task/prompts/main-agent.md` 的 `## PR 评审处理` 与 `skills/execute-task/references/pr-review.md`）。根据 PR 反馈采取行动的 worker 会按需把 `phase` 从 `awaiting-confirmation` 回滚到 `implementation`/`testing`/`review`；只有在你对处理后的 PR 满意时，才写入 `confirmed`。
 
 ## 容器复用
 

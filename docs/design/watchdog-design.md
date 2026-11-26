@@ -1,6 +1,6 @@
 # watchdog 总体设计
 
-本文是 watchdog 强制层（`hooks/` + `monitors/`）的**设计依据**：它要解决什么问题、按什么原则演进、现在由哪些部件组成、每条告警怎么被正确地清掉。逐个脚本的契约见 `hooks/README.md`，主 agent 的义务见 `skills/execute-task/SKILL.md` `## Watchdog 强制层`。三处口径冲突时以本文的原则为准，再回头修正另外两处。
+本文是 watchdog 强制层（`hooks/` + `monitors/`）的**设计依据**：它要解决什么问题、按什么原则演进、现在由哪些部件组成、每条告警怎么被正确地清掉。逐个脚本的契约见 `hooks/README.md`，主 agent 的义务见 `skills/execute-task/SKILL.md` `## Watchdog 强制层`（细则 `skills/execute-task/references/watchdog.md`）。三处口径冲突时以本文的原则为准，再回头修正另外两处。
 
 ## 1. 要解决的问题
 
@@ -40,6 +40,9 @@
 | **事实** | 工具调用活动（`runtime/activity`）、用户发言时刻（`runtime/user-prompt-epoch`）、主 agent 的对话框状态（`runtime/main-state`）、Stop 时宿主报告的后台任务（`runtime/stop-snapshot`）、API 错误中断记录（`runtime/api-failures/`）、fixed-pack 角色记录（仅 Linux） | hook / monitor | 不能 |
 | **声明** | `## Agent State` 里的 `Expect`（`wait` / `user [--watch]` / `resident`）与 `Tune` 行 | 主 agent 用 `expect.sh` | 能，但每条都会过期 |
 | **阶段** | `Current Phase`：`design` / 活跃阶段（implementation、testing、review、delivery）/ `observing` / `awaiting-confirmation` / 终态 | 主 agent | 能 |
+| **评审账本**（分档改造） | `status.md` 的 `- Tier:` 与 `## 评审收口` 里的 `Review` / `Review-Grant` / `Review-Check` / `Review-Close` 行 | 主 agent 用 `review-round.sh`（不手写） | 能，但只经脚本、按档位规则：降档要 `--by user`，超上限的轮次要 `grant` |
+
+评审账本不过期：评审点 `close` 之后，要再评审就 `open` 开一组新记录。没有有效 `- Tier:`（旧任务、为空或模板占位）时，读它的 `review-round.sh start` 不设上限、`review-gate.sh` 放行；坏行被忽略，`status` 里标 `INVALID`——一律 fail open。
 
 `main-state` 的四个取值是对话框事实，不是推断：
 
@@ -60,7 +63,7 @@
 
 ## 5. 告警目录
 
-「层」：L1 = PostToolUse 注入，L3 = 后台 monitor 唤醒，L4 = Stop 时拦截。
+「层」：L1 = PostToolUse 注入，L3 = 后台 monitor 唤醒，L4 = Stop 时拦截，L5 = PreToolUse 派发闸门（只拒绝这一次派发，不唤醒、不发 IM）。
 
 | 告警 | 层 | 触发 | 被什么压住 | 怎么清除 | 重复节奏 |
 |---|---|---|---|---|---|
@@ -73,6 +76,10 @@
 | 状态文件过期 | L1 / L4 / L3 | 活跃阶段 `status.md` 超过 600 / 1200 / 1800 秒没写 | `wait`；旧 `Waiting On`；main-state 为 `awaiting-user` / `idle`（L3/L4） | 写状态文件 | 各层冷却 |
 | 角色静默 / 跟踪未对账 / probe 逾期 / 无输出 / 终态未收取 | L4 + L3 | fixed-pack 观察（仅 Linux，仅三种 zyz-worker 角色名） | 无 | `probe-*` / `finalize` / `reconcile-*`；读结果并写状态 | L3 冷却 900s，6 小时后不再看 |
 | 未启用 | L3 | 有未完成任务目录却解析不到本会话的指针 | — | `task-pointer.sh arm` | 一次 |
+| **派发范围守卫**（L5） | L5（`dispatch-scope-guard.sh`） | 派发 prompt 给角色的交付物设上限（「只报最重要的 3 条」「一句话结论」），又没承诺交付其余部分 | 同一 prompt 承诺续做剩余部分；否决式表述；引号内的措辞；**增量复审放行**（分档改造）：派发给 review-agent、带 `mode=incremental` 标记，且 `review-round.sh` 确实记了这一轮（n ≥ 2、最新一轮、不是 `start --full` 的全量轮）；`ZYZ_SCOPE_GUARD_DISABLE=1` | 按完整范围分步重派，不换措辞绕过 | 每次派发 |
+| **评审轮次闸门**（分档改造） | L5（与范围守卫同组，`review-gate.sh`） | 本会话有带有效 `Tier:` 的任务时派发 review-agent，prompt 缺 `review-point=<id> round=<n> mode=<full\|incremental>`，或标记格式不对、评审点未登记 / 已关闭 / 未开始、轮次或 mode 与 `review-round.sh` 记录的最新一轮不一致；或缺单独一行的 `Tier: <t>`、值不合法、与评审点的生效档位不一致 | 没有任务带有效 `Tier:`（旧任务）；`ZYZ_REVIEW_GATE_DISABLE=1`；`ZYZ_HOOKS_DISABLE=1`；缺 python3 / 输入 / 指针 | 按拒绝理由运行 `review-round.sh start <point>`（或先 `open`），把输出的 round / mode 和评审点的生效档位写进派发后重新派发 | 每次派发；只拒绝，不发 IM |
+
+**评审轮次上限与收口检查不是告警。** `review-round.sh start` 是主 agent 自己运行的命令，在以下情形以 exit 3 拒绝开新一轮、什么都不写，并在 stdout 写明下一步：上一轮还没 `result`（先 `result`）；评审点已 `close`（先 `open`）；超过档位上限且没有本轮 `grant`（交用户三选一：`grant` / `close --outcome residual --by user` / `close --outcome split --by user`）；严格档开第 4、7… 轮前缺 `check`（先 `check`）；最近一次 `check` 是 `escalate` 且没有 `grant`（交用户）。没有有效 `Tier:` 时不设上限、不要求 `check`。
 
 「状态文件过期」是**卫生**提醒，不是存活检测：主 agent 停下后 main-state 就是 `idle`，它不再响。停下之后判断「有没有人在推」的，只有会话静默、无执行者、声明到点三条，以及 Linux 上的角色级检查。
 
@@ -97,7 +104,7 @@
 | 会话静默、API 错误中断 | ✅ | ✅ | 只写诊断日志（没有 monitor 唤醒通道）；IM 升级照常——没人读日志，第二次报告就会通知用户 |
 | 无执行者、声明到点、观察期 | ✅ | ✅ | L4 部分 fail open（输入没有 `background_tasks`） |
 | 角色级检查（fixed-pack） | ✅（仅三种角色名） | ❌ `genesis-capability-unavailable` | ✅ |
-| 状态文件过期、L2 / L5 / L6 | ✅ | ✅ | ✅ |
+| 状态文件过期、L2 / L5（含评审轮次闸门）/ L6 | ✅ | ✅ | ✅ |
 
 两条底线检查不依赖 fixed-pack，也不依赖角色名：用 `name` 派发的 agent team teammate（`agent_type` 是名字，匹配不上 `review-agent` 这类 matcher）同样会被覆盖——它们的工具调用 hook 照常触发，带着 `agent_id`。
 
@@ -130,4 +137,5 @@
 - 新的正当安静场景：先扩展声明，不加硬编码豁免（§2）。
 - 新的告警：必须在 §5 的表里写清触发、压制、清除办法、重复节奏，并在告警文本里给出清除命令。它先叫醒主 agent；给用户的 IM 只能落在 §5.1 的三种时刻之一（watchdog 的发现一律走 `notify_stuck` 升级），不在告警处另发。
 - 新的事实来源：写进 §3，说明谁写、何时失效、缺失时 fail open 还是 fail closed。
-- 改阈值或文件路径：本文、`hooks/README.md`、`SKILL.md` `## Watchdog 强制层` 三处同改（`docs/architecture.md` §8）。
+- 改阈值或文件路径：本文、`hooks/README.md`、`SKILL.md` `## Watchdog 强制层`（细则在 `skills/execute-task/references/watchdog.md`）三处同改（`docs/architecture.md` §8）。
+- 新的派发闸门（PreToolUse）：只拒绝这一次派发，拒绝理由以 `[zyz-worker watchdog]` 开头并写明要先运行的命令；没有任务、旧任务或解析失败时 fail open，并给它单独的关闭开关（如 `ZYZ_REVIEW_GATE_DISABLE`）。
