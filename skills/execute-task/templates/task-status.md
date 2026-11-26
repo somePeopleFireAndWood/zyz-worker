@@ -74,7 +74,7 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 ## 评审收口
 
 <!-- 本节只放 `review-round.sh` 写入的机器行（登记、轮次、额外轮授权、收口检查、关闭），不要手写，也不要放表格；命令、上限和闸门见 SKILL.md `## 评审收口`。到上限交用户时，用户的选择记入 `decisions.md`。真实的行由脚本追加在本节，不在注释里。`blocking` = 本轮被接受的 blocking 条数，`rejected` = 评审者报为 blocking、被裁决者拒绝或降级的条数；`passed` 关闭要求最近一轮 blocking=0 且 rejected=0。示例：
-- Review: point=design-main; stage=design; kind=main; round=2; started=1764120000; blocking=0; behavior=-; rejected=0
+- Review: point=design-main; stage=design; kind=main; round=2; started=1764120000; blocking=0; rejected=0; behavior=-
 - Review-Grant: point=impl-st2; round=4; at=1764200000; reason=用户批准再开一轮：剩余 blocking 涉及数据删除
 - Review-Check: point=impl-st2; round=3; outcome=class-fix; at=1764190000; reason=同一类缺陷第三次出现，改做类级修复
 - Review-Close: point=design-main; round=2; outcome=passed; at=1764123000; reason=第 2 轮 blocking=0 且 rejected=0
