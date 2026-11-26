@@ -37,7 +37,7 @@
 
 | 类别 | 是什么 | 谁写 | 主 agent 能改吗 |
 |---|---|---|---|
-| **事实** | 工具调用活动（`runtime/activity`）、用户发言时刻（`runtime/user-prompt-epoch`）、主 agent 的对话框状态（`runtime/main-state`）、Stop 时宿主报告的后台任务（`runtime/stop-snapshot`）、API 错误中断记录（`runtime/api-failures/`）、fixed-pack 角色记录（仅 Linux） | hook / monitor | 不能 |
+| **事实** | 工具调用活动（`runtime/activity`）、teammate 这一轮是否结束及它起的后台任务（`runtime/teammates/`）、用户发言时刻（`runtime/user-prompt-epoch`）、主 agent 的对话框状态（`runtime/main-state`）、Stop 时宿主报告的后台任务（`runtime/stop-snapshot`）、API 错误中断记录（`runtime/api-failures/`）、fixed-pack 角色记录（仅 Linux） | hook / monitor | 不能 |
 | **声明** | `## Agent State` 里的 `Expect`（`wait` / `user [--watch]` / `resident`）与 `Tune` 行 | 主 agent 用 `expect.sh` | 能，但每条都会过期 |
 | **阶段** | `Current Phase`：`design` / 活跃阶段（implementation、testing、review、delivery）/ `observing` / `awaiting-confirmation` / 终态 | 主 agent | 能 |
 
@@ -66,7 +66,7 @@
 |---|---|---|---|---|---|
 | **会话静默**（0.32.0） | L3 | 活跃阶段、还有活，整个会话（主 agent、subagent、teammate）已 `silence-sec`（默认 1 小时）没有任何工具调用，用户也没发言、状态文件也没写 | 有效的 `wait` / `user`（`--watch` 的不算）；旧格式 `Waiting On`；打开着的用户对话框；上次 Stop 时排着的宿主唤醒（`silence-sec` 之后再宽限 1 小时）；无执行者条件成立（含其冷却中） | 核实各通道，死了的续做重派；确实在等不调用工具的东西就 `wait --at`，或自己定静默时长 `tune silence-sec / remind-sec`（各最多 24 小时）；等用户就 `user`；已交付就改阶段 | 每 `remind-sec`（默认 30 分钟）唤醒一次；叫醒后无动作才升级通知用户（§5.1） |
 | **API 错误中断**（0.32.0） | L3 | 宿主报告某个 subagent / teammate 的这一轮因 API 错误结束（StopFailure） | 无（事实） | 核实是否已处理过；没处理的按续做重派；同一错误反复出现时先声明 `wait` 并告诉用户 | 每条记录报一次，冷却（600 秒）内的多条合并成一行 |
-| 无执行者 | L4 + L3 | 活跃阶段还有活，停下时宿主报告没有执行者（L3：停下 `no-executor-sec` 后仍如此） | 有效的 `wait` / `user`；旧 `Waiting On` | 派发下一步；核实通道；声明 | L4 每次停下（冷却 600s）；L3 冷却 900s |
+| 无执行者 | L4 + L3 | 活跃阶段还有活，停下时宿主报告没有执行者——空闲的 teammate 和它起的后台任务不算（L3：停下 `no-executor-sec` 后仍如此；Stop 时在忙的 teammate 空闲满 `no-executor-sec` 也不再算） | 有效的 `wait` / `user`；旧 `Waiting On` | 派发下一步；核实通道；声明 | L4 每次停下（冷却 600s）；L3 冷却 900s |
 | 声明到点 | L3 | `wait` 的时间到了 | 无 | `clear` 或用新时间重新 `set` | 每 `remind-sec`；叫醒后无动作才升级通知用户 |
 | 声明绑定的后台任务已结束 | L3 | `wait --ref` 的任务不在上次停下时的列表里 | 无 | 读结果后 `clear`，或换 id 重新 `set` | 一次 |
 | 观察期无排定检查 | L4 + L3 | `observing` 阶段没有任何会把主 agent 叫回来的东西 | 有效 `wait` / `user`；宿主排定的唤醒 | `wait --at` 或改成 `done` | L3 每 3 小时 |
@@ -125,7 +125,7 @@
 - **多任务会话**：会话静默对每个活跃任务各报一条——每个任务都要各自说明为什么安静，一个任务上的声明不替别的任务说话。
 - **长时间只思考不调用工具的执行者**：超过 `silence-sec` 会被当成静默。用 `wait --at` 声明，或用 `Tune silence-sec` 放宽（最多 24 小时）。
 - **设计批准闸门忘了声明 `user`**：兜底的 `needs_input` 要靠 Stop 输入里的 `background_tasks` 判断「没有执行者」；Codex 没有这个字段，兜底不响，用户只能靠声明得知。
-- **空闲的 agent-team teammate 被当成执行者**：Claude Code 2.1.251 的 Stop 输入里，只要 teammate 还在就以 `running` 列出（`isIdle` 不导出，静态阅读宿主代码得出）。只要团队还在，「无执行者」就不会响；这种停摆只能等会话静默（默认 1 小时）。11-17 的事故（issue #24 的来源）就是这种形态：teammate 的两个后台 shell 在主 agent 停下 3 分钟后结束、完成通知没人处理，用户 31 分钟后自己发现；按现在的代码，会话静默会在主 agent 最后一次工具调用后 60 分钟报出（`scripts/test-session-silence.sh` R2）。`Tune` 只能放宽、不能把 `silence-sec` 收紧到默认以下；想更早被叫醒，主 agent 在停下前用 `wait --at <预计完成时间>` 声明它在等什么（到点叫醒它），或者在环境里调低 `ZYZ_WATCHDOG_SILENCE_SEC`。
+- **插件没见过的 teammate 仍算执行者**：Claude Code 列出的 teammate 不论忙闲都是 `running`，空闲的 teammate 也不会被自己起的后台任务结束叫醒（2.1.251 实测）。插件靠 `teammate-track.sh` 记下的每轮开始 / 结束扣除空闲 teammate 和它起的后台任务；但会话 arm 之前就派出的、描述对不上的 teammate 没有记录，仍算执行者，这种停摆只能等会话静默（默认 1 小时；`scripts/test-session-silence.sh` R2a–R2c）。用户在界面里直接给 teammate 发的消息插件看不见，它在只思考不调用工具的那段时间会被当成空闲，多拦一次，按 §2 用声明清掉。
 - **没 arm 的 Codex 会话**：「未启用」提示靠 PostToolUse 看到的 Write / Edit / MultiEdit，Codex 的文件编辑不经过这里，所以 Codex 上没有这条提示（只会少报，不会误报）；主 agent 在 §1 的「确认已启用」检查是主要防线。
 - **monitor 进程本身出现在每个会话的后台任务列表里**：没 arm 的会话里 watchdog 一声不响，但它以 `when: always` 启动，是一个 `running` 的 shell 任务。Claude Code 的 `/goal` 在有后台任务时推迟评估、定期 check-in「background work still running」（10-24 tipsy-ab-config a7afe585：目标早已完成，check-in 两次点名这个 watchdog，最后会话手动停掉了它）。改用 `on-skill-invoke:` 要同时声明带插件前缀和不带前缀的 skill 名（两个 monitor 名），还要解决 `--resume` 之后不再重新启动的问题，尚未处理。
 - **用户就在终端前**：提问类 IM 延迟 60 秒、期间回答就不发；超过 60 秒才回答，仍会多收一条。

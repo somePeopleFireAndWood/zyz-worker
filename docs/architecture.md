@@ -125,7 +125,7 @@ zyz-worker 是一个「设计先行」的开发工作流插件，提供两层能
 
 | 层 | 载体 | 触发点 | 干什么 |
 |---|---|---|---|
-| **L0 心跳** | `heartbeat.sh` + `subagent-track.sh` + `api-failure.sh` | 每次工具调用（Pre/PostToolUse，同步）；SubagentStart；StopFailure | 把「存活」变成干活的**副作用**，而不是需要记得做的事。任何 agent（含 teammate）的工具调用都写会话活动 `runtime/activity`；主角色更新固定 PACK_HEADER；动态角色更新固定 START/HEARTBEAT 逻辑记录；API 错误中断落成 `runtime/api-failures/` 记录 |
+| **L0 心跳** | `heartbeat.sh` + `subagent-track.sh` + `api-failure.sh` + `teammate-track.sh` | 每次工具调用（Pre/PostToolUse，同步）；SubagentStart；StopFailure；TeammateIdle | 把「存活」变成干活的**副作用**，而不是需要记得做的事。任何 agent（含 teammate）的工具调用都写会话活动 `runtime/activity`；主角色更新固定 PACK_HEADER；动态角色更新固定 START/HEARTBEAT 逻辑记录；API 错误中断落成 `runtime/api-failures/` 记录；agent-team teammate 每轮的开始 / 结束和它起的后台任务落成 `runtime/teammates/`（空闲的不算执行者） |
 | **L1 新鲜度提醒** | `status-freshness.sh`、`post-agent-flush.sh` | PostToolUse | 状态文件在活跃阶段过期时注入提醒；收到 subagent 结果后提醒先落盘再派下一个。纯建议，带冷却。**每次工具调用只出一条**：Agent 返回归 `post-agent-flush`（措辞更具体、阈值更紧），其余归 `status-freshness` |
 | **L2 子 agent 退出门** | `stop-gate-subagent.sh` | SubagentStop | 最终消息过短就拦一次，要求先给正式报告（主 agent 才有东西可落盘）。最多拦一次，不会循环 |
 | **L3 后台看门狗** | `monitors/watchdog.sh` | 会话启动即常驻（`when: always`） | 定时扫心跳与状态文件 mtime，发现问题输出一行通知**唤醒**主 agent。这是唯一能抓住「被 API 错误杀死」的层。**兜底**再加一支「终态但未收割」扫描：某角色已到终态（DONE/FINALIZED）但主 agent 自那以后一直空闲（完成通知被丢），定时唤醒它去读结果——补 L4 抓不到的「角色在主 agent 空闲之后才终态」一例。0.32.0 起再加两条与平台、角色类型无关的**底线**：会话静默（活跃任务整个会话 `silence-sec` 没有任何工具调用且无声明）与 API 错误中断（subagent / teammate 的 StopFailure 记录，每条报一次） |
@@ -275,6 +275,7 @@ Codex worker 通过 `scripts/orch-agent-runtime.sh` 使用 `codex -C` / `codex r
 | `test-orchestration-helpers.sh` | 最大的一份。helper 的退出码契约、`dispatch.md` 字段集、复用前置校验与**退出码优先级**、多仓 merge、文档关键串、`agents/`↔`subagents/` 四对镜像逐字节相等 |
 | `test-no-executor.sh` | #24 的声明驱动 watchdog：无执行者（L3/L4）、`expect.sh` 的每种声明与拒写、observing 阶段、Tune、L2「以等待收尾」 |
 | `test-main-state.sh` / `test-main-state-e2e.sh` | 主 agent 状态机：事件映射、压制门是纯字符串比较（无 TTL）、notify 的 origin 分流、交付 IM 与设计闸门兜底；e2e 版驱动真实 hook 链 |
+| `test-idle-teammates.sh` | 空闲的 agent-team teammate 和它起的后台任务不算执行者：Claude Code 2.1.251 实测 hook 载荷的回放、描述映射（含 UTF-16 截断与重名）、L3 的事后扣除、design 阶段 IM 兜底 |
 | `test-session-pointer.sh` | #23 按会话区分的任务指针：同目录两个会话互不串扰、回落顺序、多任务会话的告警措辞；从未 arm 的会话在任何 hook、watchdog、IM 上都安静，以及按本会话自己的修改给出的「未启用」提示 |
 | `test-notify-hook.sh` | IM 通知器：注册项、事件映射、配置门、冷却、`include_message` |
 | `test-unharvested-role.sh` | 「终态但未收割」检测（L4 主层 + L3 备份）及其 epoch 守卫，含变异清单 |

@@ -92,7 +92,7 @@ raise SystemExit(0 if ok else 1)' "$3" "$4"
 # ---------------------------------------------------------------------------
 # T1 — layout, exec bits, syntax
 # ---------------------------------------------------------------------------
-HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh hooks/scripts/agent-runtime-state.sh hooks/scripts/task-pointer.sh"
+HOOK_SCRIPTS="hooks/scripts/lib.sh hooks/scripts/heartbeat.sh hooks/scripts/subagent-track.sh hooks/scripts/status-freshness.sh hooks/scripts/post-agent-flush.sh hooks/scripts/stop-gate-subagent.sh hooks/scripts/stop-gate-main.sh hooks/scripts/dispatch-scope-guard.sh hooks/scripts/checkout-guard.sh hooks/scripts/start-watchdog.sh hooks/scripts/agent-runtime-state.sh hooks/scripts/task-pointer.sh hooks/scripts/teammate-track.sh"
 for f in $HOOK_SCRIPTS monitors/watchdog.sh hooks/hooks.json monitors/monitors.json hooks/README.md; do
     if [ -f "$f" ]; then pass "T1 exists: $f"; else fail "T1 exists: $f" "missing"; fi
 done
@@ -173,6 +173,11 @@ expected_by_id = {
     "PostToolUse[0].hooks[1]": "status-freshness.sh",
     "PostToolUse[1].hooks[0]": "post-agent-flush.sh",
     "SubagentStart[0].hooks[0]": "subagent-track.sh",
+    # Idle agent-team teammates are not executors: the spawn, every turn start
+    # and every turn end are recorded (teammate-track.sh).
+    "PostToolUse[1].hooks[1]": "teammate-track.sh",
+    "SubagentStart[1].hooks[0]": "teammate-track.sh",
+    "TeammateIdle[0].hooks[0]": "teammate-track.sh",
     "SubagentStop[0].hooks[0]": "stop-gate-subagent.sh",
     "Stop[0].hooks[0]": "stop-gate-main.sh",
     "Stop[0].hooks[1]": "main-state.sh",
@@ -220,13 +225,13 @@ for command_id, command in commands:
 
 actual_targets = collections.Counter(targets)
 actual_by_id = {command_id: target for (command_id, _), target in zip(commands, targets)}
-if len(commands) == 17 and actual_by_id == expected_by_id and actual_targets == expected_targets:
+if len(commands) == 20 and actual_by_id == expected_by_id and actual_targets == expected_targets:
     emit("PASS", "T2R_static_exact_thirteen_commands_and_targets")
 else:
     emit("FAIL", "T2R_static_exact_thirteen_commands_and_targets",
          f"count={len(commands)} targets={dict(actual_targets)} shape={shape_errors}")
 
-if len(prefixes) == 17 and len(set(prefixes)) == 1:
+if len(prefixes) == 20 and len(set(prefixes)) == 1:
     emit("PASS", "T2R_static_uniform_resolution_prefix_all_thirteen")
 else:
     emit("FAIL", "T2R_static_uniform_resolution_prefix_all_thirteen",
@@ -243,7 +248,7 @@ for command_id, command in commands:
         shape_errors.append(f"{command_id}: resolution is not assigned to a private zyz plugin-root variable")
     else:
         private_assignments.append(match.group(1))
-if len(private_assignments) == 17 and len(set(private_assignments)) == 1:
+if len(private_assignments) == 20 and len(set(private_assignments)) == 1:
     emit("PASS", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen")
 else:
     emit("FAIL", "T2R_static_exact_chain_assigned_to_one_private_variable_all_thirteen", "; ".join(shape_errors))

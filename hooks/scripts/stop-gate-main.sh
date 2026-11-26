@@ -29,8 +29,9 @@
 #     (b) the overall status file is older than ZYZ_STOP_STATUS_STALE_SEC; or
 #     (c) the task has no executor (#24): it still has work (an active phase
 #         other than delivery, or an uncommitted SubTask), yet the host reports
-#         no in-flight background task or session cron (plugin monitors and
-#         declared residents excluded), the observer sees no non-terminal role
+#         no in-flight background task or session cron (plugin monitors,
+#         declared residents, idle agent-team teammates and the background
+#         tasks they started excluded), the observer sees no non-terminal role
 #         instance, and status.md declares no wait (see below). Fails open when
 #         the input has no background_tasks array.
 #   It also blocks (own cooldown) an `observing`-phase task that has no
@@ -44,7 +45,8 @@
 #   tasks are joined into one block.
 # - Side effect, on every Stop (blocked or not): writes
 #   <task-dir>/runtime/stop-snapshot = `<epoch> <executor-count|unknown>
-#   <running-ids|-|unknown> <non-resident-cron-count>` for the L3 scans.
+#   <running-ids|-|unknown> <non-resident-cron-count>` for the L3 scans, and
+#   <task-dir>/runtime/stop-teammates (zyz_teammate_entries).
 #
 # ## Failure behavior
 #
@@ -100,14 +102,24 @@ while IFS= read -r root; do
 done <<EOF
 $roots
 EOF
-bg_executors="$(zyz_executors_left "$bg_ids" "$residents")"
+# Idle agent-team teammates, and the background tasks they started, are not
+# executors either (lib.sh `idle agent-team teammates`): the host lists a
+# teammate as running for as long as it exists, and an idle one is not woken
+# by its own task finishing. The ids stay in the snapshot's id field (a
+# `wait --ref` on such a task is still alive); every teammate-mapped entry is
+# kept in runtime/stop-teammates so L3 can drop one that goes idle later.
+teammate_entries="$(zyz_teammate_entries "${roots%%
+*}")"
+idle_teammates="$(printf '%s\n' "$teammate_entries" | awk -F '\t' '$3 == 1 { printf "%s,", $1 }')"
+bg_executors="$(zyz_executors_left "$bg_ids" "$residents,$idle_teammates")"
 # Host-scheduled wakeups that are not residents: they bring the main agent back,
 # which also satisfies an observing task (recorded for L3 in the snapshot).
 crons_left="$(zyz_executors_left "$(zyz_bg_cron_ids)" "$residents")"
 while IFS= read -r root; do
     [ -n "$root" ] || continue
     mkdir -p "$root/runtime" 2>/dev/null \
-        && zyz_write_atomic "$root/runtime/stop-snapshot" "$(zyz_now) $bg_executors ${bg_ids:--} $crons_left"
+        && zyz_write_atomic "$root/runtime/stop-snapshot" "$(zyz_now) $bg_executors ${bg_ids:--} $crons_left" \
+        && printf '%s\n' "$teammate_entries" | awk 'NF' > "$root/runtime/stop-teammates" 2>/dev/null
 done <<EOF
 $roots
 EOF

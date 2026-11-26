@@ -430,9 +430,27 @@ ZYZ_EXPECT_EVENTS
     # has called a tool, the user has not spoken and no status was written for
     # silence-sec. A dialog opened since then (AskUserQuestion, a permission
     # prompt) means the main agent is legitimately blocked on the user.
-    local noexec=0 silent=""
-    if [ "$SESSION_LIVE" = 0 ] && [ -n "$SNAP_EPOCH" ] && [ "$SNAP_COUNT" = 0 ] \
-        && [ $((now - SNAP_EPOCH)) -ge "$(zyz_expect_tune "$expect" no-executor-sec "$NO_EXECUTOR")" ]; then
+    local noexec=0 silent="" noexec_sec snap_left snap_ids
+    noexec_sec="$(zyz_expect_tune "$expect" no-executor-sec "$NO_EXECUTOR")"
+    # The executors counted at the Stop, minus agent-team teammates that have
+    # ended their turn since and stayed idle for no-executor-sec (with the
+    # background tasks they started): nobody will move them again unless
+    # messaged, and the main agent's missed idle notice is exactly the case
+    # this scan exists for. Teammate records live under the primary task.
+    snap_left="$SNAP_COUNT"
+    case "$SNAP_COUNT" in
+        ''|0|*[!0-9]*) ;;
+        *)
+            if [ -s "$root/runtime/stop-teammates" ]; then
+                snap_ids="$SNAP_IDS"
+                case "$snap_ids" in -|unknown) snap_ids="" ;; esac
+                snap_left="$(zyz_executors_left "$snap_ids" "$(zyz_expect_field "$expect" residents),$(zyz_teammates_idle_ids "${roots%%
+*}" "$root/runtime/stop-teammates" "$noexec_sec")")"
+            fi
+            ;;
+    esac
+    if [ "$SESSION_LIVE" = 0 ] && [ -n "$SNAP_EPOCH" ] && [ "$snap_left" = 0 ] \
+        && [ $((now - SNAP_EPOCH)) -ge "$noexec_sec" ]; then
         noexec=1
     fi
     local silence_sec

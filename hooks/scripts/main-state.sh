@@ -142,7 +142,8 @@ stop_notify() {
         expect="$(zyz_expect_eval "$root" unknown)"
         zyz_expect_known "$expect" || return 0
         [ "$(zyz_expect_field "$expect" users)" = 0 ] || return 0
-        left="$(zyz_executors_left "$(zyz_bg_executor_ids)" "$(zyz_expect_field "$expect" residents)")"
+        left="$(zyz_executors_left "$(zyz_bg_executor_ids)" "$(zyz_expect_field "$expect" residents),$(zyz_teammate_entries "${roots%%
+*}" | awk -F '\t' '$3 == 1 { printf "%s,", $1 }')")"
         [ "$left" = 0 ] || return 0
         event=needs_input
         msg="主 agent 在设计阶段停下了，没有在跑的执行者——多半在等你批准设计或回答问题"

@@ -19,9 +19,10 @@
 # idle muted status-stale).
 # R2 replays the 11-17 shape behind issue #24 (f0b8d80a): a teammate's two
 # background shells finished 3 min after the main agent stopped next to 12
-# idle teammates; the user noticed 31 min in. The current code reports it at
-# silence-sec (1 h, the shipped default) through the floor; no-executor stays
-# masked by the teammates, pinned as a known limitation.
+# idle teammates; the user noticed 31 min in. With the teammate records the
+# hooks keep (teammate-track.sh, heartbeat.sh) the 22:22 Stop itself is blocked
+# as having no executor; for a team the hooks never saw (spawned before the
+# session armed) it is still caught at silence-sec through the floor.
 #
 # WHAT THIS SUITE DOES NOT PROVE:
 #  * That the host fires tool hooks inside in-process teammates with this
@@ -550,9 +551,10 @@ echo "--- R2: the 11-17 incident shape (f0b8d80a, the issue #24 report) ---"
 # finished at 22:25:05, their notifications were queued and never acted on, and
 # nobody moved until the user asked at 22:53:44 (31 min after the last tool
 # call). The Stop's background_tasks then held 12 agent-team teammates — in
-# Claude Code 2.1.251 an in-process teammate is listed while it exists, idle or
-# not (`isIdle` is not exported; static reading of the binary's Stop-input
-# builder) — the teammate's two shells, and this watchdog.
+# Claude Code 2.1.251 an in-process teammate is listed as running while it
+# exists, idle or not, and an idle one is not woken by its own task finishing
+# (both observed live, scripts/test-idle-teammates.sh) — the teammate's two
+# shells, and this watchdog. R2a–R2c: a team the hooks never recorded.
 write_status implementation "" '| SubTask | 内容 | 依赖 | Coded | Tested | Reviewed | Committed |
 |---|---|---|---|---|---|---|
 | ST1 | 回滚终止后端 | 无 | true | true | true | true（a5877d3，未推送） |
@@ -571,7 +573,7 @@ r2_stop() { printf '{"cwd":"%s","hook_event_name":"Stop","stop_hook_active":fals
     | ZYZ_STOP_GATE_COOLDOWN_SEC=0 bash "$STOP_MAIN" 2>/dev/null; }
 out="$(r2_stop "$r2_tasks")"
 if ! printf '%s' "$out" | grep -q '没有任何执行者' && [ "$(awk '{print $2}' "$ROOT/runtime/stop-snapshot" 2>/dev/null)" = 14 ]; then
-    pass "R2a the 22:22 Stop: 12 teammates + 2 running shells are executors (correct then: the shells were running)"
+    pass "R2a the 22:22 Stop, team never recorded: 12 teammates + 2 shells count as executors"
 else
     fail "R2a Stop" "out=[$out] snap=[$(cat "$ROOT/runtime/stop-snapshot" 2>/dev/null)]"
 fi
@@ -605,21 +607,38 @@ else
     fail "R2c 61 min" "out=[$out]"
 fi
 export ZYZ_WATCHDOG_SILENCE_SEC=1800
-# Known limitation, pinned so a fix is noticed: a Stop taken after the shells
-# ended still lists the idle teammates as running, so the faster no-executor
-# check (L4 now, L3 after no-executor-sec) cannot fire while a team exists.
-r2_team="$(printf '%s' "$r2_tasks" | python3 -c 'import json,sys; t=json.loads("["+sys.stdin.read()+"]"); print(",".join(json.dumps(x) for x in t if x["type"]!="shell" or "watchdog" in x["command"]))')"
-out="$(r2_stop "$r2_team")"
-if ! printf '%s' "$out" | grep -q '没有任何执行者'; then
-    pass "R2d idle teammates listed as running mask no-executor (blind spot, docs/design/watchdog-design.md §8)"
+# R2d–R2f: the same session with the records the hooks keep — each spawn's
+# PostToolUse Agent (teammate_spawned; the entry description is the spawn's
+# description here), st4-impl's Bash / Monitor PostToolUse (the two shells),
+# and a TeammateIdle per teammate when it ended its turn.
+reset_runtime
+TT="hooks/scripts/teammate-track.sh"
+for n in st4-impl st4-test st1-run st1-test-r3 st2-impl st2-review-r2 st5-review st3-impl st6-impl st4-review st1-review st2-test; do
+    printf '{"cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"name":"%s","description":"%s","prompt":"p"},"tool_response":{"status":"teammate_spawned","name":"%s"}}' "$PROJ" "$n" "$n" "$n" | bash "$TT"
+done
+printf '{"cwd":"%s","hook_event_name":"PostToolUse","agent_id":"ast4-impl-98dd931c06e8eaf4","agent_type":"st4-impl","tool_name":"Monitor","tool_response":{"taskId":"bl1z6235k"}}' "$PROJ" | bash "$HEARTBEAT"
+printf '{"cwd":"%s","hook_event_name":"PostToolUse","agent_id":"ast4-impl-98dd931c06e8eaf4","agent_type":"st4-impl","tool_name":"Bash","tool_response":{"backgroundTaskId":"bmsfp4gru"}}' "$PROJ" | bash "$HEARTBEAT"
+for n in st4-impl st4-test st1-run st1-test-r3 st2-impl st2-review-r2 st5-review st3-impl st6-impl st4-review st1-review st2-test; do
+    printf '{"cwd":"%s","hook_event_name":"TeammateIdle","teammate_name":"%s"}' "$PROJ" "$n" | bash "$TT"
+done
+out="$(r2_stop "$r2_tasks")"
+if printf '%s' "$out" | grep -q '没有任何执行者' && printf '%s' "$out" | grep -q 'SubTask ST4 尚未提交'; then
+    pass "R2d recorded team: the 22:22 Stop is blocked at once (idle teammates and st4-impl's shells are not executors), naming ST4"
 else
-    fail "R2d team masks no-executor (limitation changed — update §8 and this check)" "out=[$out]"
+    fail "R2d recorded team blocks" "out=[$out]"
+fi
+printf '{"cwd":"%s","hook_event_name":"SubagentStart","agent_id":"ast4-impl-98dd931c06e8eaf4","agent_type":"st4-impl"}' "$PROJ" | bash "$TT"
+out="$(r2_stop "$r2_tasks")"
+if ! printf '%s' "$out" | grep -q '没有任何执行者'; then
+    pass "R2e control: st4-impl woken (it will read its shells) -> the Stop is allowed"
+else
+    fail "R2e control woken" "out=[$out]"
 fi
 out="$(r2_stop "$(printf '%s' "$r2_tasks" | python3 -c 'import json,sys; t=json.loads("["+sys.stdin.read()+"]"); print(",".join(json.dumps(x) for x in t if "watchdog" in x.get("command","")))')")"
 if printf '%s' "$out" | grep -q '没有任何执行者'; then
-    pass "R2e control: with the team gone and only the plugin monitor left, the same Stop is blocked"
+    pass "R2f control: with the team gone and only the plugin monitor left, the Stop is blocked"
 else
-    fail "R2e control" "out=[$out]"
+    fail "R2f control" "out=[$out]"
 fi
 
 # ===========================================================================
