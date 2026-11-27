@@ -10,7 +10,7 @@
 # the MAIN agent in its own Bash (never by a subagent). Writes only the
 # `## 评审收口` rows and the `- Tier:` line of <task-dir>/status.md (plus
 # <task-dir>/log/tier.md), atomically, after validating every input, and the
-# design-document snapshots under <task-dir>/reviews/snap/ (§11.4).
+# design-document snapshots under <task-dir>/reviews/snap/ (§11.4, §11.7).
 #
 # Usage:
 #   review-round.sh open <point> --stage design|impl|aggregate [--kind main|aux]
@@ -24,21 +24,28 @@
 #             --full forces a full re-review (after a structural fix; counts
 #             as a round like any other). Exit 3 with the next step when the
 #             round is not allowed: cap reached without a grant, a standard
-#             point whose round 2 reported no fewer blockings (accepted +
-#             rejected) than round 1 and has no grant for round 3, or an
-#             escalate check not yet granted -> hand the point to the user
+#             point whose round 2 reported some blockings (accepted +
+#             rejected) and no fewer than round 1 — round 2 >= max(round 1,
+#             1) — and has no grant for round 3, or an escalate check not
+#             yet granted -> hand the point to the user
 #             with the trend of the rounds and four choices (grant / close
 #             carried / residual / split); strict tier without a convergence
 #             check after round n-1 -> run `check`; last round has no result;
 #             point closed.
 #             A design point also measures the revision it reviews: the
-#             documents (--docs, else the `- 设计文档:` line of status.md) are
-#             copied to <task-dir>/reviews/snap/<point>/r<n>/ and, from round
-#             2 on, compared with the round before: `delta=+<added>/-<removed>
+#             documents (--docs, else the `- 设计文档:` line of status.md and
+#             the nested list under it) are copied to
+#             <task-dir>/reviews/snap/<point>/r<n>/ and, from round 2 on,
+#             compared with the round before: `delta=+<added>/-<removed>
 #             prev=+<a>/-<b>|- growing=yes|no`, the diff in
-#             reviews/snap/<point>/r<n-1>-r<n>.diff. More added lines than the
-#             round before is a warning only; no readable document, or a
-#             snapshot that fails, never keeps the round from starting.
+#             reviews/snap/<point>/r<n-1>-r<n>.diff. Only a document both
+#             rounds captured is compared: one this round did not capture
+#             (over 4 MiB, or not listed) while its source is still there is
+#             left out with a note; one whose source is gone counts as
+#             deleted, a new one as added. Give a point the same documents
+#             every round. More added lines than the round before is a
+#             warning only; no readable document, or a snapshot that fails,
+#             never keeps the round from starting.
 #   review-round.sh result <point> --blocking N [--rejected R] [--induced I]
 #                   [--pending P] [--behavior M]
 #             N = accepted blocking findings; R = blocking findings the
@@ -48,8 +55,9 @@
 #             (N + R), the ones the previous round's revision brought in
 #             (I <= N + R); P = how many blockings of this point still wait
 #             on a user answer right now, earlier rounds' included (a state,
-#             not a part of N + R). I and P are required from round 2 on a
-#             task with a Tier (0 when none).
+#             not a part of N + R). R, I and P are required from round 2 on
+#             a task with a Tier (0 when none): the row is refilled as a
+#             whole, and a count left out would read as 0.
 #   review-round.sh grant <point> --reason <text>
 #             the user approved ONE extra round (the next one).
 #   review-round.sh check <point> --outcome continue|class-fix|reorder|escalate --reason <text>
@@ -72,7 +80,9 @@
 # Caps (total rounds per point, first included):
 #             design  impl  aggregate
 #   fast        0      2       1
-#   standard    3      3       3     (round 3 needs round 2 < round 1, or a grant)
+#   standard    3      3       3     (round 3 needs round 2 < round 1 — or a
+#                                     round 2 that reported nothing — or a grant;
+#                                     counted as blocking + rejected)
 #   strict      -      -       -     (round n = 4, 7, 10, ... needs a Review-Check
 #                                     made at round n-1)
 # A task without a valid `- Tier:` line (from before the tiers) is recorded

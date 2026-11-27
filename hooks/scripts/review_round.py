@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Review-round bookkeeping for the execute-task tiers (design §10.4, §10.5,
-§10.7 items 1, 2 and 9, §10.8, §11.4).
+§10.7 items 1, 2 and 9, §10.8, §11.4, §11.7 items 2, 4 and 7).
 
 How many rounds a review point may run, when a strict-tier point owes a
 convergence check, and whether a point is closed are mechanical rules: this
@@ -25,10 +25,10 @@ rejected or downgraded (§10.8-1). ``induced`` counts the round's blockings
 blockings of the point are still waiting on a user answer when the round's
 result is written, earlier rounds' included (the reviewer is told not to
 report them again, so they are in no later ``blocking``) (§11.4). Both are
-the main agent's own count. ``delta`` is the size of the revision a design round
-reviews: lines added / removed against the previous round's snapshot of the
-design documents (``<task-dir>/reviews/snap/<point>/r<n>/``). Fields are read
-by name, so rows from before a field existed still parse. ``tier=`` is the
+the main agent's own count. ``delta`` is the size of the revision a design
+round reviews: lines added / removed against the previous round's snapshot of
+the design documents (``<task-dir>/reviews/snap/<point>/r<n>/``), over the
+documents both rounds captured (§11.7-2). Fields are read by name, so rows from before a field existed still parse. ``tier=`` is the
 point's own tier (only ever stricter than the task's); ``mode=full`` marks a
 round forced to a full review after a structural fix. A ``Review-Grant``
 names the round it authorizes, so it covers that one round only. A
@@ -49,6 +49,7 @@ read-modify-write.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
 import shutil
@@ -79,7 +80,12 @@ EARLY_STOP_TIER, EARLY_STOP_ROUND = "standard", 3
 DELTA_RE = re.compile(r"\+(0|[1-9][0-9]{0,8})/-(0|[1-9][0-9]{0,8})")
 # The design documents of the task: the metadata line of status.md.
 DOCS_RE = re.compile(r"^- (?:设计文档|Design Document)\s*[:：](.*)$")
+# One document per item of a nested list right under that line (§11.7-7).
+DOCS_ITEM_RE = re.compile(r"^[ \t]+[-*+][ \t]+(.*)$")
 SNAP_MAX_BYTES = 4 * 1024 * 1024
+# Next to a snapshot dir r<n>/: r<n>.sources.json — where its documents came
+# from, and which documents the round listed or inherited but did not capture.
+SNAP_SOURCES = ".sources.json"
 ROW_RE = re.compile(r"^- (Review|Review-Grant|Review-Check|Review-Close): (.*)$")
 TIER_RE = re.compile(r"^- Tier:(.*)$")
 PHASE_RE = re.compile(r"^\s*[-*]?\s*current phase\s*:", re.I)
@@ -469,43 +475,109 @@ def rewrite(pt, n, **change):
 
 # -------------------------------------------------------------- snapshots ---
 
+def doc_values(text):
+    """What the `- 设计文档:` metadata line of status.md names: [(value,
+    nested)] — the text after the colon, then one value per item of a nested
+    list right under the line (`  - <path>`, no blank line in between)."""
+    lines = [l for _, l in noncomment(text)]
+    for k, line in enumerate(lines):
+        m = DOCS_RE.match(line)
+        if not m:
+            continue
+        out = [(m.group(1), False)]
+        for nxt in lines[k + 1:]:
+            item = DOCS_ITEM_RE.match(nxt)
+            if not item:
+                break
+            out.append((item.group(1), True))
+        return out
+    return []
+
+
+def resolve_doc(name, bases):
+    """(real path of the readable file <name>, or None; whether <name> is a
+    directory instead). Relative names are tried against each base in turn."""
+    path = os.path.expanduser(name)
+    cands = [path] if os.path.isabs(path) else [os.path.join(b, path) for b in bases]
+    for c in cands:
+        if os.path.isfile(c) and os.access(c, os.R_OK):
+            return os.path.realpath(c), False
+    return None, any(os.path.isdir(c) for c in cands)
+
+
+def in_existing_dir(name, bases):
+    """Whether <name> names something inside a directory that exists: a path
+    with a directory part, and that directory is there."""
+    parent = os.path.dirname(os.path.expanduser(name))
+    if not parent:
+        return False
+    return any(os.path.isdir(c) for c in ([parent] if os.path.isabs(parent) else [os.path.join(b, parent) for b in bases]))
+
+
 def find_docs(text, task_dir, given):
-    """The design documents a round reviews: (readable files, names that did
-    not resolve). `given` = the --docs paths (relative: cwd, then the task
-    dir); None = the `- 设计文档:` metadata line of status.md (relative: the
-    task dir, then cwd). That line is free text: full-width parenthesised
-    notes are dropped, the rest is split on commas / 、 / ；/ blanks, and a
-    piece that is not a readable file is skipped."""
+    """The design documents a round reviews: (readable files, names that are
+    not one, paths inside the snapshot dir). `given` = the --docs paths
+    (relative: cwd, then the task dir); every one of them is either taken or
+    reported. None = the `- 设计文档:` line of status.md and the nested list
+    under it (relative: the task dir, then cwd). That line is free text: full-width parenthesised notes are
+    dropped; a value that is one path as a whole (blanks allowed) is taken as
+    such; otherwise it is split on commas / 、 / ； / blanks. A piece that is
+    not a readable file is reported when the disk or the markup says it is a
+    path: it is a directory; it lies in a directory that exists (`design/`
+    is there, `design/typo.md` is not); it stands in backticks or as a
+    Markdown link target; or it is a nested-list item nothing was read from.
+    Any other piece is prose and is skipped without a word — the shape of a
+    word is never taken for a path (§11.7-7)."""
+    snap_root = os.path.realpath(os.path.join(task_dir, "reviews", "snap")) + os.sep
+    found, seen, missing, inside = [], set(), [], []
+
+    def take(real, name):
+        # A copy inside the snapshot dir is never a document under review
+        # (`--docs <task-dir>/**/*.md` lists them): snapshotting it would
+        # nest every earlier round inside the new one.
+        if real.startswith(snap_root):
+            inside.append(name)
+        elif real not in seen:
+            seen.add(real)
+            found.append(real)
+
+    def miss(name):
+        if name not in missing:
+            missing.append(name)
+
     if given is not None:
-        names, bases, strict, whole = list(given), (os.getcwd(), task_dir), True, None
-    else:
-        value = next((m.group(1) for m in (DOCS_RE.match(l) for _, l in noncomment(text)) if m), "")
+        for name in given:
+            real, _ = resolve_doc(name, (os.getcwd(), task_dir))
+            if real:
+                take(real, name)
+            else:
+                miss(name)
+        return found, missing, inside
+    bases = (task_dir, os.getcwd())
+    for value, nested in doc_values(text):
         value = re.sub(r"（[^（）]*）", " ", value)
         whole = value.strip().strip("`'\"")
-        names = [whole] if whole else []
-        names += re.findall(r"\]\(([^()\s]+)\)", value)
-        names += [t.strip("`'\"<>。") for t in re.split(r"[,，、;；\s]+", value)]
-        bases, strict = (task_dir, os.getcwd()), False
-    snap_root = os.path.realpath(os.path.join(task_dir, "reviews", "snap")) + os.sep
-    found, seen, missing = [], set(), []
-    for name in names:
-        if not name:
+        if not whole:
             continue
-        path = os.path.expanduser(name)
-        hit = next((c for c in ([path] if os.path.isabs(path) else [os.path.join(b, path) for b in bases])
-                    if os.path.isfile(c) and os.access(c, os.R_OK)), None)
-        if hit is None:
-            if strict:
-                missing.append(name)
+        real, _ = resolve_doc(whole, bases)
+        if real:
+            take(real, whole)
             continue
-        real = os.path.realpath(hit)
-        if real in seen or real.startswith(snap_root):
-            continue
-        seen.add(real)
-        found.append(real)
-        if name == whole:
-            break  # the whole value is one path (it may contain blanks)
-    return found, missing
+        marked = re.findall(r"\]\(([^()\s]+)\)", value) + re.findall(r"`([^`]+)`", value)
+        pieces = marked + [t.strip("`'\"<>。") for t in re.split(r"[,，、;；\s]+", value)]
+        hit, before = False, len(missing)
+        for name in dict.fromkeys(x for x in pieces if x):
+            real, is_dir = resolve_doc(name, bases)
+            if real:
+                take(real, name)
+                hit = True
+            elif name in marked:
+                miss(name)
+            elif name.strip("./~") and (is_dir or in_existing_dir(name, bases)):
+                miss(name)  # not a bare `/`, `.` or `..` standing in the prose
+        if nested and not hit and len(missing) == before:
+            miss(whole)
+    return found, missing, inside
 
 
 def snap_name(real, task_dir):
@@ -525,15 +597,31 @@ def snap_files(root):
     return out
 
 
-def snap_diff(old, new, old_label, new_label):
-    """(added, removed, unified diff text) between two snapshot dirs."""
+def read_sources(root):
+    """The record of snapshot dir <root>: ({name: source path} of its
+    documents, {name: source path} of the documents it did not capture), or
+    (None, {}) when it has none that can be read."""
+    try:
+        with open(root + SNAP_SOURCES, encoding="utf-8") as f:
+            data = json.load(f)
+        docs, absent = data["docs"], data["absent"]
+        for d in (docs, absent):
+            if not isinstance(d, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in d.items()):
+                return None, {}
+        return docs, absent
+    except Exception:  # noqa: BLE001 — a snapshot without a record is compared as far as it can be
+        return None, {}
+
+
+def snap_diff(pairs, old_label, new_label):
+    """(added, removed, unified diff text) over [(name, old file or None,
+    new file or None)]; a missing side counts as an empty document."""
     import difflib
-    a, b = snap_files(old), snap_files(new)
     added = removed = 0
     chunks = []
-    for name in sorted(set(a) | set(b)):
-        la = open(a[name], encoding="utf-8", errors="replace").read().splitlines() if name in a else []
-        lb = open(b[name], encoding="utf-8", errors="replace").read().splitlines() if name in b else []
+    for name, old, new in pairs:
+        la = open(old, encoding="utf-8", errors="replace").read().splitlines() if old else []
+        lb = open(new, encoding="utf-8", errors="replace").read().splitlines() if new else []
         lines = list(difflib.unified_diff(la, lb, "%s/%s" % (old_label, name), "%s/%s" % (new_label, name),
                                           lineterm=""))
         for line in lines[2:]:
@@ -543,14 +631,64 @@ def snap_diff(old, new, old_label, new_label):
     return added, removed, "\n".join(chunks) + ("\n" if chunks else "")
 
 
-def take_snapshot(task_dir, point, n, docs, missing, prev_delta):
+def compare_plan(prev, cur, absent):
+    """What round n's snapshot <cur> is compared with in round n-1's <prev>
+    (§11.7-2): only a document both rounds captured is diffed. Returns
+    ([(name, old file or None, new file or None)], notes); <absent> — the
+    documents this round could not capture — grows by the ones carried over.
+
+    A document only <prev> has: its source is gone -> a deletion; its source
+    is still there (over the size limit now, or not listed this round) -> not
+    compared; no record of its source -> not compared, it cannot be told.
+    A document only <cur> has: the round before could not capture it -> not
+    compared; otherwise it is new -> an addition."""
+    p_docs, p_absent = read_sources(prev)
+    pf, cf = snap_files(prev), snap_files(cur)
+    pairs, kept, gone, unknown, fresh, back = [], [], [], [], [], []
+    for name in sorted(set(pf) | set(cf)):
+        if name in pf and name in cf:
+            pairs.append((name, pf[name], cf[name]))
+        elif name in pf:
+            src = None if p_docs is None else p_docs.get(name)
+            if src is None:
+                unknown.append(name)
+            elif os.path.exists(src):
+                kept.append(name)
+                absent.setdefault(name, src)
+            else:
+                gone.append(name)
+                pairs.append((name, pf[name], None))
+        elif name in p_absent:
+            back.append(name)
+        else:
+            fresh.append(name)
+            pairs.append((name, None, cf[name]))
+    # A document that stays uncaptured stays known as such, so the round it
+    # comes back in does not count it as new.
+    for name, src in p_absent.items():
+        if name not in cf and os.path.exists(src):
+            absent.setdefault(name, src)
+    notes = []
+    for names, text in (
+            (kept, "note: 这些文档上一轮有快照、这一轮没有采集（超过大小上限，或这一轮没有列出），源文件还在，不参与修订量比较：%s。"
+                   "同一评审点每一轮给同一组文档。"),
+            (unknown, "note: 上一轮的快照没有来源记录，判断不了这些文档的源文件是否还在，不参与修订量比较：%s"),
+            (back, "note: 这些文档上一轮没有采集到（超过大小上限，或没有列出），这一轮不参与修订量比较，下一轮起照常比较：%s"),
+            (gone, "note: 这些文档的源文件已经不存在，按整份删除计入修订量：%s"),
+            (fresh, "note: 这些文档是这一轮新出现的，按整份新增计入修订量：%s")):
+        if names:
+            notes.append(text % "、".join(names))
+    return pairs, notes
+
+
+def take_snapshot(task_dir, point, n, docs, notes, prev_delta):
     """Copy the documents round n reviews to reviews/snap/<point>/r<n>/ and,
     from round 2 on, measure the revision against round n-1's snapshot.
-    Returns (delta or None, stdout lines: the `delta=` line first, then
-    `snapshot=`, `diff=`, then notes). Never raises: measuring the revision
-    is a warning aid and must not keep a round from starting."""
-    info = []
-    notes = ["note: --docs 里这些路径不是可读文件，已跳过：" + "、".join(missing)] if missing else []
+    <notes>: lines the caller already has for stdout. Returns (delta or None,
+    stdout lines: the `delta=` line first, then `snapshot=`, `diff=`, then
+    notes). Never raises: measuring the revision is a warning aid and must
+    not keep a round from starting."""
+    info, notes = [], list(notes)
     root = os.path.join(os.path.abspath(task_dir), "reviews", "snap", point)
     cur, prev = os.path.join(root, "r%d" % n), os.path.join(root, "r%d" % (n - 1))
     diff_path = os.path.join(root, "r%d-r%d.diff" % (n - 1, n))
@@ -559,25 +697,36 @@ def take_snapshot(task_dir, point, n, docs, missing, prev_delta):
         # not pass for this round's snapshot.
         if os.path.lexists(cur):
             shutil.rmtree(cur)
-        if os.path.lexists(diff_path):
-            os.unlink(diff_path)
+        for stale in (diff_path, cur + SNAP_SOURCES):
+            if os.path.lexists(stale):
+                os.unlink(stale)
         big = [d for d in docs if os.path.getsize(d) > SNAP_MAX_BYTES]
         if big:
             notes.append("note: 超过 %d MB 的文档不进快照：%s" % (SNAP_MAX_BYTES >> 20, "、".join(big)))
         docs = [d for d in docs if d not in big]
         if not docs:
-            return None, notes + ["note: 没有找到可读的设计文档，这一轮不计修订量（在 status.md 的 `- 设计文档:` 写上路径，"
+            return None, notes + ["note: 这一轮没有进快照的文档，不计修订量" if big else
+                                  "note: 没有找到可读的设计文档，这一轮不计修订量（在 status.md 的 `- 设计文档:` 写上路径，"
                                   "或 start 时用 --docs <path>... 指定）"]
-        for src in docs:
-            dst = os.path.join(cur, snap_name(src, task_dir))
+        sources = {snap_name(d, task_dir): d for d in docs}
+        absent = {snap_name(d, task_dir): d for d in big}
+        for name, src in sources.items():
+            dst = os.path.join(cur, name)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copyfile(src, dst)
+        measured = n >= 2 and os.path.isdir(prev)
+        pairs, plan_notes = compare_plan(prev, cur, absent) if measured else ([], [])
+        with open(cur + SNAP_SOURCES, "w", encoding="utf-8") as f:
+            json.dump({"docs": sources, "absent": absent}, f, ensure_ascii=False, indent=1, sort_keys=True)
         info.append("snapshot=%s docs=%d" % (cur, len(docs)))
         if n < 2:
             return None, info + notes
-        if not os.path.isdir(prev):
+        if not measured:
             return None, info + notes + ["note: 第 %d 轮没有快照，这一轮不计修订量（下一轮起照常计量）" % (n - 1)]
-        added, removed, text = snap_diff(prev, cur, "r%d" % (n - 1), "r%d" % n)
+        notes += plan_notes
+        if not pairs:
+            return None, info + notes + ["note: 这一轮没有能和上一轮比较的文档，不计修订量"]
+        added, removed, text = snap_diff(pairs, "r%d" % (n - 1), "r%d" % n)
         with open(diff_path, "w", encoding="utf-8") as f:
             f.write(text)
         growing = prev_delta is not None and added > prev_delta[0]
@@ -807,8 +956,13 @@ def cmd_start(path, args):
         delta, lines = None, []
         if pt["stage"] == "design":
             task_dir = os.path.dirname(os.path.abspath(path))
-            found, missing = find_docs(text, task_dir, docs)
-            delta, lines = take_snapshot(task_dir, point, n, found, missing,
+            found, missing, inside = find_docs(text, task_dir, docs)
+            where = "--docs" if docs is not None else "`- 设计文档:`"
+            notes = ["note: %s 里这些路径不是可读文件，已跳过：%s" % (where, "、".join(missing))] if missing else []
+            if inside:
+                notes.append("note: %s 里这些路径在快照目录 reviews/snap/ 里，不是被评审的文档，已跳过：%s"
+                             % (where, "、".join(inside)))
+            delta, lines = take_snapshot(task_dir, point, n, found, notes,
                                          (pt["rounds"].get(n - 1) or {}).get("delta"))
         elif docs is not None:
             lines = ["note: 修订量只在 design 评审点计量，--docs 已忽略"]
@@ -826,7 +980,8 @@ def cmd_start(path, args):
 
 def cmd_result(path, args):
     usage = ("usage: review-round.sh result <point> --blocking N [--rejected R] [--induced I] [--pending P] "
-             "[--behavior M]  (--induced and --pending are required from round 2 on a task with a Tier; 0 when none)")
+             "[--behavior M]  (--rejected, --induced and --pending are required from round 2 on a task with a Tier; "
+             "0 when none)")
     if not args:
         die(usage)
     point = valid_point(args[0])
@@ -861,12 +1016,17 @@ def cmd_result(path, args):
         n = latest(pt) or 0
         if n < 1:
             die("point %s has not started a round — run `%s start %s` first" % (point, cli(), point))
-        missing = [k for k in ("induced", "pending") if part[k] is None]
+        # `result` refills the whole row: a count left out would read as 0 in
+        # the early stop's comparison and in the trend (§11.7-4).
+        given = {"rejected": rj, "induced": part["induced"], "pending": part["pending"]}
+        missing = [k for k in ("rejected", "induced", "pending") if given[k] is None]
         if missing and n >= 2 and effective(task_tier, pt) is not None:
-            die("round %d of %s needs %s. --induced I: how many of this round's blockings (accepted + rejected) the "
-                "previous round's revision brought in, half-landed fixes included. --pending P: how many blockings "
-                "of this point still wait on a user answer, earlier rounds' included. 0 when none. %s"
-                % (n, point, " and ".join("--" + k for k in missing), usage))
+            die("round %d of %s needs %s. --rejected R: how many blockings the reviewer reported this round that "
+                "you rejected or downgraded. --induced I: how many of this round's blockings (accepted + rejected) "
+                "the previous round's revision brought in, half-landed fixes included. --pending P: how many "
+                "blockings of this point still wait on a user answer, earlier rounds' included. 0 when none. %s"
+                % (n, point, " and ".join(filter(None, [", ".join("--" + k for k in missing[:-1]), "--" + missing[-1]])),
+                   usage))
         line = rewrite(pt, n, blocking=b, behavior=m, rejected=rj, induced=part["induced"], pending=part["pending"])
         new = replace_line(text, pt["index"][n], line)
         verify(new, lambda s: s["points"][point]["rounds"].get(n, {}).get("blocking") == b)
