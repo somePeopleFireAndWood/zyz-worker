@@ -577,8 +577,9 @@ run_T3() {
         '\*\*唯一\*\*不可逆的阶段是 `done`'
     # (2) `done` is tied to the word "absorbing" (the new roll-back-rule heading
     #     reads "phase may roll back, except \`done\` which is absorbing").
-    check_grep_fixed "$etsk" "absorbing rule: \`done\` is the absorbing terminal" \
-        '但 `done` 是吸收态'
+    #     Pinned on the reference only: it owns the orchestration contract and
+    #     is not rewritten by the prompt slimming (tiers design §12.7); SKILL.md
+    #     keeps a summary whose wording is free.
     check_grep_fixed "$etsk_orch" "absorbing rule: \`done\` is the absorbing terminal" \
         '但 `done` 是吸收态'
     # (3) `awaiting-confirmation` is explicitly REVERSIBLE.  ERE: from the
@@ -588,28 +589,11 @@ run_T3() {
     check_grep "$etsk_orch" "absorbing rule: \`awaiting-confirmation\` remains reversible" \
         '`awaiting-confirmation` 表示[^。]*它仍然是可逆的'
 
-    # ---- delivery test-gate (registration-style hard gate) --------------
-    # Per .zyz-worker/tasks/zyz-phase-awaiting-confirmation/design-test-gate.md
-    # §4: the Deliver step gains a pre-delivery gate that requires EVERY
-    # required test category (unit / e2e / regression; plus pressure when
-    # `## Risks` demands it) to be registered ran/skipped before delivery.
-    # The literal string `every required category` is the contract anchor
-    # (RC3) — it is unique to the §4 gate sentence, so deleting the gate
-    # turns this check red.
-    check_grep_fixed "$etsk" "§4 delivery test-gate anchor 'every required category'" \
-        "每一个必需的类别"
-
-    # ---- task-status template per-category Final Aggregate Testing -------
-    # Per design-test-gate.md §模板结构化: `## Final Aggregate Testing` in the
-    # task-status template becomes a per-category checklist with one line per
-    # category using the `(ran: <result> | skipped: <reason>)` grammar.  E2E
-    # and Regression are the two categories the user specifically worried get
-    # silently skipped, so we anchor on those two labels at minimum.
-    local etsk_tpl="skills/execute-task/templates/task-status.md"
-    check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category E2E line" \
-        "- E2E:"
-    check_grep_fixed "$etsk_tpl" "Final Aggregate Testing has per-category Regression line" \
-        "- 回归测试:"
+    # The delivery test-gate sentence in SKILL.md and the per-category lines of
+    # the task-status template were pinned here by their wording. No script
+    # parses either, and tiers design §12.8 leaves prompt wording to the prompt
+    # lanes: the checks were removed. Short anchors for the rules that stay
+    # live in scripts/test-watchdog-hooks.sh T6.
 
     # Each of the 6 agent files: heading + 'wait-state'
     local af
