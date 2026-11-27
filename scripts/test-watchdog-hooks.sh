@@ -1323,11 +1323,24 @@ conv_has "$M" '**blocking 的修复优先做减法。**' "prefers subtraction"
 conv_has "$M" '会缩小用户要的范围时，你只推荐，由用户决定（A 类）' "leaves scope cuts to the user"
 # Rule 5 — ask right after adjudicating; leave the dependent parts untouched.
 conv_has "$M" '**评审裁决完马上问，依赖回答的部分不动。**' "asks right after adjudication"
-conv_has "$M" '依赖回答的部分保持原文、标为待定，不按推荐项先改' "does not pre-apply the recommendation"
+conv_has "$M" '依赖回答的部分保持原文，不按推荐项先改' "does not pre-apply the recommendation"
+# §11.7-7 (N14): "pending" is marked in decisions.md, never as a note in the
+# design body (that would be the appended annotation the edit discipline bans).
+conv_has "$M" '待定标在 `decisions.md` 那一条的「影响的设计部分」，不在设计正文里加批注' "marks pending parts in decisions.md"
+conv_has skills/execute-task/templates/decisions.md '这一栏就是待定标记' "marks pending parts in decisions.md"
+conv_lacks "$M" '保持原文、标为待定' "no longer leaves the pending mark's place open"
 conv_has "$M" '剩下的修复全都依赖回答时，才停下等用户' "stops only when everything left depends on the answer"
 conv_has "$M" '`result --pending` 填这个评审点此刻仍在等回答的 blocking 条数' "keeps counting pending blockings until answered"
-conv_has "$M" '第 2 轮起 `--induced` 和 `--pending` 必填，没有写 0' "requires induced + pending from round 2"
-conv_has "$RC" '有档位的任务从第 2 轮起，`--induced` 和 `--pending` 都必填，没有就写 `0`' "requires induced + pending from round 2"
+# §11.7-4 (N1): --rejected is required from round 2 too — `result` refills the
+# whole row, and a dropped --rejected would count as 0 in the early-stop test.
+conv_has "$M" '第 2 轮起 `--rejected`、`--induced`、`--pending` 必填，没有写 0' "requires rejected + induced + pending from round 2"
+conv_has "$RC" '有档位的任务从第 2 轮起，`--rejected`、`--induced`、`--pending` 三个都必填' "requires rejected + induced + pending from round 2"
+conv_has "$RC" '漏写的 `--rejected` 会按 0 参与提前停的比较' "says why a dropped --rejected matters"
+conv_has "$RC" '`--blocking`、`--rejected`、`--induced` 照原值再给一遍' "refills every argument when clearing pending"
+for f in "$M" "$RC"; do
+    conv_lacks "$f" '`--induced` 和 `--pending` 必填' "no longer leaves --rejected optional from round 2"
+    conv_lacks "$f" '`--induced` 和 `--pending` 都必填' "no longer leaves --rejected optional from round 2"
+done
 conv_has "$RC" '它是当前状态，不是本轮 blocking 的子集，所以不和 `N + R` 比大小' "treats pending as a state, not a subset of this round"
 conv_has "$M" '同时列出 B 类决定和仍未回答的 A 类问题' "lists only still-open questions at the approval gate"
 conv_has "$RC" '要用户定的问题不攒到设计批准闸门' "no longer batches user questions to the gate"
@@ -1351,7 +1364,21 @@ conv_has "$S" '`standard` 各 3' "states the standard caps in the closure summar
 conv_has "$RC" '| standard | 3 | 3 | 3 |' "states the standard caps"
 conv_has "$RC" '**第 2 轮不收敛就提前停**' "stops early when round 2 does not converge"
 conv_has "$RC" '取被接受的与被拒绝的之和（`blocking + rejected`）' "counts accepted + rejected blockings"
-conv_has "$M" '第 2 轮不收敛（`blocking + rejected` 不少于第 1 轮）' "hands a non-converging round 2 to the user"
+# §11.7-3 (F2): a round 2 with zero blockings is not "not converging" — the
+# script tests r2 >= max(r1, 1). Each short form carries the zero exception,
+# and the bare "no smaller than round 1" wording is reverse-guarded.
+conv_has "$M" '第 2 轮不收敛（`blocking + rejected` 不为零且不少于第 1 轮）' "hands a non-converging round 2 to the user"
+conv_has "$S" '不为零、且不少于第 1 轮时，不开第 3 轮' "keeps the zero exception in the early stop"
+conv_has "$RC" '第 2 轮的 blocking 数不为零、且不少于第 1 轮时，不开第 3 轮' "keeps the zero exception in the early stop"
+conv_has "$RC" '第 2 轮 ≥ max(第 1 轮, 1)' "states the script's early-stop test"
+conv_has "$RC" '第 2 轮一条都没报不算不收敛' "keeps the zero exception in the early stop"
+conv_lacks "$M" '（`blocking + rejected` 不少于第 1 轮）' "no early stop on a zero round 2"
+conv_lacks "$S" '（接受的加被拒绝的）不少于第 1 轮时' "no early stop on a zero round 2"
+conv_lacks "$RC" '第 2 轮的 blocking 数不少于第 1 轮时' "no early stop on a zero round 2"
+conv_has skills/execute-task/references/orchestration-mode.md '标准档第 2 轮不收敛提前停、严格档收口检查结论为升级，同样通过这一问答进行' "routes the early stop through the question file"
+for f in README.md docs/architecture.md; do
+    conv_has "$f" '不为零、且不少于第 1 轮时提前停' "keeps the zero exception in the early stop"
+done
 conv_has "$RC" '标准档的每一个评审点：设计、实现、汇总' "applies the early stop to every standard review point"
 conv_has README.md '标准档 design 3 / impl 3 / aggregate 3' "states the standard caps"
 conv_has docs/architecture.md '标准档 design 3 / impl 3 / aggregate 3' "states the standard caps"
@@ -1375,7 +1402,16 @@ done
 # Round bookkeeping the rules above depend on.
 conv_has "$M" '--induced <I> --pending <P>' "records induced + pending with the result"
 conv_has "$M" '要求它给每条新发现注明来源：`原有` 或 `上一轮修订带出`' "asks the reviewer for each finding's origin"
-conv_has "$RC" '[--induced I] [--pending P]' "documents the result arguments"
+conv_has "$RC" '--blocking N --rejected R --induced I --pending P [--behavior M]' "documents the result arguments"
+conv_has "$RC" '同一评审点每一轮给同一组文档' "gives the same documents every round"
+conv_has "$M" '指明本评审点的文档，每一轮给同一组' "gives the same documents every round"
+# §11.7-7 (N14): a --full round from round 2 on still needs --induced, so the
+# origin column is filled from round 2 on, not only in incremental rounds.
+conv_has skills/execute-task/templates/review-report.md '「来源」列从第 2 轮起必填（含 `--full` 开的全量轮）' "fills the origin column from round 2 on"
+conv_lacks skills/execute-task/templates/review-report.md 'mode=full 写 `-`' "no longer blanks the origin column in full rounds"
+for f in subagents/review-agent.md agents/review-agent.md; do
+    conv_has "$f" '第 2 轮起同样填「来源」列' "fills the origin column in full rounds from round 2"
+done
 for f in subagents/review-agent.md agents/review-agent.md; do
     conv_has "$f" '每条新发现在「来源」列注明 `原有`' "marks each new finding's origin"
 done
@@ -1431,6 +1467,49 @@ for f in subagents/implementation-agent.md agents/implementation-agent.md; do
 done
 conv_has skills/execute-task/templates/task-status.md '`impl-notes.md` 里带进实现的 blocking 都已落地并核实' "checks carried blockings before delivery"
 conv_has skills/execute-task/templates/final-report.md '- 带进实现的 blocking:' "reports carried blockings"
+# §11.7-1 (B1): impl-notes.md reaches the implementation REVIEW, not only the
+# lane. Without it the reviewer's contract is the design body alone, and a fix
+# made for a carried blocking — which by definition departs from the body —
+# would be reported as a contract violation. Pinned on the dispatch (main
+# agent), on the reviewer and test-agent prompts in both mirror copies, on the
+# cross-harness brief, and on the precedence wording in the template.
+conv_has "$M" '实现评审和汇总评审附 `impl-notes.md`（存在时）' "attaches impl-notes to the review dispatch"
+conv_has "$M" '严格档 test-agent 的派发同样附上' "attaches impl-notes to the strict-tier test-agent dispatch"
+conv_has "$S" '`decisions.md` 和 `impl-notes.md`，实现评审也拿到' "gives impl-notes to the implementation review"
+for f in subagents/review-agent.md agents/review-agent.md; do
+    conv_has "$f" '派发附了 `impl-notes.md` 时逐条核对' "checks impl-notes entry by entry"
+    conv_has "$f" '`## 带进实现的 blocking` 每条的测试是否存在并通过，缺测试或测试不过按违反合同报告' "reports a carried blocking without a passing test"
+    conv_has "$f" '后一节在它写明的范围内优先于设计正文，按它做的修复不算抵触设计' "does not report a carried fix as a design departure"
+    conv_has "$f" '任一方向按违反合同报告，写明设计章节和 `file:line`；下一条的例外除外' "scopes the two-way conformance check around impl-notes"
+done
+for f in subagents/test-agent.md agents/test-agent.md; do
+    conv_has "$f" '派发附了 `<task-dir>/impl-notes.md` 时先读' "reads impl-notes"
+    conv_has "$f" '都写出它规定的必须通过的测试，在报告里逐条回应' "writes the must-pass test of each carried blocking"
+done
+conv_has "$IMPLN" '这一节的条目在它写明的范围内优先于设计正文的对应部分' "lets carried blockings outrank the design body in their scope"
+conv_has "$IMPLN" '这一节不改设计，设计正文仍是规格' "keeps implementation notes below the design"
+conv_has "$IMPLN" '也附给实现评审、汇总评审和严格档的 test-agent' "names who receives the file"
+conv_has "$DDD" '发送最终态设计文档、`decisions.md` 和 `impl-notes.md`（存在时）' "sends impl-notes to implementation roles and reviews"
+conv_lacks "$DDD" '只发送最终态设计文档' "no longer sends the design document alone"
+conv_has skills/execute-task/templates/cross-review-prompt.md '实现评审和汇总评审时 `impl-notes.md` 的路径（存在时）' "names impl-notes in the cross-harness brief"
+conv_has skills/execute-task/references/cross-harness.md '实现评审和汇总评审时附 `impl-notes.md`（存在时）' "puts impl-notes in the cross-harness brief"
+# §11.7-5 (N3, N4): what "carried" means on impl / aggregate points, and the
+# fast-tier delivery checklist checks it too.
+conv_has "$RC" '实现和汇总评审点：剩余 blocking 照修，不再开评审轮' "defines carried for impl and aggregate points"
+conv_has "$RC" '设计评审点：这些条目在写明的范围内优先于设计正文' "defines carried for design points"
+conv_has skills/execute-task/templates/task-status.md '6. 有 `impl-notes.md` 时' "checks carried blockings in the fast-tier checklist"
+conv_has "$M" '有 `impl-notes.md` 时加第 6 项' "checks carried blockings at fast-tier delivery"
+# §11.7-6 (N6, N5): doubt does not raise a tier during the re-check.
+conv_has "$RC" '拿不准：不改判，按"不会出错"处理' "does not raise the tier on doubt during the re-check"
+conv_has "$RC" '只适用于评审者第一次定级' "scopes doubt-defaults-to-blocking to the first tiering"
+conv_has "$RC" '为了加机制而重新核对等级时不适用（§5）' "scopes doubt-defaults-to-blocking to the first tiering"
+conv_has "$M" '先重新核对等级，改判只凭可达性证据' "carries the evidence limit in the short form"
+conv_has "$S" '先重新核对等级，改判只凭可达性证据' "carries the evidence limit in the short form"
+# §11.7-7 (N7, N12): additive growth is expected only for accepted blockings;
+# delivery checks that no question is still waiting for an answer.
+conv_has "$DDD" '这句话只指被接受的 `blocking`（设计缺失）' "limits expected growth to accepted blockings"
+conv_has skills/execute-task/templates/task-status.md '`decisions.md` 的「等待回答的问题」里没有仍在等回答的条目（有的话先问完，或写明用户同意带着交付）' "checks for unanswered questions at delivery"
+conv_has skills/execute-task/templates/task-status.md '设计评审的 `non-blocking:normal` 发现都记在评审历史文件、不进设计正文' "describes the recorded non-blocking findings by the new rule"
 for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json; do
     if grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE" "$m" 2>/dev/null; then
         pass "T6 $m at $EXPECTED_VERSION"

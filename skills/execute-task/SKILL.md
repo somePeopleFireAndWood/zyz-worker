@@ -94,8 +94,8 @@ description: 当用户希望协助执行一个已确认的单个开发任务时�
 - **blocking 只有三类**：可达的产品缺陷（附失败的测试、具体输入或调用路径 `file:line`）；设计缺失或矛盾（指明章节）；违反合同（含违背已批准设计）。测试强度是 `non-blocking:normal`；证据或流程缺口是补证请求，不开新一轮；快速审阅漂移不进评审；极端构造是 `non-blocking:contrived`，进遗留风险清单。可达性拿不准时按 blocking 并写明疑点。
 - **关闭**：reviewAgent 本轮零条 blocking（被拒绝的也算，用 `result --rejected` 记），跨 harness 发现都有处置且无一被接受为 blocking，没有等待用户的发现，覆盖维度都已登记；此时 `close <point> --outcome passed`（要求 `blocking=0` 且 `rejected=0`）。
 - **轮次上限**（同一评审点总轮数，含首轮）：`fast` design 0 / impl 2 / aggregate 1；`standard` 各 3；`strict` 不设。
-- **到上限或提前停**（快速档、标准档）：标准档评审点第 2 轮的 blocking 数（接受的加被拒绝的）不少于第 1 轮时，不开第 3 轮。停下时不悄悄关闭、也不自动继续：一条消息带诊断（细则 §7）交给用户，四选一：再开一轮（`grant`，一次只管一轮）、带着进实现（只剩细节类时推荐，逐条写进 `impl-notes.md`）、接受为遗留风险、拆成加固任务；后三项 `close --outcome carried|residual|split --by user`。
-- **每轮修订**：等级只看问题本身、不看解法；设计评审的非阻断发现不进设计正文（只记评审历史，实现者需要的细节进 `impl-notes.md`）；非阻断发现要加新机制才能解决时先重新核对等级；blocking 的修复优先做减法；要用户定的问题裁决完马上问，依赖回答的部分不动。
+- **到上限或提前停**（快速档、标准档）：标准档评审点第 2 轮的 blocking 数（接受的加被拒绝的）不为零、且不少于第 1 轮时，不开第 3 轮。停下时不悄悄关闭、也不自动继续：一条消息带诊断（细则 §7）交给用户，四选一：再开一轮（`grant`，一次只管一轮）、带着进实现（逐条写进 `impl-notes.md`）、接受为遗留风险、拆成加固任务；后三项 `close --outcome carried|residual|split --by user`。
+- **每轮修订**：等级只看问题本身、不看解法；设计评审的非阻断发现不进设计正文（细节进 `impl-notes.md`）；非阻断发现要加新机制才能解决时先重新核对等级，改判只凭可达性证据；blocking 的修复优先做减法；要用户定的问题裁决完马上问，依赖回答的部分不动。
 - **严格档**不设上限：极端构造进遗留清单另开 PR；从第 3 轮起每满 3 轮做一次收口检查（`check`）；结论 `escalate` 时交用户，批准继续后 `grant`；同样带诊断。
 - **由脚本强制**：评审点用 `<plugin-root>/hooks/scripts/review-round.sh` 的 `open` / `start` / `result` / `close` 推进，不手写 `## 评审收口`；上一轮先 `result` 再开新一轮。每轮重新派发 review-agent（不用 SendMessage 续用），prompt 里写 `start` 输出对应的 `review-point=<id> round=<n> mode=<full|incremental>`，另起一行 `Tier: <评审点生效档位>`，由 `review-gate.sh` 核对；`start` exit 3 时照输出做。
 
@@ -150,7 +150,7 @@ description: 当用户希望协助执行一个已确认的单个开发任务时�
 
 #### 3.0.0 严格按设计文档实现
 
-已批准的设计是规格：每个元素都实现，不遗漏；不替换机制、不换关键算法、不加未要求的模块，不违背。派发只给最终态设计、`decisions.md` 和 `impl-notes.md`。review-agent 双向逐元素核对符合性。
+已批准的设计是规格：每个元素都实现，不遗漏；不替换机制、不换关键算法、不加未要求的模块，不违背。派发只给最终态设计、`decisions.md` 和 `impl-notes.md`，实现评审也拿到。review-agent 双向逐元素核对符合性。
 
 #### 3.A 快速档
 

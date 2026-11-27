@@ -33,7 +33,7 @@
 - 有问题在等、同时还有能独立推进的活：用 `set <key> user --watch --reason …`，然后接着推进那部分。
 - **评审裁决完马上问，依赖回答的部分不动。** 每轮裁决后，用一条消息列完必须由用户定的问题（架构、关键算法、对外契约、持久化数据、用户可见行为、范围取舍），每条附推荐，并写明它影响设计的哪些部分；记进 `decisions.md` 的 `## 等待回答的问题`，声明 `user --watch`，不停下。
   - 不依赖回答的修复照常做，下一轮评审照常开。
-  - 依赖回答的部分保持原文、标为待定，不按推荐项先改；派发评审时列出这几处，评审者不重复报告。
+  - 依赖回答的部分保持原文，不按推荐项先改；待定标在 `decisions.md` 那一条的「影响的设计部分」，不在设计正文里加批注。派发评审时列出这几处，评审者不重复报告。
   - 用户回答后再改这几处，改动进下一轮增量复审。
   - 剩下的修复全都依赖回答时，才停下等用户（`set <key> user`）。
   - `result --pending` 填这个评审点此刻仍在等回答的 blocking 条数（含更早轮次提出的）；它们不再计入之后各轮的 `--blocking`。`pending` 大于 0 的评审点不能按 `passed` 关闭。
@@ -79,7 +79,7 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 1. **位置：** 仓库路径、分支、worktree（或共享 worktree 里的插入区域）。
 2. **文件白名单与插入区域：** lane 可以改的文件、标识符前缀；共享装配文件里属于它的插入区域。
 3. **硬性边界：** 不 push、不开 PR、不合并（只做到本地提交，或按你指定不提交）；不碰白名单外的文件；破坏性 git 操作的禁令（`references/version-control.md`）；按设计原样实现，设计变更交回给你。
-4. **规格：** 设计文档或 `change-note.md` 的路径与相关章节，`decisions.md` 和 `impl-notes.md`（存在时）的路径。不发评审历史文件。
+4. **规格：** 设计文档或 `change-note.md` 的路径与相关章节，`decisions.md` 和 `impl-notes.md`（存在时）的路径，严格档 test-agent 的派发同样附上。不发评审历史文件。
 5. **参考实现：** 仓库里可以照着写的现有代码位置。
 6. **测试清单：** 要写和要跑的测试，含负对照（新测试在旧代码上要失败）；标准档加测试计划规定的类别和 `## 关键机制` 的变异，严格档按全套。
 7. **资源租约：** 端口组、测试数据库、共享生成产物的负责方（见下文）。
@@ -112,7 +112,7 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 
 规则：`SKILL.md` `## 评审收口`（细则 `references/review-closure.md`）和 `## 跨 harness 交叉评审`（`references/cross-harness.md`）。`## 评审收口` 段的行由 `review-round.sh` 写，不手写。每一轮的操作：
 
-1. **开轮：** 上一轮已 `result` 后运行 `review-round.sh start <point>`。成功时输出 `round=<n> mode=full|incremental cross-harness=yes|no`。上一轮的修复大到改变了结构时，改用 `review-round.sh start <point> --full --reason <改了什么结构>`，本轮按全量评审（轮次照常计数，上限不变）。design 评审点的 `start` 从第 2 轮起另外输出修订量（`delta=… growing=yes|no`）并写出与上一轮的 diff（`references/review-closure.md` §2）；设计拆成多份时用 `--docs <path>...` 指明本评审点的文档。
+1. **开轮：** 上一轮已 `result` 后运行 `review-round.sh start <point>`。成功时输出 `round=<n> mode=full|incremental cross-harness=yes|no`。上一轮的修复大到改变了结构时，改用 `review-round.sh start <point> --full --reason <改了什么结构>`，本轮按全量评审（轮次照常计数，上限不变）。design 评审点的 `start` 从第 2 轮起另外输出修订量（`delta=… growing=yes|no`）并写出与上一轮的 diff（`references/review-closure.md` §2）；设计拆成多份时用 `--docs <path>...` 指明本评审点的文档，每一轮给同一组。
 2. **派发 review-agent：** prompt 里原样放这两行，各占一行
 
    ```text
@@ -122,7 +122,7 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 
    第一行的值取自 `start` 的输出，缺失或不一致时 `review-gate.sh` 会拒绝派发，按拒绝理由先跑它给的命令；`Tier:` 取这个评审点的生效档位（单独升过档的取它自己的档位，否则取任务档位），以 `review-round.sh status <point>` 的显示为准。
    - 每一轮都新派发一个 review-agent，不用 SendMessage 续用上一轮的评审者（那样绕开闸门）。
-   - 每轮都附：遗留风险清单路径（存在时）；快速档附负对照证据路径（lane 报告，或你自己改时的 `lanes/main.md`）。
+   - 每轮都附：遗留风险清单路径（存在时）；实现评审和汇总评审附 `impl-notes.md`（存在时）；快速档附负对照证据路径（lane 报告，或你自己改时的 `lanes/main.md`）。
    - `mode=full`（第 1 轮，或 `--full` 开的轮）：全量评审，附设计 / 变更说明路径、冻结文件集与 diff 基线、`decisions.md`、此前被拒绝的发现及理由。
    - `mode=incremental`（第 2 轮起）：附上一轮被接受的 blocking 清单、修复的 diff（设计评审用 `start` 写出的那份）、被拒绝或降级的 blocking 及理由；评审者的三项任务见 `references/review-closure.md` §2。要求它给每条新发现注明来源：`原有` 或 `上一轮修订带出`。
    - 有问题在等用户时，逐条列出（问题、涉及的章节），写明这几处不用重复报告，有新事实除外。
@@ -131,9 +131,9 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
    - **等级不收窄派发。** 每个评审者都按本轮范围报告每一条发现，不要求只报 blocking。全量轮里这种限缩会被 L5 拒绝；带已登记 `mode=incremental` 标记的派发 L5 整体放行，这时由你自己守住。等级决定你怎么处理一条发现，不决定你是否听到它。
 3. **跨 harness：** `cross-harness=yes` 时，在同一批里后台运行 `<plugin-root>/scripts/cross-review.sh run --task-dir <task-dir> --kind <design|implementation|aggregate> --brief <brief> --label <label> --point <id> --round <n> --mode <m>`（`<m>` 取 `start` 输出的 mode），简报范围与 review-agent 派发相同。`no` 时不启动。它失败、超时或没有产出时，在 `## 发现台账` 记一笔，只靠 review-agent 继续。
 4. **裁决**（见下文 `### 裁决纪律`）：按 blocking 准入三类核定每条发现的等级，等级只看问题本身、不看解法要不要加机制；必须由用户定的问题当轮就问（`## 提问与自动执行`）；证据或流程缺口按补证请求处理；文档同步类按 `## 设计` 处理。拒绝或降级一个 reviewAgent 的阻断发现，本身并不能关闭评审点：下一轮评审者会复核这个处置。
-5. **记结果与关闭：** 裁决完成后 `review-round.sh result <point> --blocking <N> --rejected <R> --behavior <M> --induced <I> --pending <P>`（各参数见 `references/review-closure.md` §2；第 2 轮起 `--induced` 和 `--pending` 必填，没有写 0；`--induced` 按评审报告「来源」列核对）。本轮满足 `SKILL.md` `## 评审收口` 的关闭条件时，运行 `review-round.sh close <point> --outcome passed --reason <一句话>`（要求 `blocking=0`、`rejected=0` 且没有 `pending`；拒绝要等下一轮评审者认可）。拒绝僵持到上限时按第 6 步交用户。评审点关闭后再要评审，先重新 `open`。
+5. **记结果与关闭：** 裁决完成后 `review-round.sh result <point> --blocking <N> --rejected <R> --behavior <M> --induced <I> --pending <P>`（各参数见 `references/review-closure.md` §2；第 2 轮起 `--rejected`、`--induced`、`--pending` 必填，没有写 0；`--induced` 按评审报告「来源」列核对）。本轮满足 `SKILL.md` `## 评审收口` 的关闭条件时，运行 `review-round.sh close <point> --outcome passed --reason <一句话>`（要求 `blocking=0`、`rejected=0` 且没有 `pending`；拒绝要等下一轮评审者认可）。拒绝僵持到上限时按第 6 步交用户。评审点关闭后再要评审，先重新 `open`。
 6. **`start` 以 exit 3 拒绝时**，照它的输出做：
-   - 快速档、标准档到上限，或标准档评审点第 2 轮不收敛（`blocking + rejected` 不少于第 1 轮）：按 `references/review-closure.md` §7 用一条消息交给用户。依次写诊断、剩余 blocking 清单、四个选项和你的推荐；然后 `expect.sh set <key> user`。用户的选择记进 `decisions.md`，再按选择操作：
+   - 快速档、标准档到上限，或标准档评审点第 2 轮不收敛（`blocking + rejected` 不为零且不少于第 1 轮）：按 `references/review-closure.md` §7 用一条消息交给用户。依次写诊断、剩余 blocking 清单、四个选项和你的推荐；然后 `expect.sh set <key> user`。用户的选择记进 `decisions.md`，再按选择操作：
      - 再开一轮：`review-round.sh grant <point> --reason <用户原话要点>`，一次授权只管一轮；
      - 带着进实现（只剩细节类时推荐这一项）：每条写成 `impl-notes.md` `## 带进实现的 blocking` 里一个必须通过的测试项，再 `close <point> --outcome carried --by user --reason …`；
      - 接受为遗留风险：逐条登记进 `residual-risks.md`，再 `review-round.sh close <point> --outcome residual --by user --reason <用户原话要点>`；
@@ -159,7 +159,7 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 每轮修订新写的量要逐轮变小：新写得越多，下一轮能挑出的问题越多。
 
 - **blocking 的修复优先做减法。** 先看能不能删掉或收窄引出问题的东西，再考虑加规则或机制。减掉的是你自己加的东西时直接做；会缩小用户要的范围时，你只推荐，由用户决定（A 类）。
-- **设计评审的非阻断发现不进设计正文**：记入评审历史文件，实现者需要的细节写进 `<task-dir>/impl-notes.md`。非阻断发现要加新机制才能解决时，先重新核对等级。细则见 `references/review-closure.md` §5。
+- **设计评审的非阻断发现不进设计正文**：记入评审历史文件，实现者需要的细节写进 `<task-dir>/impl-notes.md`。非阻断发现要加新机制才能解决时，先重新核对等级，改判只凭可达性证据。细则见 `references/review-closure.md` §5。
 - `start` 输出 `growing=yes` 时，派发前检查正文里有没有非阻断发现、依赖用户回答的部分、能用减法代替的新规则。
 
 ### 发现台账
@@ -177,7 +177,7 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 
 ## 交付
 
-- **快速档：** 逐项回答 `status.md` `## 交付前检查清单` 的快速档五项并附证据：负对照、构建和测试结果、评审发现的处置与评审点 `close`、`change-note.md` 的"怎么验证"逐条兑现、合并打 tag 发布之前问用户。
+- **快速档：** 逐项回答 `status.md` `## 交付前检查清单` 的快速档五项并附证据：负对照、构建和测试结果、评审发现的处置与评审点 `close`、`change-note.md` 的"怎么验证"逐条兑现、合并打 tag 发布之前问用户；有 `impl-notes.md` 时加第 6 项。
 - **标准档和严格档：** 按 `SKILL.md` §4 逐项核验，重点是：每个已登记的评审点都有 `Review-Close`（`review-round.sh status`）；`## 发现台账` 没有未处置或已接受未落地的发现；`impl-notes.md` 里带进实现的 blocking 逐条核对已落地（对应测试存在并通过）；`## 交付前检查清单` 逐项附证据作答，含台账扫描和 `## 最薄弱环节` 的自我披露，"其余都没问题"不算回答。
 - 然后：创建最终提交，配置了远端就推送（不问，失败不阻断）；按 `templates/final-report.md` 产出最终报告，附上 `decisions.md` 里按推荐执行的决定；阶段进入 `awaiting-confirmation` 等用户确认，确认后才进 `done`；最后问用户是否删除任务状态文件。
 
@@ -197,12 +197,12 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 
 ## 恢复进行中的任务
 
-接手进行中的任务时，先按 `SKILL.md` `## 恢复进行中的任务`（`references/recovery.md`）核实 `status.md`：与 `git log` / `git status`、`lanes/*.md`、固定包观察器交叉核对，再用 `review-round.sh status` 看评审点进度、读 `decisions.md`。冲突时立即重写 `status.md`，标出哪些是从代码重建的。仍然活着的角色不重新派发，免得两个 agent 写同样的文件。
+接手进行中的任务时，先按 `SKILL.md` `## 恢复进行中的任务`（`references/recovery.md`）核实 `status.md`：与 `git log` / `git status`、`lanes/*.md`、固定包观察器交叉核对，再用 `review-round.sh status` 看评审点进度、读 `decisions.md`。仍然活着的角色不重新派发，免得两个 agent 写同样的文件。
 
 ## 编排模式
 
-设置了 `ZYZ_WORKER_STATUS_FILE` 时，本对话由 `orchestration-scheduling-task` 派发：把所选档位和一句理由写进第一份确认问题（快速档的改法确认，或设计批准），由用户确认或改档；加载 `references/orchestration-mode.md` 并遵循（`worker-status.md` 字段与阶段映射、设计→实现批准渠道、`answer.md` 问答、多 worktree、`done` 只在用户确认后写）。收到 `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` 带内块时，块中的值在整个任务生命周期内优先于启动时的环境变量。
+设置了 `ZYZ_WORKER_STATUS_FILE` 时，本对话由 `orchestration-scheduling-task` 派发：把所选档位和一句理由写进第一份确认问题（快速档的改法确认，或设计批准），由用户确认或改档；加载 `references/orchestration-mode.md` 并遵循。收到 `[zyz-worker reuse-runtime-config]` … `[/zyz-worker reuse-runtime-config]` 带内块时，块中的值在整个任务生命周期内优先于启动时的环境变量。
 
 ## PR 评审处理
 
-真实 PR 上的评审意见是参考性输入：逐条独立核实，成立的转给负责的 lane 修复并在讨论串回复，不成立的附理由在 PR 上回复拒绝，每条都有结果，决定记进 `## 发现台账`（来源写 PR 评审）。操作细则见 `references/pr-review.md`。
+真实 PR 上的评审意见是参考性输入：逐条独立核实后接受或附理由拒绝，每条都有结果。操作见 `references/pr-review.md`。

@@ -93,7 +93,7 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 <!-- finding 写 `<评审点>#<N> 一句话`；来源写 reviewAgent / 跨 harness:<harness> / PR:<URL 或编号>；跨 harness 和 PR 的发现先独立核实再裁决。 -->
 
 - 补证请求: （评审点#N | 缺什么 | 作者 | 核对结果；补证不开新的一轮）
-- 记入评审历史的非阻断发现: （设计阶段只会误导文档后来读者的发现：条数 + `<design-doc-basename>.review-history.md`）
+- 记入评审历史的非阻断发现: （设计评审的 `non-blocking:normal` 发现都记在评审历史文件、不进设计正文：条数 + `<design-doc-basename>.review-history.md`；其中写进 `impl-notes.md` 的条数）
 - 遗留风险清单: （`residual-risks.md` 路径 + 按级别计数；或 none）
 
 ## 最终汇总测试
@@ -139,6 +139,7 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 3. 那 1 轮实现评审（及至多 1 轮复核）的每条发现都有处置，跨 harness 结果已记录；每个已登记的评审点都有 `Review-Close`。
 4. `change-note.md` 的"怎么验证"逐条兑现。
 5. 合并、打 tag、发布之前问用户；`decisions.md` 的按推荐执行的决定已列给用户。
+6. 有 `impl-notes.md` 时（评审点到上限、用户选了"带着进实现"）：带进实现的 blocking 都已落地并核实（逐条：测试名、commit/file、通过的证据）；`decisions.md` 的「等待回答的问题」里没有仍在等回答的条目。
 
 标准档、严格档：
 
@@ -148,7 +149,7 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 4. 环境：长期进程在最新源文件之后启动（重启按 杀进程组 → 轮询端口空闲 → 健康检查）；非生产写入路径改动的状态做了配对的生产侧失效；被中断运行的脏数据已清理（`log/restarts.md`）。
 5. (∥) 每个 lane 持有自己在 `## 并行资源租约` 的那一行、确认连的是自己的实例；全量变绿前后都有编译干净检查；每次评审都在冻结的工作区上进行（`Frozen At`）。
 6. 归因：每个失败按 implementation-agent 的四步顺序归因；重跑只用来证明不稳定，不用来证明清白；"别人的包坏了"附 mtime 观察或所有者确认。
-7. 评审：每个已登记的评审点都有 `Review-Close`（`review-round.sh status` 核对），`carried` / `residual` / `split` 的用户选择已记入 `decisions.md`；`impl-notes.md` 里带进实现的 blocking 都已落地并核实（逐条：测试名、commit/file、通过的证据）；`## 发现台账` 里没有被接受却 `dispatched-to` 为空的行；严格档每满三轮有 `Review-Check`。
+7. 评审：每个已登记的评审点都有 `Review-Close`（`review-round.sh status` 核对），`carried` / `residual` / `split` 的用户选择已记入 `decisions.md`；`impl-notes.md` 里带进实现的 blocking 都已落地并核实（逐条：测试名、commit/file、通过的证据），实现备注逐条有落地记录；`decisions.md` 的「等待回答的问题」里没有仍在等回答的条目（有的话先问完，或写明用户同意带着交付）；`## 发现台账` 里没有被接受却 `dispatched-to` 为空的行；严格档每满三轮有 `Review-Check`。
 8. 范围：本轮确立的每条规则都扫过了所有同形态位置，附逐位置结论；声称覆盖或不变量的注释与代码现状一致。
 9. 披露：最终报告 `## 最薄弱环节` 已填；移入加固的 blocking 都已落地；遗留风险清单每条字段齐全，最终报告 `## 已知风险` / `## 后续工作` 指向它；按推荐执行的决定已列给用户。
 10. 一致性：本文件与 `git log`、`lanes/*.md` 一致（`## 状态新鲜度` 已记录核对）；watchdog 已启用——没启用就直说，这里没有任何结论可以依赖它。

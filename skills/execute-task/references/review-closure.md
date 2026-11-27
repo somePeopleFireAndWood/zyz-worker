@@ -16,16 +16,16 @@
 ## 2. 轮次与模式
 
 - **第 1 轮全量。** 评审者覆盖该评审点的全部范围，按覆盖维度登记。
-- **第 2 轮起增量。** 输入是上一轮被接受的 blocking 清单、修复的 diff（和对应的提交范围），以及上一轮被拒绝或降级的 blocking 及理由。评审者的任务有三项：逐条核实修复已落地；评审这份 diff 是否引入了新问题（复盘里有 15 条 blocking 是上一轮修复引入的）；对每条被拒绝的 blocking 二选一——在报告的 `## 已复核的被拒绝建议` 里认可这次拒绝，或重新提出为 blocking。增量轮不重新评审未改动的代码。作者裁决自己产物的发现时，这一项就是"作者不当自己的裁判"的保障。评审者给增量轮的每条新发现注明来源：`原有`（之前就有、前几轮没报），或 `上一轮修订带出`（含只落地一半的修复）；裁决者核对后用它填 `result --induced`。
+- **第 2 轮起增量。** 输入是上一轮被接受的 blocking 清单、修复的 diff（和对应的提交范围），以及上一轮被拒绝或降级的 blocking 及理由。评审者的任务有三项：逐条核实修复已落地；评审这份 diff 是否引入了新问题（复盘里有 15 条 blocking 是上一轮修复引入的）；对每条被拒绝的 blocking 二选一——在报告的 `## 已复核的被拒绝建议` 里认可这次拒绝，或重新提出为 blocking。增量轮不重新评审未改动的代码。作者裁决自己产物的发现时，这一项就是"作者不当自己的裁判"的保障。从第 2 轮起（含 `start --full` 开的全量轮），评审者给每条新发现注明来源：`原有`（之前就有、前几轮没报），或 `上一轮修订带出`（含只落地一半的修复）；裁决者核对后用它填 `result --induced`。
 - **全量复审**只在汇总评审时做，或者某次修复大到改变了结构时做（换了机制、移动了模块边界、重写了主路径）。后者由主 agent 判断，用 `review-round.sh start <point> --full --reason <改了什么结构>` 强制本轮 `mode=full`；impl 评审点的全量轮 `cross-harness=yes`，aggregate 评审点只有第 1 轮是 `yes`（`--full` 开的 aggregate 轮也是 `no`）。轮次照常计数，上限不变。
 - **每一轮都重新派发 review-agent。** 不把评审者留作常驻 teammate、下一轮用 SendMessage 续用：那样会绕开 `review-gate.sh` 和 L5。同一轮里的中途重派（评审者死掉、按维度并行派多个 reviewer）发生在 `result` 之前，照常允许；最新一轮已经 `result` 后，`review-gate.sh` 拒绝用同一标记再派发，先 `start` 新的一轮。
 - 每轮都先运行 `review-round.sh start <point>`（上一轮要已 `result`，否则 exit 3），它输出 `round=<n> mode=full|incremental cross-harness=yes|no`；派发 review-agent 时 prompt 里写一行 `review-point=<id> round=<n> mode=<full|incremental>`，另起一行 `Tier: <fast|standard|strict>`（评审点的生效档位，`review-round.sh status <point>` 显示）。`review-gate.sh` 核对这两行；L5 范围守卫对带 `mode=incremental` 的派发放行。增量复审的范围由本节定义，它不是缩范围；评审者在这个范围内照常报告每一条发现。"恢复卡住的角色时缩减范围"仍然禁止（`references/recovery.md`）。
-- 本轮结束后运行 `review-round.sh result <point> --blocking N --rejected R [--behavior M] [--induced I] [--pending P]`（`--rejected` 不写时记为 `-`，`passed` 关不了）：
+- 本轮结束后运行 `review-round.sh result <point> --blocking N --rejected R --induced I --pending P [--behavior M]`：
   - `N` 是本轮被接受的 blocking 条数；`R` 是评审者报告为 blocking、但被裁决者拒绝或降级的条数（`Review` 行记为 `rejected=<n>`）；`M` 是 `N` 里会改变产品行为的条数。
   - `I` 是本轮 blocking（被接受的加被拒绝的）里由上一轮修订带出的条数，含只落地一半的。
-  - `P` 是这个评审点此刻仍在等用户回答的 blocking 条数（§5 第 3 条），包括更早轮次提出、还没回答的。它是当前状态，不是本轮 blocking 的子集，所以不和 `N + R` 比大小：评审者按派发不重复报告待定项，这些项不再计入之后各轮的 `--blocking`，只通过 `--pending` 体现，直到用户回答并改完。最近一轮 `pending` 大于 0 时 `close --outcome passed` 被拒绝，`start` 不受影响。
-  - 有档位的任务从第 2 轮起，`--induced` 和 `--pending` 都必填，没有就写 `0`，缺了以 exit 2 拒绝；第 1 轮和没有档位的旧任务不要求。`I` 不能大于 `N + R`。每次 `result` 整行重填，更正时把所有参数再写一遍。下一轮开不了时（到上限、第 2 轮不收敛），`result` 的输出里当场就有 §7 的走势和四个选项。
-- **设计评审的修订量。** 设计文档是散文，没有编译器和测试裁决：每轮修订新写的文字越多，下一轮能被挑出的问题就越多，所以每轮新写的量要逐轮变小。design 评审点的 `start` 把本轮被评审的文档（`--docs <path>...`；不给时取 `status.md` 元数据 `- 设计文档:` 一行的路径）复制到 `<task-dir>/reviews/snap/<point>/r<n>/`。从第 2 轮起它与上一轮的快照比较，输出 `delta=+<增行>/-<删行> prev=<+a/-b|-> growing=yes|no`，并把 diff 写到 `<task-dir>/reviews/snap/<point>/r<n-1>-r<n>.diff`（输出里 `diff=` 一行是它的绝对路径），增量复审就用这份 diff。`growing=yes`（本轮新增行数比上一轮多）只告警、不拦截：主 agent 先按 `prompts/main-agent.md` 的修订纪律检查这一轮写进正文的东西（非阻断发现、依赖用户回答的部分、可以用减法代替的新机制），再派发。没有可读的文档时跳过。修订量只在设计阶段计量；实现阶段有测试裁决，不计量。
+  - `P` 是这个评审点此刻仍在等用户回答的 blocking 条数（§5 第 3 条），包括更早轮次提出、还没回答的。它是当前状态，不是本轮 blocking 的子集，所以不和 `N + R` 比大小：评审者按派发不重复报告待定项，这些项不再计入之后各轮的 `--blocking`，只通过 `--pending` 体现，直到用户回答并改完。用户回答后：要改设计的，改动进下一轮增量复审，那一轮的 `--pending` 填还剩几条；回答不需要改动设计的，用 `result` 重填这一轮，`--blocking`、`--rejected`、`--induced` 照原值再给一遍，`--pending` 写 `0`。最近一轮 `pending` 大于 0 时 `close --outcome passed` 被拒绝，`start` 不受影响。
+  - 有档位的任务从第 2 轮起，`--rejected`、`--induced`、`--pending` 三个都必填，没有就写 `0`，缺了以 exit 2 拒绝。`result` 每次整行重填，没给的参数回到 `-`；漏写的 `--rejected` 会按 0 参与提前停的比较（§7），所以更正时把所有参数再写一遍。第 1 轮和没有档位的旧任务不要求这三个；第 1 轮不写 `--rejected` 时记为 `-`，`passed` 关不了。`I` 不能大于 `N + R`。下一轮开不了时（到上限、第 2 轮不收敛），`result` 的输出里当场就有 §7 的走势和四个选项。
+- **设计评审的修订量。** 设计文档是散文，没有编译器和测试裁决：每轮修订新写的文字越多，下一轮能被挑出的问题就越多，所以每轮新写的量要逐轮变小。design 评审点的 `start` 把本轮被评审的文档（`--docs <path>...`；不给时取 `status.md` 元数据 `- 设计文档:` 一行的路径）复制到 `<task-dir>/reviews/snap/<point>/r<n>/`。从第 2 轮起它与上一轮的快照比较，输出 `delta=+<增行>/-<删行> prev=<+a/-b|-> growing=yes|no`，并把 diff 写到 `<task-dir>/reviews/snap/<point>/r<n-1>-r<n>.diff`（输出里 `diff=` 一行是它的绝对路径），增量复审就用这份 diff。同一评审点每一轮给同一组文档：脚本只比较两轮都采集到的文档，这一轮没有列出的文档不参与比较（输出一行 `note:` 写明是哪几份），它的修订既没有被计量，也不在交给增量复审的 diff 里。`growing=yes`（本轮新增行数比上一轮多）只告警、不拦截：主 agent 先按 `prompts/main-agent.md` 的修订纪律检查这一轮写进正文的东西（非阻断发现、依赖用户回答的部分、可以用减法代替的新机制），再派发。没有可读的文档时跳过。修订量只在设计阶段计量；实现阶段有测试裁决，不计量。
 
 ## 3. 声明域
 
@@ -66,7 +66,7 @@
 规则：
 
 - **等级只看问题本身。** 三类准入问的是同一件事：按当前设计（或代码）原样实现，在声明域内的真实情况下会不会出错。会，就是 `blocking`；不会，就是非阻断。解法要不要加机制、改动有多大，不影响等级：不因为修起来要加机制就升级，也不因为修起来贵就降级。
-- **拿不准时**：可达性不清楚，就按 `blocking` 处理，并写明那个悬而未决的可达性问题。"拿不准"不能用来给证据缺口升级。
+- **拿不准时**：可达性不清楚，就按 `blocking` 处理，并写明那个悬而未决的可达性问题。"拿不准"不能用来给证据缺口升级。这一条用在评审者第一次给一条发现定级时；为了加机制而重新核对等级时不适用（§5）。
 - **等级要带证据。** `blocking` 指明可达路径（调用方的 `file:line`，或域条款）或违反的合同条目。`non-blocking:contrived` 说明为什么没有域内输入能触达它：列举出的调用点，以及要发生什么改变这种构造才会出现。评审者提出等级；裁决者按与任何裁定相同的 `file:line` + 谓词标准核实。升级总是允许的；把评审者判为 `blocking` 的发现降级，要把那份证据写进处置，与拒绝一样。
 - **等级改变的是处置，不改变报告。** 每条发现仍然要报告、编号，并附上各自的证据；要求评审者只报告阻断发现是范围缩减（`references/recovery.md` 的禁用措辞），L5 会拒绝。同一刻意构造类的多个变体，作为一条发现报告，在其中列举各个变体。
 
@@ -85,13 +85,15 @@
 
 非阻断发现不让评审点保持打开，去向按评审阶段分：
 
-- **设计评审的 `non-blocking:normal`**——不进设计正文，只记入评审历史文件（`references/design-doc-discipline.md`）。实现者确实需要的细节写进 `<task-dir>/impl-notes.md` 的 `## 实现备注`（注明来源发现的编号），随 lane 派发，由实现评审验证。设计评审不随阻断修复把它们写进正文，也不为它们额外开一轮：设计正文每多一段新文字，下一轮就多一段要评审的表面。
+- **设计评审的 `non-blocking:normal`**——不进设计正文，只记入评审历史文件（`references/design-doc-discipline.md`）。实现者确实需要的细节写进 `<task-dir>/impl-notes.md` 的 `## 实现备注`（注明来源发现的编号），随 lane 派发，并附给实现评审，由评审者逐条核对是否落地。设计评审不随阻断修复把它们写进正文，也不为它们额外开一轮：设计正文每多一段新文字，下一轮就多一段要评审的表面。
 - **实现评审的 `non-blocking:normal`**——某个阻断修复反正要开下一轮时，已接受的此类发现可以一起落地、一起评审。在一个没有阻断发现的轮次之后，主 agent 可以在每个评审点额外开一轮专门落地已接受的 `non-blocking:normal` 发现；这一轮照常 `start`、计入轮次上限，上限不够时不开。那一轮提出的任何低于 `blocking` 的内容只记录、不落地。两种落地都以不引入新机制为前提。未落地的记入遗留风险清单。
 - **要加新机制才能解决的非阻断发现，先重新核对等级。** "新机制"指新增表、接口、状态，或跨模块的规则。重新核对的对象是问题，不是解法：按 §4 再问一次"按原样实现，声明域内的真实情况下会不会出错"。
   - 会出错：这条发现原先定级偏低，改判 `blocking`，附可达性证据（与任何升级相同的证据标准），计入本轮 `--blocking`，按 blocking 修复。
   - 不会出错：等级不变，记入遗留风险清单（`- Hardening Plan:` 写这个机制），后续 PR 再做，不在本任务内完成。
 
-  "想加这个机制"不是改判的理由，改判只凭可达性证据。
+  - 拿不准：不改判，按"不会出错"处理。
+
+  "想加这个机制"不是改判的理由，改判只凭可达性证据。§4 的"拿不准时按 `blocking`"只适用于评审者第一次定级，"升级总是允许"指的是附了可达性证据的升级；两条都不能用来在重新核对时把等级抬上去。
 - `non-blocking:contrived`——不在本评审循环内修复，每一条都进遗留风险清单，循环继续推进。
 
 ## 6. 反复出现的类别
@@ -113,7 +115,7 @@
 
 快速档的 impl 是 1 轮独立评审加最多 1 轮修复复核，跨 harness 与第 1 轮并发；aggregate 只在多 lane 时做一次轻量的契约一致性检查，这 1 轮同样 `cross-harness=yes`。
 
-**第 2 轮不收敛就提前停**（标准档的每一个评审点：设计、实现、汇总）。第 2 轮的 blocking 数不少于第 1 轮时，不开第 3 轮，先交给用户。这里的"blocking 数"取被接受的与被拒绝的之和（`blocking + rejected`）。放宽上限解决不了不收敛：再开一轮之前，用户要先看到为什么没有收敛。
+**第 2 轮不收敛就提前停**（标准档的每一个评审点：设计、实现、汇总）。第 2 轮的 blocking 数不为零、且不少于第 1 轮时，不开第 3 轮，先交给用户。这里的"blocking 数"取被接受的与被拒绝的之和（`blocking + rejected`），脚本的判据是第 2 轮 ≥ max(第 1 轮, 1)。第 2 轮一条都没报不算不收敛：两轮都没有新 blocking、只剩待定项时，用户回答后开第 3 轮复审是正常路径。放宽上限解决不了不收敛：再开一轮之前，用户要先看到为什么没有收敛。
 
 **停下来交给用户**：到上限或提前停时，`review-round.sh start` 以 exit 3 拒绝开新一轮，并输出各轮走势（`status` 里这个评审点显示 `gate=needs-grant` 或 `gate=not-converging`）。主 agent 既不悄悄关闭评审点，也不自动继续，而是用一条消息交给用户，内容依次是：
 
@@ -126,6 +128,8 @@
 3. **四个选项，附推荐和一句理由：**
    - **再开一轮**——剩余问题涉及安全或数据、或者真实路径上的缺陷还在减少时，推荐这一项。用户批准后运行 `review-round.sh grant <point> --reason <用户原话要点>`；一次授权只管一轮，下一次再交用户。
    - **带着进实现**——只剩细节类时，推荐这一项。每条剩余 blocking 写成 `<task-dir>/impl-notes.md` `## 带进实现的 blocking` 里一个必须通过的测试项，随 lane 派发，交付前逐条核对已落地；然后 `review-round.sh close <point> --outcome carried --by user --reason <用户原话要点>`。
+     - 设计评审点：这些条目在写明的范围内优先于设计正文，lane 按它实现，实现评审拿到 `impl-notes.md` 逐条核对测试存在并通过。
+     - 实现和汇总评审点：剩余 blocking 照修，不再开评审轮；每条同样写成必须通过的测试项记进 `impl-notes.md`，由交付核验逐条确认。
    - **接受为遗留风险**——每条写进遗留风险清单，状态注明是用户在停下时接受的，然后 `review-round.sh close <point> --outcome residual --by user --reason <用户原话要点>`。
    - **拆成加固任务**——把清单写进新任务的输入（新任务重新选档），本任务在最终报告里列出它，然后 `close <point> --outcome split --by user --reason …`。
 
@@ -171,7 +175,7 @@
 |---|---|
 | `open <point> --stage design\|impl\|aggregate [--kind main\|aux] [--tier standard\|strict]` | 登记（或升档重开）评审点 |
 | `start <point> [--full --reason …] [--docs <path>...]` | 开新的一轮；上一轮没 `result`、超过上限且没有授权、标准档第 2 轮不收敛且没有授权（§7）、严格档缺收口检查、最近一次收口检查是 `escalate` 且没有授权、或评审点已关闭时 exit 3，并输出该怎么做。design 评审点另外保存文档快照并输出修订量（§2） |
-| `result <point> --blocking N --rejected R [--behavior M] [--induced I] [--pending P]` | 记录本轮结果：接受的 blocking 数、被拒绝或降级的 blocking 数、改变行为的条数、上一轮修订带出的条数、仍在等用户回答的条数（有档位的任务第 2 轮起这两项必填） |
+| `result <point> --blocking N --rejected R --induced I --pending P [--behavior M]` | 记录本轮结果：接受的 blocking 数、被拒绝或降级的 blocking 数、上一轮修订带出的条数、仍在等用户回答的条数、改变行为的条数（有档位的任务第 2 轮起 `--rejected`、`--induced`、`--pending` 必填） |
 | `grant <point> --reason …` | 用户批准额外一轮，一次一轮 |
 | `check <point> --outcome continue\|class-fix\|reorder\|escalate --reason …` | 严格档收口检查 |
 | `close <point> --outcome passed\|carried\|residual\|split [--by user] --reason …` | 关闭评审点；`passed` 要求最近一轮 `blocking=0`、`rejected=0` 且 `pending` 不大于 0；`carried` / `residual` / `split` 要求 `--by user` |
