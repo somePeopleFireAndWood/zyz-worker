@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test-review-round.sh — the execute-task tier mechanics (design §10.3–§10.5,
-# §10.7 items 1, 2, 9, §10.8 items 1, 2, 5, 6, 7, §11.4, §11.7 items 2, 4, 7):
+# §10.7 items 1, 2, 9, §10.8 items 1, 2, 5, 6, 7, §11.4, §11.7 items 2, 4, 7, §11.8):
 #   * hooks/scripts/review-round.sh (+ review_round.py): open / start / result /
 #     grant / check / close / tier / status, the per-tier caps, the strict-tier
 #     convergence-check gate, mode and cross-harness, forced full rounds,
@@ -9,8 +9,9 @@
 #     (fail open), validation, atomic writes that never touch other content,
 #     parallel writers sharing expect.sh's lock;
 #   * §11.4 (section L): the standard tier's early stop when round 2 did not
-#     converge, the four-way hand-over to the user, result --induced /
-#     --pending, close --outcome carried, pending keeping `passed` shut, the
+#     converge, the three-way hand-over to the user (§11.8: `close` takes
+#     no fourth outcome), result --induced / --pending, pending keeping
+#     `passed` shut, the
 #     design-document snapshots and the revision size (delta / growing),
 #     rows from before these fields;
 #   * §11.7 (section M, and the N1 cases of L2): --rejected / --induced /
@@ -56,8 +57,8 @@
 #  * That every mistyped path in the `- 设计文档:` line is reported: a piece
 #    without backticks whose directory does not exist either is taken for
 #    prose and skipped without a note.
-#  * That the user chose `carried` (or a grant after the early stop): as for
-#    `residual` / `split`, `--by user` is the main agent's word.
+#  * That the user chose a grant after the early stop: as for `residual` /
+#    `split`, `--by user` is the main agent's word.
 #
 # Mutation record (2026-11-26, each mutant applied to an out-of-tree copy of
 # hooks/ + scripts/ and run against this suite; every one turns a check red):
@@ -121,8 +122,8 @@
 #  N7  decide(): early stop on every tier
 #  N8  decide(): early stop on design points only
 #  N9  ask_user(): no trend in a refusal
-#  N10 ask_user(): the carried option missing
-#  N11 decide(): cap refusal without the four choices
+#  N10 (retired with the option it guarded, §11.8 — see C1, C2)
+#  N11 decide(): cap refusal without the choices
 #  N12 decide(): escalate refusal without the trend / choices
 #  N13 cmd_result(): --induced / --pending never required
 #  N14 cmd_result(): ... required on a task without a Tier
@@ -137,8 +138,7 @@
 #  N18 cmd_result(): induced not written       N19 ... pending not written
 #  N20 review_line(): induced= / pending= before behavior=
 #  N21 cmd_close(): passed ignores pending
-#  N22 cmd_close(): carried without --by user
-#  N23 parse_row(): carried is not a valid Review-Close outcome
+#  N22, N23 (retired, §11.8)
 #  N24 parse_row(): induced / pending required (old rows invalid)
 #  N25 parse_row(): pending without a result accepted
 #  N26 parse_row(): any delta value accepted
@@ -205,6 +205,19 @@
 #  R23 take_snapshot(): a stale source record of an earlier set kept
 #  R24 cmd_start(): the document line's note for unreadable paths dropped
 #  R25 find_docs(): a bare `/` or `..` in the prose reported
+#
+# Mutation record for §11.8 (2026-11-27, the fourth choice removed; same
+# method, each turns a check red):
+#  C1  CLOSES: the removed outcome is accepted by `close` again
+#  C2  ask_user(): the refusals offer four choices again
+#  C3  ask_user(): the residual choice missing from the refusals
+#  C4  ask_user(): the diagnosis recommends the removed choice again
+#  C5  ask_user(): the hand-over line says four choices again
+#  C6  parse_row(): a row with the removed outcome reads as a close again
+#  C7  ask_user(): option 1 loses "or the fix is known" (the wording
+#      review-closure.md §7 gives)
+# N10, N22 and N23 guarded the removed outcome and are retired; N9, N11, N12
+# re-run on the new text.
 # Not killable here: "early stop at round >= 3" (every standard cap is 3, so
 # a later round is refused by the cap first — equivalent under the caps).
 # M46–M48 (N11, lanes/ in the unharvested texts of watchdog.sh and
@@ -261,6 +274,13 @@ mk_status() {
 }
 rr() { bash "$RR" --task "$T" "$@"; }
 sha() { python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
+# no_fourth <text> <label>: the choice dropped in §11.8 is nowhere in <text>.
+no_fourth() {
+    local w
+    for w in carried 带着进实现 带进实现 四选一 四个选项 "(4)" impl-notes; do
+        lacks "$1" "$w" "$2: no '$w' (§11.8)"
+    done
+}
 # run_rounds <point> <k>: k × (start + result); prints the last start rc. The
 # blocking count goes down to 1 (k, k-1, … 1), so a standard point is not
 # stopped before round 3 for not converging (§11.3-7; section L tests that).
@@ -355,8 +375,12 @@ cap_case() { # <tier> <stage> <cap>
     if [ "$cap" -eq 0 ]; then
         has "$out" "快速档不派设计评审" "B $tier/$stage: cap 0 explains the fast tier has no design review"
     else
-        has "$out" "四选一" "B $tier/$stage: refusal hands the user the four options (§11.3-8)"
-        has "$out" "close $p --outcome carried --by user" "B $tier/$stage: ... one of them is carrying the rest into implementation"
+        has "$out" "请用户三选一" "B $tier/$stage: refusal hands the user the three options (§11.3-8, §11.8)"
+        has "$out" "或者修复方案已经明确时建议这一项" "B $tier/$stage: ... another round is recommended when the fix is known"
+        has "$out" "  (2) 接受为遗留风险：" "B $tier/$stage: ... the second one is the residual risk"
+        has "$out" "close $p --outcome residual --by user" "B $tier/$stage: ... with its command"
+        has "$out" "  (3) 拆成加固任务：" "B $tier/$stage: ... the third one is the hardening task"
+        no_fourth "$out" "B $tier/$stage: refusal"
         has "$out" "  r$cap blocking=1 rejected=0 induced=0 pending=0 delta=-" "B $tier/$stage: ... with the trend of the rounds"
         lacks "$out" "没有收敛" "B $tier/$stage: ... as a cap refusal, not the early stop"
     fi
@@ -519,7 +543,8 @@ run_rounds impl-main 3 >/dev/null
 out="$(rr status)"
 has "$out" "Tier: standard" "F status shows the tier"
 has "$out" "impl-main stage=impl kind=main tier=standard round=3 blocking=1 rejected=0 behavior=- history=3→2→1 cap=3 closed=no next=4 mode=incremental cross-harness=no gate=needs-grant" "F status line"
-has "$out" "四选一" "F status explains a blocked next round"
+has "$out" "三选一" "F status explains a blocked next round"
+no_fourth "$out" "F status"
 out="$(rr status impl-main)"; rc_is "$?" 0 "F status <point>"
 rr status nope >/dev/null 2>&1; rc_is "$?" 2 "F status <unknown point> -> exit 2"
 
@@ -832,7 +857,7 @@ rc_is "$rc" 03 "J strict point: round 4 needs a convergence check"
 has "$out" "check design-replay --outcome" "J ... a check, not the standard cap's grant"
 rr check design-replay --outcome continue --reason "仍在收敛" >/dev/null
 rr start design-replay >/dev/null 2>&1; rc_is "$?" 0 "J strict point: past the standard design cap of 3"
-grep -q '^- Review: point=design-replay; .*tier=strict; round=4;' "$T/status.md" && pass "J start carries the point tier onto new rows" || fail "J tier carried"
+grep -q '^- Review: point=design-replay; .*tier=strict; round=4;' "$T/status.md" && pass "J start keeps the point tier on new rows" || fail "J tier kept"
 out="$(GATE_TIER=strict gate zyz-worker:review-agent "review-point=design-replay round=4 mode=incremental")"
 [ -z "$out" ] && pass "J gate: dispatch Tier = the point's effective tier (strict) -> allow" || fail "J gate point tier" "$out"
 out="$(GATE_TIER=standard gate zyz-worker:review-agent "review-point=design-replay round=4 mode=incremental")"
@@ -880,7 +905,8 @@ mk_status "$T" ""
 rr open dz --stage design --tier strict >/dev/null 2>&1; rc_is "$?" 2 "J --tier on a task without a Tier -> exit 2"
 
 # ---------------------------------------------------------------------------
-# L — §11.4: convergence — the early stop, induced / pending, carried,
+# L — §11.4: convergence — the early stop, induced / pending, the three
+#     choices and no fourth outcome (§11.8),
 #     the revision size of design rounds (snapshots and delta)
 # ---------------------------------------------------------------------------
 # two_rounds <tier-line> <point> <stage> <r1: b rj> <r2: b rj> [open args…]:
@@ -908,14 +934,17 @@ has "$out" "第 2 轮没有收敛" "L1 ... says round 2 did not converge"
 has "$out" "第 1 轮 5 条、第 2 轮 5 条" "L1 ... with the two totals"
 has "$out" "  r1 blocking=5 rejected=0 induced=- pending=- delta=-" "L1 ... the trend: round 1"
 has "$out" "  r2 blocking=5 rejected=0 induced=0 pending=0 delta=-" "L1 ... the trend: round 2"
-has "$out" "四选一" "L1 ... hands the user the four options"
+has "$out" "请用户三选一" "L1 ... hands the user the three options"
 has "$out" "原有漏报" "L1 ... names the diagnosis to give (§11.3-8)"
 has "$out" "结构类" "L1 ... structure vs detail"
+has "$out" "  (1) 再开一轮（剩余问题涉及安全或数据、真实路径上的缺陷还在减少、或者修复方案已经明确时建议这一项）：" "L1 ... option 1 names the three cases to recommend another round (as review-closure.md §7)"
 has "$out" "review-round.sh grant dm --reason" "L1 ... option 1: grant"
 has "$out" "review-round.sh start dm" "L1 ... then start"
-has "$out" "review-round.sh close dm --outcome carried --by user --reason" "L1 ... option 2: carried"
-has "$out" "review-round.sh close dm --outcome residual --by user --reason" "L1 ... option 3: residual"
-has "$out" "review-round.sh close dm --outcome split --by user --reason" "L1 ... option 4: split"
+has "$out" "review-round.sh close dm --outcome residual --by user --reason" "L1 ... option 2: residual"
+has "$out" "review-round.sh close dm --outcome split --by user --reason" "L1 ... option 3: split"
+[ "$(printf '%s\n' "$out" | grep -c '^  ([0-9]) ')" -eq 3 ] && pass "L1 ... exactly three options" || fail "L1 option count" "$out"
+has "$out" "每条写明可达性和影响。" "L1 ... the diagnosis ends on reachability and impact"
+no_fourth "$out" "L1 early-stop refusal"
 has "$(rr status dm)" "gate=not-converging" "L1 status shows gate=not-converging"
 rr grant dm --reason "用户：再开一轮" >/dev/null
 rr start dm >/dev/null 2>&1; rc_is "$?" 0 "L1 the user's grant releases round 3"
@@ -939,6 +968,9 @@ rr start dm >/dev/null 2>&1; rc_is "$?" 3 "L1 a round 1 without --rejected count
 out="$(rr result dm --blocking 1 --rejected 1 --induced 0 --pending 0)"
 has "$out" "下一轮现在还不能开" "L1 result itself says the next round is held"
 has "$out" "第 2 轮没有收敛" "L1 ... and why"
+has "$out" "请用户三选一" "L1 ... with the three options"
+has "$out" "close dm --outcome split --by user" "L1 ... and their commands"
+no_fourth "$out" "L1 result's note"
 # Other stages, other tiers.
 two_rounds "- Tier: standard" im impl 2 0 2 0
 out="$(rr start im 2>&1)"; rc=$?
@@ -967,8 +999,12 @@ rr open esc --stage design >/dev/null; run_rounds esc 2 >/dev/null
 rr check esc --outcome escalate --reason "交用户" >/dev/null
 out="$(rr start esc 2>&1)"
 has "$out" "  r2 blocking=1 rejected=0 induced=0 pending=0 delta=-" "L1 escalate refusal carries the trend"
-has "$out" "close esc --outcome carried --by user" "L1 ... and the four options"
+has "$out" "请用户三选一" "L1 ... and the three options"
+has "$out" "或者修复方案已经明确时建议这一项" "L1 ... another round is recommended when the fix is known"
 has "$out" "grant esc --reason" "L1 ... grant among them"
+has "$out" "close esc --outcome residual --by user" "L1 ... residual"
+has "$out" "close esc --outcome split --by user" "L1 ... split"
+no_fourth "$out" "L1 escalate refusal"
 
 # L2 — result --rejected / --induced / --pending: all three from round 2 on
 # a tiered task (§11.4, §11.7-4).
@@ -1036,7 +1072,8 @@ has "$(rr start dm 2>&1)" "--rejected <R> [--induced <I>] [--pending <P>]" "L2 n
 rr result dm --blocking 2 >/dev/null; rr start dm >/dev/null 2>&1
 has "$(rr start dm 2>&1)" "--rejected <R> --induced <I> --pending <P>" "L2 needs-result at round 2 asks for --induced and --pending"
 
-# L3 — pending keeps `passed` shut; carried.
+# L3 — pending keeps `passed` shut; `close` takes passed / residual / split
+#      and nothing else (§11.8).
 # pending is the point's state: blockings still waiting on a user answer,
 # earlier rounds' included; the reviewer does not report them again, so a
 # later round can have blocking=0 rejected=0 and still not pass.
@@ -1064,27 +1101,51 @@ rr close dm --outcome passed --reason x >/dev/null; rc_is "$?" 0 "L3 pending=- c
 mk_status "$T" "- Tier: standard"
 rr open dm --stage design >/dev/null; rr start dm >/dev/null 2>&1; rr result dm --blocking 1 --rejected 0 --pending 1 >/dev/null
 has "$(rr close dm --outcome passed --reason x)" "在等用户回答" "L3 with blocking left too, the refusal names the pending ones first"
+# §11.8: the fourth outcome is gone — an unknown outcome like any other,
+# with or without --by user.
 mk_status "$T" "- Tier: standard"
 rr open dm --stage design >/dev/null; rr open im --stage impl >/dev/null
 rr start dm >/dev/null 2>&1; rr result dm --blocking 3 --rejected 0 >/dev/null
 before="$(sha "$T/status.md")"
-out="$(rr close dm --outcome carried --reason "细节类带进实现")"; rc=$?
-rc_is "$rc" 3 "L3 close carried without --by user -> exit 3"
-has "$out" "close dm --outcome carried --by user" "L3 ... names the command"
-[ "$before" = "$(sha "$T/status.md")" ] && pass "L3 ... writes nothing" || fail "L3 refused carried wrote"
-rr close dm --outcome carried --by user --reason "用户：细节类带进实现" >/dev/null; rc_is "$?" 0 "L3 close carried --by user"
-grep -q '^- Review-Close: point=dm; round=1; outcome=carried; at=[0-9]*; reason=用户：细节类带进实现$' "$T/status.md" \
-    && pass "L3 Review-Close row with outcome=carried" || fail "L3 carried row"
-out="$(rr status)"
-has "$out" "closed=carried@1" "L3 status shows the carried close"
-lacks "$out" "INVALID" "L3 ... the row is valid"
-has "$out" "unclosed: im" "L3 ... and the point no longer counts as unclosed"
-rr start dm >/dev/null 2>&1; rc_is "$?" 3 "L3 start on a carried point -> exit 3"
-out="$(gate zyz-worker:review-agent "review-point=dm round=1 mode=full")"
-denied "$out" && pass "L3 gate: a carried point takes no more review dispatches" || fail "L3 gate carried" "$out"
-has "$out" "已经关闭（carried）" "L3 ... and says how it was closed"
-rr open dm >/dev/null; rc_is "$?" 0 "L3 a carried point can be reopened"
-[ "$(rr start dm | head -1)" = "round=1 mode=full cross-harness=yes" ] && pass "L3 ... and counts from round 1 again" || fail "L3 reopen carried"
+for by in "" "--by user"; do
+    # shellcheck disable=SC2086
+    out="$(rr close dm --outcome carried $by --reason "细节类带进实现" 2>&1)"; rc=$?
+    rc_is "$rc" 2 "L3 close --outcome carried ${by:-(no --by)} -> exit 2, an unknown outcome"
+    has "$out" "--outcome must be one of passed/residual/split" "L3 ... the message lists the three outcomes"
+done
+[ "$before" = "$(sha "$T/status.md")" ] && pass "L3 ... nothing written" || fail "L3 refused outcome wrote"
+has "$(rr status)" "unclosed: dm, im" "L3 ... the point stays open"
+out="$(rr close 2>&1)"; has "$out" "--outcome passed|residual|split" "L3 close usage names the three outcomes"
+lacks "$out" "carried" "L3 ... and no fourth"
+lacks "$(bash "$RR" 2>&1)" "carried" "L3 the script's usage text does not mention the removed outcome"
+rr close dm --outcome residual --by user --reason "用户：接受为遗留风险" >/dev/null; rc_is "$?" 0 "L3 residual --by user still closes"
+# A hand-written row with that outcome is a row with an unknown outcome like
+# any other: reported as INVALID and ignored — nothing throws, the point
+# stays open and goes on.
+mk_status "$T" "- Tier: standard"
+rr open dm --stage design >/dev/null; rr open im --stage impl >/dev/null
+rr start dm >/dev/null 2>&1; rr result dm --blocking 3 --rejected 0 >/dev/null
+python3 - "$T/status.md" <<'PY'
+import io, sys
+p = sys.argv[1]
+lines = io.open(p, encoding="utf-8").read().split("\n")
+i = max(k for k, l in enumerate(lines) if l.startswith("- Review: point=dm;"))
+lines.insert(i + 1, "- Review-Close: point=dm; round=1; outcome=carried; at=1795750000; reason=手写的行")
+io.open(p, "w", encoding="utf-8").write("\n".join(lines))
+PY
+out="$(rr status 2>&1)"; rc=$?
+rc_is "$rc" 0 "L3 a row with outcome=carried: status does not fail"
+lacks "$out" "Traceback" "L3 ... and does not throw"
+has "$out" "INVALID  - Review-Close: point=dm; round=1; outcome=carried;" "L3 ... the row is reported as INVALID"
+has "$out" "outcome must be passed/residual/split" "L3 ... with the three valid outcomes"
+has "$out" "closed=no" "L3 ... the point is not closed by it"
+has "$out" "unclosed: dm, im" "L3 ... and still counts as unclosed"
+out="$(rr start dm 2>&1)"; rc=$?
+rc_is "$rc" 0 "L3 ... start on that point does not fail: round 2 starts"
+lacks "$out" "Traceback" "L3 ... and does not throw"
+has "$out" "round=2 mode=incremental" "L3 ... the round line is printed"
+out="$(gate zyz-worker:review-agent "review-point=dm round=2 mode=incremental" 2>&1)"
+[ -z "$out" ] && pass "L3 gate: reads that status.md and lets the recorded round through" || fail "L3 gate with an INVALID close row" "$out"
 
 # L4 — the revision size of design rounds: snapshots, delta, growing.
 # mk_docs <task-dir> <设计文档 value>: status.md with that metadata line.
@@ -1162,7 +1223,9 @@ two_rounds "- Tier: standard" dm design 5 0 5 0
 out="$(rr status)"
 [ "$(printf '%s\n' "$out" | grep -c 'r2 blocking=5 ')" -eq 1 ] && pass "L4 status: a held point lists its rounds once" || fail "L4 status repeats the trend" "$out"
 lacks "$out" "各轮走势" "L4 status: ... without the refusal's own trend block"
-has "$out" "    (2) 带着进实现" "L4 status: the next step is indented under the point"
+has "$out" "    (2) 接受为遗留风险" "L4 status: the next step is indented under the point"
+has "$out" "    (3) 拆成加固任务" "L4 status: ... all three options"
+no_fourth "$out" "L4 status of a held point"
 [ "$(printf '%s\n' "$out" | tail -1)" = "unclosed: dm" ] && pass "L4 status: last line unchanged with a held point" || fail "L4 status last line (held)"
 # Path resolution. The status line: the task dir first, then cwd.
 CW="$SANDBOX/cwd"; mkdir -p "$CW/design" "$SANDBOX/home/docs"
@@ -1580,7 +1643,7 @@ assert not any(h.get("async") for h in g["hooks"])
 PY
 for f in "$RR" "$GATE"; do [ -x "$f" ] && pass "K executable: ${f#"$ROOT"/}" || fail "K executable: ${f#"$ROOT"/}"; bash -n "$f" && pass "K syntax: ${f#"$ROOT"/}" || fail "K syntax"; done
 for w in review-round.sh review-gate.sh ZYZ_REVIEW_GATE_DISABLE "mode=incremental" "Review-Grant" \
-         "--induced" "--pending" "carried" "not-converging" "reviews/snap" "--docs" "growing=yes|no" "四选一" \
+         "--induced" "--pending" "not-converging" "reviews/snap" "--docs" "growing=yes|no" "三选一" \
          "只比较两轮都采集到的文档" "sources.json" '`--rejected`、`--induced`、`--pending` 三个都必填' "嵌套列表" \
          '`blocking + rejected` 不为零、且不少于第 1 轮' "第 2 轮 ≥ max(第 1 轮, 1)"; do
     grep -q -- "$w" "$ROOT/hooks/README.md" && pass "K hooks/README.md documents $w" || fail "K README lacks $w"
@@ -1591,6 +1654,21 @@ for f in hooks/README.md docs/design/watchdog-design.md; do
     grep -q -- '`blocking + rejected` 不为零、且不少于第 1 轮' "$ROOT/$f" && pass "K $f states the early stop with the zero exception" || fail "K $f early-stop wording"
     grep -q -- '`blocking + rejected` 不少于第 1 轮' "$ROOT/$f" && fail "K $f still has the early stop without the zero exception" || pass "K $f has no early-stop wording without the zero exception"
 done
+# The script and the prompt name the same cases for recommending another round.
+RCM="$ROOT/skills/execute-task/references/review-closure.md"
+if [ -f "$RCM" ]; then
+    grep -q -- '剩余问题涉及安全或数据、真实路径上的缺陷还在减少、或者修复方案已经明确时' "$RCM" \
+        && grep -q -- '剩余问题涉及安全或数据、真实路径上的缺陷还在减少、或者修复方案已经明确时' "$H/review_round.py" \
+        && pass "K review_round.py and review-closure.md give the same three cases for another round" || fail "K the recommendation for another round differs between script and prompt"
+else
+    fail "K review-closure.md missing"
+fi
+# §11.8: the fourth choice is in none of the documents and comments of this contract.
+for f in hooks/README.md docs/design/watchdog-design.md hooks/scripts/review-round.sh; do
+    grep -qE 'carried|带着进实现|四选一|四个选项|four choices' "$ROOT/$f" && fail "K $f still mentions the removed fourth choice" "$(grep -nE 'carried|带着进实现|四选一|四个选项|four choices' "$ROOT/$f" | head -3 | cut -c1-120)" \
+        || pass "K $f does not mention the removed fourth choice"
+done
+grep -q 'outcome=<passed|residual|split>' "$ROOT/hooks/README.md" && pass "K hooks/README.md gives the three Review-Close outcomes" || fail "K README Review-Close outcomes"
 bash "$RR" 2>&1 | grep -q 'round 2 >= max(round 1,' && pass "K review-round.sh usage states the early stop with the zero exception" || fail "K usage early-stop wording"
 
 echo

@@ -28,8 +28,8 @@
 #             rejected) and no fewer than round 1 — round 2 >= max(round 1,
 #             1) — and has no grant for round 3, or an escalate check not
 #             yet granted -> hand the point to the user
-#             with the trend of the rounds and four choices (grant / close
-#             carried / residual / split); strict tier without a convergence
+#             with the trend of the rounds and three choices (grant / close
+#             residual / close split); strict tier without a convergence
 #             check after round n-1 -> run `check`; last round has no result;
 #             point closed.
 #             A design point also measures the revision it reviews: the
@@ -61,11 +61,11 @@
 #   review-round.sh grant <point> --reason <text>
 #             the user approved ONE extra round (the next one).
 #   review-round.sh check <point> --outcome continue|class-fix|reorder|escalate --reason <text>
-#   review-round.sh close <point> --outcome passed|carried|residual|split [--by user] --reason <text>
+#   review-round.sh close <point> --outcome passed|residual|split [--by user] --reason <text>
 #             passed: the latest round has a result with blocking=0,
 #             rejected=0 and no pending;
-#             carried (the rest goes into implementation) / residual / split:
-#             the user's choice when the point is handed over, --by user.
+#             residual / split: the user's choice when the point is handed
+#             over, --by user.
 #   review-round.sh tier fast|standard|strict --reason <text> [--by user|agent]
 #             a downgrade needs --by user.
 #   review-round.sh status [<point>]

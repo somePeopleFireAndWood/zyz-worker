@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Review-round bookkeeping for the execute-task tiers (design §10.4, §10.5,
-§10.7 items 1, 2 and 9, §10.8, §11.4, §11.7 items 2, 4 and 7).
+§10.7 items 1, 2 and 9, §10.8, §11.4, §11.7 items 2, 4 and 7, §11.8).
 
 How many rounds a review point may run, when a strict-tier point owes a
 convergence check, and whether a point is closed are mechanical rules: this
@@ -14,7 +14,7 @@ Rows live in the single ``## 评审收口`` section of ``status.md``:
     - Review: point=<id>; stage=<s>; kind=<main|aux>[; tier=<t>]; round=<n>; started=<unix>; blocking=<n|->; rejected=<n|->; behavior=<n|->; induced=<n|->; pending=<n|->[; delta=+<a>/-<b>][; mode=full; reason=<text>]
     - Review-Grant: point=<id>; round=<n>; at=<unix>; reason=<text>
     - Review-Check: point=<id>; round=<n>; outcome=<o>; at=<unix>; reason=<text>
-    - Review-Close: point=<id>; round=<n>; outcome=<passed|carried|residual|split>; at=<unix>; reason=<text>
+    - Review-Close: point=<id>; round=<n>; outcome=<passed|residual|split>; at=<unix>; reason=<text>
 
 One ``Review`` row per round; ``open`` writes ``round=0`` (registered, not yet
 started). ``blocking`` counts the accepted blocking findings of the round,
@@ -68,7 +68,7 @@ RANK = {"fast": 0, "standard": 1, "strict": 2}
 STAGES = ("design", "impl", "aggregate")
 KINDS = ("main", "aux")
 OUTCOMES = ("continue", "class-fix", "reorder", "escalate")
-CLOSES = ("passed", "carried", "residual", "split")
+CLOSES = ("passed", "residual", "split")
 # Total rounds per review point, first round included. None = no cap.
 CAPS = {
     "fast": {"design": 0, "impl": 2, "aggregate": 1},
@@ -361,26 +361,24 @@ def result_usage(point, n, tier):
 
 def ask_user(point, pt, head, with_trend=True):
     """A refusal that hands the point to the user (§11.3-8): what happened,
-    the trend of the rounds, the diagnosis to give, the four choices with the
-    exact command of each."""
+    the trend of the rounds, the diagnosis to give, the three choices with
+    the exact command of each."""
     lines = [head]
     if with_trend:
         lines.append("各轮走势（blocking = 被接受，rejected = 被拒绝或降级，induced = 上一轮修订带出，pending = 当时仍在等用户回答，"
                      "delta = 本轮评审的修订量 +增行/-删行）：")
         lines.extend("  " + t for t in trend(pt))
     lines += [
-        "下一步：用一条消息把诊断交给用户（§11.3 第 8 条），给出你的建议，请用户四选一。",
+        "下一步：用一条消息把诊断交给用户（§11.3 第 8 条），给出你的建议，请用户三选一。",
         "诊断：(a) 各轮 blocking 走势和各轮修订量（上面的数字）；(b) 本轮 blocking 的来源——原有漏报、上一轮修订带出"
         "（含只落地一半的）、等用户决定各几条；(c) 剩余 blocking 分成结构类（要改模块划分、接口或数据模型）和细节类"
-        "（某个模块内部的规则），每条写明可达性和影响。只剩细节类时推荐「带着进实现」。",
+        "（某个模块内部的规则），每条写明可达性和影响。",
         "选项：",
-        "  (1) 再开一轮（剩余问题涉及安全或数据、真实路径的缺陷还在减少时建议这一项）：用户批准后 "
+        "  (1) 再开一轮（剩余问题涉及安全或数据、真实路径上的缺陷还在减少、或者修复方案已经明确时建议这一项）：用户批准后 "
         "`%s grant %s --reason <用户批准的原话要点>`，再 `%s start %s`" % (cli(), point, cli(), point),
-        "  (2) 带着进实现：每条写成 impl-notes.md「带进实现的 blocking」里必须通过的测试项，交付前逐条核对，然后 "
-        "`%s close %s --outcome carried --by user --reason <用户的原话要点>`" % (cli(), point),
-        "  (3) 接受为遗留风险：写进 residual-risks.md，然后 "
+        "  (2) 接受为遗留风险：写进 residual-risks.md，然后 "
         "`%s close %s --outcome residual --by user --reason <用户的原话要点>`" % (cli(), point),
-        "  (4) 拆成加固任务：`%s close %s --outcome split --by user --reason <用户的原话要点>`" % (cli(), point),
+        "  (3) 拆成加固任务：`%s close %s --outcome split --by user --reason <用户的原话要点>`" % (cli(), point),
     ]
     return "\n".join(lines)
 
@@ -635,7 +633,7 @@ def compare_plan(prev, cur, absent):
     """What round n's snapshot <cur> is compared with in round n-1's <prev>
     (§11.7-2): only a document both rounds captured is diffed. Returns
     ([(name, old file or None, new file or None)], notes); <absent> — the
-    documents this round could not capture — grows by the ones carried over.
+    documents this round could not capture — grows by the ones inherited.
 
     A document only <prev> has: its source is gone -> a deletion; its source
     is still there (over the size limit now, or not listed this round) -> not
@@ -1103,7 +1101,7 @@ def cmd_check(path, args):
 
 def cmd_close(path, args):
     if not args:
-        die("usage: review-round.sh close <point> --outcome passed|carried|residual|split [--by user] --reason <text>")
+        die("usage: review-round.sh close <point> --outcome passed|residual|split [--by user] --reason <text>")
     point = valid_point(args[0])
     o = opts_of(args[1:], ("--outcome", "--reason", "--by"))
     outcome = o.get("outcome", "")
@@ -1126,17 +1124,17 @@ def cmd_close(path, args):
                               "用户的回答不需要改动设计时，用 `result` 重填这一轮的结果，--pending 写 0。"
                               % (point, row["pending"], n, cli(), point))
             if row["blocking"] != 0:
-                raise Refused("评审点 %s 第 %d 轮还有 %d 条 blocking，不能以 passed 关闭。修复后再开一轮；到上限时交用户四选一。"
+                raise Refused("评审点 %s 第 %d 轮还有 %d 条 blocking，不能以 passed 关闭。修复后再开一轮；到上限时交用户三选一。"
                               % (point, n, row["blocking"]))
             if row.get("rejected") is None:
                 raise Refused("评审点 %s 第 %d 轮没有记录被拒绝的 blocking 条数：先 `%s result %s --blocking 0 --rejected <R>`"
                               "（没有被拒绝的就写 0），再 close。" % (point, n, cli(), point))
             if row["rejected"] != 0:
                 raise Refused("评审点 %s 第 %d 轮有 %d 条 blocking 被拒绝或降级，还没有独立方复核，不能以 passed 关闭（§10.8-1）。"
-                              "开下一轮，把被拒绝的 blocking 及理由交给评审者复核；僵持到上限时交用户四选一。"
+                              "开下一轮，把被拒绝的 blocking 及理由交给评审者复核；僵持到上限时交用户三选一。"
                               % (point, n, row["rejected"]))
         elif by != "user":
-            raise Refused("以 %s 关闭评审点 %s 是用户在四选一里做的决定（§4.4、§11.3 第 8 条）。用户明确选择后再运行 "
+            raise Refused("以 %s 关闭评审点 %s 是用户在三选一里做的决定（§4.4、§11.3 第 8 条）。用户明确选择后再运行 "
                           "`%s close %s --outcome %s --by user --reason <用户的原话要点>`。" % (outcome, point, cli(), point, outcome))
         line = "- Review-Close: point=%s; round=%d; outcome=%s; at=%d; reason=%s" % (point, n, outcome, now(), reason)
         new = append_rows(text, [line])
