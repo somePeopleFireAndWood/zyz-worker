@@ -16,11 +16,10 @@
 - 一次停下只发一条消息：问题编号列出，每条附推荐和一句理由。用户回答"全部按建议"就逐条采纳，逐条记进 `decisions.md`。
 - 用自然语言提问，不用 AskUserQuestion 工具。在同一条回复里、结束这一轮之前运行 `expect.sh set <key> user --reason <用户一看就懂的一句话>`，用户据此收到 IM。问题挂着但还有能独立推进的活时用 `set <key> user --watch --reason …`，然后接着做。
 - 评审裁决后要用户定的问题当轮就问，做法见 `references/review-closure.md` §6。
-- 编排模式下用户经 `answer.md` 回复时不用 `user` 声明，见 `references/orchestration-mode.md`。
 
 ## 设计
 
-- **快速档**：按 `templates/change-note.md` 写 `<task-dir>/change-note.md`，用一条消息把现状、改法、不在范围、怎么验证发给用户确认。
+- **快速档**：按 `templates/change-note.md` 写 `<task-dir>/change-note.md`，发给用户确认改法。
 - **标准档、严格档**：按 `templates/design-doc.md` 和 `references/design-doc-discipline.md` 写设计文档，路径记入 `status.md` 的 `- 设计文档:`。
 - 设计评审点按设计的 `## 拆分`：`review-round.sh open design-main --stage design --kind main`，每个附属子功能 `open design-<名> --stage design --kind aux`。每一轮按 `## 评审` 做。
 - **请用户批准**：评审点关闭后按正文重写 `## 快速审阅`，把用户没有亲口说过的范围边界条款和 `## 关键机制` 的清单列进 `### 需要你关注的细节`。用一条消息请用户看 `## 快速审阅`，同时列出 B 类决定和仍未回答的问题，然后等待。
@@ -33,9 +32,9 @@ lane 用 `name` 参数派发（implementation-agent），之后的修复用 Send
 1. **位置**：仓库路径、分支、worktree，或共享 worktree 里属于它的插入区域。不用 `isolation: worktree`：那样派生的 subagent 会落在会话允许的目录之外。
 2. **文件白名单**和标识符前缀。
 3. **规格**：设计文档或 `change-note.md` 的路径和相关章节；`decisions.md`、`impl-notes.md`（存在时）的路径。不发评审历史文件。
-4. **档位**。严格档写明哪些机制的测试由 test-agent 写；给 test-agent 的派发同样附第 3 项。
+4. **档位**。严格档写明哪些机制的测试由 test-agent 写：这些测试由 lane 跑，负对照也由 lane 做，test-agent 报告里的命令由你转给 lane。给 test-agent 的派发同样包含位置、测试文件白名单、规格、资源租约和报告路径。
 5. **资源租约**：分给它的端口组和测试数据库。
-6. **报告路径** `<task-dir>/lanes/<id>.md`；最终消息只含报告路径、一行结论、阻塞项，不用 SendMessage 重发。
+6. **报告路径** `<task-dir>/lanes/<id>.md`；最终消息只含报告路径、结论、阻塞项，各一行，不用 SendMessage 重发。
 
 lane 交付后：
 
@@ -58,7 +57,7 @@ lane 交付后：
 
 每个评审点的每一轮（下文的 § 指 `references/review-closure.md` 的节）：
 
-1. **开轮**：`review-round.sh start <point>`，输出 `round=<n> mode=full|incremental cross-harness=yes|no`。设计拆成多份时加 `--docs <path>...`，每一轮给同一组。以 exit 3 拒绝时照第 6 步做。
+1. **开轮**：`review-round.sh start <point>`，输出 `round=<n> mode=full|incremental cross-harness=yes|no`。设计拆成多份时加 `--docs <path>...`，每一轮给同一组。
 2. **派发** review-agent，prompt 里原样放这两行，各占一行：
 
    ```text
@@ -67,7 +66,7 @@ lane 交付后：
    ```
 
    第一行取自 `start` 的输出；`Tier:` 取这个评审点的生效档位（`review-round.sh status <point>` 显示）。另外给出：
-   - 报告路径 `<task-dir>/reviews/<point>-r<n>.md`；
+   - 报告路径 `<task-dir>/reviews/<point>-r<n>.md`，和报告模板的绝对路径 `<plugin-root>/skills/execute-task/templates/review-report.md`；
    - 设计文档（或 `change-note.md`）的路径，并指明 `## 场景` 在哪里；
    - 被评审的文件或 diff 基线；`decisions.md`、`impl-notes.md`、`residual-risks.md`（存在时）的路径；
    - 正在等用户决定的点和此前被拒绝的发现及理由；
@@ -117,4 +116,4 @@ lane 交付后：
 
 ## PR 评审处理
 
-真实 PR 上的评审意见逐条核实后接受或附理由拒绝，每条都有结果，见 `references/pr-review.md`。
+真实 PR 上的评审意见按 `references/pr-review.md` 逐条处理。

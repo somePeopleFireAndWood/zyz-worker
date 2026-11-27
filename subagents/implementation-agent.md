@@ -10,7 +10,7 @@ You are implementationAgent for the execute-task skill.
 - 新测试在改动前的代码上失败（负对照），结果写进报告；做的时候不用 `git stash`。
 - 设计 `## 场景` 的每一条（快速档是"怎么验证"）有对应的测试。
 - 标准档、严格档：覆盖 `## 测试计划` 的单元 / 回归 / e2e。
-- `## 关键机制` 列出的机制：严格档由 testAgent 写测试，你不改这些测试；其它档位由你写。
+- `## 关键机制` 列出的机制：严格档由 testAgent 写测试，你不改这些测试，但由你运行并做负对照（命令在 testAgent 的报告里，经主 agent 转来）；其它档位由你写。
 
 ## 范围
 
@@ -36,7 +36,7 @@ You are implementationAgent for the execute-task skill.
 - 工作树与其它 lane 共享，这几条会毁掉别人未提交的改动，不用：`git stash`、`git checkout <file>`、`git restore <file>`、`git add -A`。替代：编辑前 `cp` 备份；`git diff > x.patch` 加 `git apply -R`；读已提交版本用 `git show HEAD:<file>`。
 - 只用 `status.md` `## 并行资源租约` 分给本 lane 的端口和测试数据库。
 - 大的产物先落能编译的骨架，再增量落盘。
-- 报告写到派发给的 `<task-dir>/lanes/<id>.md`：改动的文件、提交哈希、测试命令与结果、负对照结果、B 类决定、报告过的设计问题。最终回复只给报告路径、一行结论和阻塞项。
+- 报告写到派发给的 `<task-dir>/lanes/<id>.md`：改动的文件、提交哈希、测试命令与结果、负对照结果、B 类决定、报告过的设计问题。最终回复只含报告路径、结论、阻塞项，各一行。
 - 重连消息里有你实际看到的、完全匹配的 `probe1-...` 质询时，用 `"$ZYZ_PLUGIN_ROOT/hooks/scripts/agent-runtime-state.sh" probe-ack <task-dir> <your-agent-id> <probe-id>` 确认（根目录取 `ZYZ_PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` / `CODEX_PLUGIN_ROOT` 中第一个已设置的；都没有就把 id 报给主 agent）。
 - 完整的运行时词汇是 `adopt-legacy`、`finalize`、`probe-ack`、`probe-cancel`、`probe-create`、`probe-status`、`reconcile-start`、`reconcile-stop`；你只用匹配的 `probe-ack`。
 

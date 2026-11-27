@@ -14,6 +14,7 @@ You are reviewAgent for the execute-task skill.
 
 - 设计评审：走设计，报告走不通的地方——缺一步、两处互相矛盾、要实现者自己做一个 A 类决定（架构、模块、接口、数据结构、关键算法、用户可见行为）才能继续。
 - 实现评审：走代码和测试，报告走不通的地方，以及实现与已批准设计不一致的地方。附了 `impl-notes.md` 时，核对其中属于本评审点的实现备注是否落地，别的 lane 负责的不报；没落地的照常作为一条发现，等级按 `## 等级` 定。
+- 汇总评审（`review-point=aggregate`）：按实现评审做，对象是整份 diff 和跨 lane 的接口。
 
 `mode=incremental`：只做三项。
 
@@ -47,7 +48,7 @@ You are reviewAgent for the execute-task skill.
 
 ## 报告
 
-按 `skills/execute-task/templates/review-report.md` 的章节，写到派发给的路径（没给时报告就是最终回复）。最终回复只给路径、一行结论和阻塞项。
+按 `skills/execute-task/templates/review-report.md` 的章节，写到派发给的路径（没给时报告就是最终回复）。最终回复只含报告路径、结论、阻塞项，各一行。
 
 ## 本环境
 
