@@ -415,7 +415,7 @@ tree-stable 的指纹计算要排除 `.zyz-worker/` 和 `--task-dir` 所在目�
   - `--induced I`：本轮 blocking 里由上一轮修订带出的条数，含只落地一半的。
   - `--pending P`：这个评审点此刻仍在等用户回答的 blocking 条数，包括更早轮次提出、还没回答的。它是一个当前状态，不是本轮 blocking 的子集，所以不和 `blocking + rejected` 比大小。评审者按要求不重复报告待定项，这些项不再计入之后各轮的 `--blocking`，只通过 `--pending` 体现。
   - 字段顺序接在 `behavior=` 之后：`induced=<n|->; pending=<n|->`。
-  - 有档位的任务从第 2 轮起，`--induced` 必填，缺了以 exit 2 拒绝。旧任务不要求。
+  - 有档位的任务从第 2 轮起，`--induced` 和 `--pending` 都必填（没有就填 0），缺了以 exit 2 拒绝。旧任务不要求。
 - **`start` 的提前停：** 生效档位是 `standard`、准备开第 3 轮、第 2 轮的 `blocking + rejected` 不少于第 1 轮、且没有本轮 `grant` 时，以 exit 3 拒绝，并输出各轮走势和第 8 条的做法。
 - **`start` 的修订量：**
   - 新增可选参数 `--docs <path>...`，列出本轮被评审的文档。不给时，取 `status.md` 元数据里 `- 设计文档:` 一行的路径。
