@@ -133,12 +133,11 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 4. **裁决**（见下文 `### 裁决纪律`）：按 blocking 准入三类核定每条发现的等级，等级只看问题本身、不看解法要不要加机制；必须由用户定的问题当轮就问（`## 提问与自动执行`）；证据或流程缺口按补证请求处理；文档同步类按 `## 设计` 处理。拒绝或降级一个 reviewAgent 的阻断发现，本身并不能关闭评审点：下一轮评审者会复核这个处置。
 5. **记结果与关闭：** 裁决完成后 `review-round.sh result <point> --blocking <N> --rejected <R> --behavior <M> --induced <I> --pending <P>`（各参数见 `references/review-closure.md` §2；第 2 轮起 `--rejected`、`--induced`、`--pending` 必填，没有写 0；`--induced` 按评审报告「来源」列核对）。本轮满足 `SKILL.md` `## 评审收口` 的关闭条件时，运行 `review-round.sh close <point> --outcome passed --reason <一句话>`（要求 `blocking=0`、`rejected=0` 且没有 `pending`；拒绝要等下一轮评审者认可）。拒绝僵持到上限时按第 6 步交用户。评审点关闭后再要评审，先重新 `open`。
 6. **`start` 以 exit 3 拒绝时**，照它的输出做：
-   - 快速档、标准档到上限，或标准档评审点第 2 轮不收敛（`blocking + rejected` 不为零且不少于第 1 轮）：按 `references/review-closure.md` §7 用一条消息交给用户。依次写诊断、剩余 blocking 清单、四个选项和你的推荐；然后 `expect.sh set <key> user`。用户的选择记进 `decisions.md`，再按选择操作：
-     - 再开一轮：`review-round.sh grant <point> --reason <用户原话要点>`，一次授权只管一轮；
-     - 带着进实现（只剩细节类时推荐这一项）：每条写成 `impl-notes.md` `## 带进实现的 blocking` 里一个必须通过的测试项，再 `close <point> --outcome carried --by user --reason …`；
+   - 快速档、标准档到上限，或标准档评审点第 2 轮不收敛（`blocking + rejected` 不为零且不少于第 1 轮）：按 `references/review-closure.md` §7 用一条消息交给用户。依次写诊断、剩余 blocking 清单、三个选项和你的推荐；然后 `expect.sh set <key> user`。用户的选择记进 `decisions.md`，再按选择操作：
+     - 再开一轮（修复方案已经明确时推荐这一项，在这一轮里落实并增量复审）：`review-round.sh grant <point> --reason <用户原话要点>`，一次授权只管一轮；
      - 接受为遗留风险：逐条登记进 `residual-risks.md`，再 `review-round.sh close <point> --outcome residual --by user --reason <用户原话要点>`；
      - 拆成加固任务：把清单写进新任务的输入，再 `close <point> --outcome split --by user --reason …`。
-   - 严格档缺收口检查：按 `references/review-closure.md` 做收口检查，运行 `review-round.sh check <point> --outcome continue|class-fix|reorder|escalate --reason …`，并用一条简短消息告诉用户结论和理由；只有 `escalate` 需要等用户，这条消息带上面同样的诊断和四个选项，用户同意继续后 `grant` 放行下一轮。
+   - 严格档缺收口检查：按 `references/review-closure.md` 做收口检查，运行 `review-round.sh check <point> --outcome continue|class-fix|reorder|escalate --reason …`，并用一条简短消息告诉用户结论和理由；只有 `escalate` 需要等用户，这条消息带上面同样的诊断和三个选项，用户同意继续后 `grant` 放行下一轮。
 7. **派修复：** 被接受的发现带着等级回到原 lane（SendMessage），实现评审中由负责产物的 lane 自己决定接受或拒绝，你检查它的证据后再记录。
 
 `review-round.sh status [<point>]` 随时列出各评审点的轮次、上限和下一轮模式；恢复会话后先看它。
@@ -177,8 +176,8 @@ lane 是端到端的工作单位（`SKILL.md` `## 并行模型`）。快速档�
 
 ## 交付
 
-- **快速档：** 逐项回答 `status.md` `## 交付前检查清单` 的快速档五项并附证据：负对照、构建和测试结果、评审发现的处置与评审点 `close`、`change-note.md` 的"怎么验证"逐条兑现、合并打 tag 发布之前问用户；有 `impl-notes.md` 时加第 6 项。
-- **标准档和严格档：** 按 `SKILL.md` §4 逐项核验，重点是：每个已登记的评审点都有 `Review-Close`（`review-round.sh status`）；`## 发现台账` 没有未处置或已接受未落地的发现；`impl-notes.md` 里带进实现的 blocking 逐条核对已落地（对应测试存在并通过）；`## 交付前检查清单` 逐项附证据作答，含台账扫描和 `## 最薄弱环节` 的自我披露，"其余都没问题"不算回答。
+- **快速档：** 逐项回答 `status.md` `## 交付前检查清单` 的快速档五项并附证据：负对照、构建和测试结果、评审发现的处置与评审点 `close`、`change-note.md` 的"怎么验证"逐条兑现、合并打 tag 发布之前问用户。
+- **标准档和严格档：** 按 `SKILL.md` §4 逐项核验，重点是：每个已登记的评审点都有 `Review-Close`（`review-round.sh status`）；`## 发现台账` 没有未处置或已接受未落地的发现；`## 交付前检查清单` 逐项附证据作答，含台账扫描和 `## 最薄弱环节` 的自我披露，"其余都没问题"不算回答。
 - 然后：创建最终提交，配置了远端就推送（不问，失败不阻断）；按 `templates/final-report.md` 产出最终报告，附上 `decisions.md` 里按推荐执行的决定；阶段进入 `awaiting-confirmation` 等用户确认，确认后才进 `done`；最后问用户是否删除任务状态文件。
 
 ## Watchdog 义务

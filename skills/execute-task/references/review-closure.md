@@ -24,7 +24,7 @@
   - `N` 是本轮被接受的 blocking 条数；`R` 是评审者报告为 blocking、但被裁决者拒绝或降级的条数（`Review` 行记为 `rejected=<n>`）；`M` 是 `N` 里会改变产品行为的条数。
   - `I` 是本轮 blocking（被接受的加被拒绝的）里由上一轮修订带出的条数，含只落地一半的。
   - `P` 是这个评审点此刻仍在等用户回答的 blocking 条数（§5 第 3 条），包括更早轮次提出、还没回答的。它是当前状态，不是本轮 blocking 的子集，所以不和 `N + R` 比大小：评审者按派发不重复报告待定项，这些项不再计入之后各轮的 `--blocking`，只通过 `--pending` 体现，直到用户回答并改完。用户回答后：要改设计的，改动进下一轮增量复审，那一轮的 `--pending` 填还剩几条；回答不需要改动设计的，用 `result` 重填这一轮，`--blocking`、`--rejected`、`--induced` 照原值再给一遍，`--pending` 写 `0`。最近一轮 `pending` 大于 0 时 `close --outcome passed` 被拒绝，`start` 不受影响。
-  - 有档位的任务从第 2 轮起，`--rejected`、`--induced`、`--pending` 三个都必填，没有就写 `0`，缺了以 exit 2 拒绝。`result` 每次整行重填，没给的参数回到 `-`；漏写的 `--rejected` 会按 0 参与提前停的比较（§7），所以更正时把所有参数再写一遍。第 1 轮和没有档位的旧任务不要求这三个；第 1 轮不写 `--rejected` 时记为 `-`，`passed` 关不了。`I` 不能大于 `N + R`。下一轮开不了时（到上限、第 2 轮不收敛），`result` 的输出里当场就有 §7 的走势和四个选项。
+  - 有档位的任务从第 2 轮起，`--rejected`、`--induced`、`--pending` 三个都必填，没有就写 `0`，缺了以 exit 2 拒绝。`result` 每次整行重填，没给的参数回到 `-`；漏写的 `--rejected` 会按 0 参与提前停的比较（§7），所以更正时把所有参数再写一遍。第 1 轮和没有档位的旧任务不要求这三个；第 1 轮不写 `--rejected` 时记为 `-`，`passed` 关不了。`I` 不能大于 `N + R`。下一轮开不了时（到上限、第 2 轮不收敛），`result` 的输出里当场就有 §7 的走势和三个选项。
 - **设计评审的修订量。** 设计文档是散文，没有编译器和测试裁决：每轮修订新写的文字越多，下一轮能被挑出的问题就越多，所以每轮新写的量要逐轮变小。design 评审点的 `start` 把本轮被评审的文档（`--docs <path>...`；不给时取 `status.md` 元数据 `- 设计文档:` 一行的路径）复制到 `<task-dir>/reviews/snap/<point>/r<n>/`。从第 2 轮起它与上一轮的快照比较，输出 `delta=+<增行>/-<删行> prev=<+a/-b|-> growing=yes|no`，并把 diff 写到 `<task-dir>/reviews/snap/<point>/r<n-1>-r<n>.diff`（输出里 `diff=` 一行是它的绝对路径），增量复审就用这份 diff。同一评审点每一轮给同一组文档：脚本只比较两轮都采集到的文档，这一轮没有列出的文档不参与比较（输出一行 `note:` 写明是哪几份），它的修订既没有被计量，也不在交给增量复审的 diff 里。`growing=yes`（本轮新增行数比上一轮多）只告警、不拦截：主 agent 先按 `prompts/main-agent.md` 的修订纪律检查这一轮写进正文的东西（非阻断发现、依赖用户回答的部分、可以用减法代替的新机制），再派发。没有可读的文档时跳过。修订量只在设计阶段计量；实现阶段有测试裁决，不计量。
 
 ## 3. 声明域
@@ -79,7 +79,7 @@
 3. 没有标为 `requires-user-decision` 的发现在等待用户回答。等用户决定的 blocking 用 `result --pending` 记数；什么时候问、等的时候哪些部分不动，见 `prompts/main-agent.md` `## 提问与自动执行`。
 4. 每个覆盖维度都已登记（增量轮登记它的三项任务：修复已落地、diff 无新问题、被拒绝的 blocking 已复核）。
 
-关闭的另外三种出口都由用户决定：停下来交给用户时（§7），用户选择带着进实现（`--outcome carried --by user`）、接受为遗留风险（`--outcome residual --by user`）或拆成加固任务（`--outcome split --by user`）。每次关闭写一行 `Review-Close`；已关闭的评审点再 `start` 会被拒绝，要重开先 `open`（生成一组新记录）。§4 交付核验要求每个已登记的评审点都有一条 `Review-Close`。
+关闭的另外两种出口都由用户决定：停下来交给用户时（§7），用户选择接受为遗留风险（`--outcome residual --by user`）或拆成加固任务（`--outcome split --by user`）。每次关闭写一行 `Review-Close`；已关闭的评审点再 `start` 会被拒绝，要重开先 `open`（生成一组新记录）。§4 交付核验要求每个已登记的评审点都有一条 `Review-Close`。
 
 拒绝或降级一条 reviewAgent 的阻断发现，本身不会关闭评审点：本轮记为 `rejected`，`passed` 关不了；下一轮（增量轮同样）的 reviewAgent 拿到该处置，要么认可它，要么重新提出它，这让接受↔拒绝反复 3 轮即升级的规则保持有效。下一轮评审者认可了全部拒绝、且没有新的 blocking 时，那一轮 `result --blocking 0 --rejected 0`，评审点可以 `passed` 关闭。拒绝一直僵持到轮次上限时，按 §7 交给用户。跨 harness 发现是参考性的，有了处置就算了结。
 
@@ -125,11 +125,8 @@
    - 本轮 blocking 的来源，各几条：原有漏报、上一轮修订带出（含只落地一半的）、等用户决定；
    - 剩余 blocking 分成结构类和细节类，各几条。结构类指要改模块划分、接口或数据模型；细节类指某个模块内部的规则。
 2. **剩余 blocking 清单**（含仍被评审者坚持、被裁决者拒绝的那些，各附双方理由）：每条的可达性和影响，属于结构类还是细节类。
-3. **四个选项，附推荐和一句理由：**
-   - **再开一轮**——剩余问题涉及安全或数据、或者真实路径上的缺陷还在减少时，推荐这一项。用户批准后运行 `review-round.sh grant <point> --reason <用户原话要点>`；一次授权只管一轮，下一次再交用户。
-   - **带着进实现**——只剩细节类时，推荐这一项。每条剩余 blocking 写成 `<task-dir>/impl-notes.md` `## 带进实现的 blocking` 里一个必须通过的测试项，随 lane 派发，交付前逐条核对已落地；然后 `review-round.sh close <point> --outcome carried --by user --reason <用户原话要点>`。
-     - 设计评审点：这些条目在写明的范围内优先于设计正文，lane 按它实现，实现评审拿到 `impl-notes.md` 逐条核对测试存在并通过。
-     - 实现和汇总评审点：剩余 blocking 照修，不再开评审轮；每条同样写成必须通过的测试项记进 `impl-notes.md`，由交付核验逐条确认。
+3. **三个选项，附推荐和一句理由：**
+   - **再开一轮**——剩余问题涉及安全或数据、真实路径上的缺陷还在减少、或者修复方案已经明确时，推荐这一项。修复方案明确的 blocking 在这一轮里落实到设计（或代码）并做增量复审，不留给下一个阶段去补。用户批准后运行 `review-round.sh grant <point> --reason <用户原话要点>`；一次授权只管一轮，下一次再交用户。
    - **接受为遗留风险**——每条写进遗留风险清单，状态注明是用户在停下时接受的，然后 `review-round.sh close <point> --outcome residual --by user --reason <用户原话要点>`。
    - **拆成加固任务**——把清单写进新任务的输入（新任务重新选档），本任务在最终报告里列出它，然后 `close <point> --outcome split --by user --reason …`。
 
@@ -146,7 +143,7 @@
 - `reorder`——调整加固顺序：阻碍主路径收敛的是范围内的加固工作（域确实包含的对抗性输入）时，把它移到单独的加固 lane，排在主路径之后，让主路径先关闭、提交并可用。这是在已批准设计之内安排工作顺序，由主 agent 决定。加固 lane 仍留在本任务中，并且仍要交付（`SKILL.md` `## 总目标忠实度`）；它接手的每一条阻断发现，在发现台账中有一行 `dispatched-to: <hardening lane>`，它的第一次评审派发把这些发现列为预期应落地的内容，§4 交付时逐条核实已落地；
 - `escalate`——升级给用户：剩余的阻断发现取决于设计没有回答的范围或威胁模型问题，或者结论会把任何内容移出本任务。这会改变设计，由用户决定。
 
-每次检查的结论都用一条简短消息连同理由告诉用户，长时间的循环不会悄无声息；只有 `escalate` 需要等待回答。结论是 `escalate` 时，交给用户的消息同样带 §7 的诊断和四个选项；无论在哪一轮，`start` 在拿到授权前都以 exit 3 拒绝下一轮。用户同意继续时运行 `review-round.sh grant <point> --reason <用户原话要点>`（一次一轮），选择其它三项时按 §7 `close`。编排模式下这条消息发到 worker 的 pane 和状态文件，升级通过 `ZYZ_QUESTION_FILE` 问答进行。
+每次检查的结论都用一条简短消息连同理由告诉用户，长时间的循环不会悄无声息；只有 `escalate` 需要等待回答。结论是 `escalate` 时，交给用户的消息同样带 §7 的诊断和三个选项；无论在哪一轮，`start` 在拿到授权前都以 exit 3 拒绝下一轮。用户同意继续时运行 `review-round.sh grant <point> --reason <用户原话要点>`（一次一轮），选择其它两项时按 §7 `close`。编排模式下这条消息发到 worker 的 pane 和状态文件，升级通过 `ZYZ_QUESTION_FILE` 问答进行。
 
 没有 `Tier:` 行的旧任务按严格档执行，`review-round.sh` 和 `review-gate.sh` 对它们 fail open；收口检查仍按本节由主 agent 记录在 `## 评审收口`。
 
@@ -178,7 +175,7 @@
 | `result <point> --blocking N --rejected R --induced I --pending P [--behavior M]` | 记录本轮结果：接受的 blocking 数、被拒绝或降级的 blocking 数、上一轮修订带出的条数、仍在等用户回答的条数、改变行为的条数（有档位的任务第 2 轮起 `--rejected`、`--induced`、`--pending` 必填） |
 | `grant <point> --reason …` | 用户批准额外一轮，一次一轮 |
 | `check <point> --outcome continue\|class-fix\|reorder\|escalate --reason …` | 严格档收口检查 |
-| `close <point> --outcome passed\|carried\|residual\|split [--by user] --reason …` | 关闭评审点；`passed` 要求最近一轮 `blocking=0`、`rejected=0` 且 `pending` 不大于 0；`carried` / `residual` / `split` 要求 `--by user` |
+| `close <point> --outcome passed\|residual\|split [--by user] --reason …` | 关闭评审点；`passed` 要求最近一轮 `blocking=0`、`rejected=0` 且 `pending` 不大于 0；`residual` / `split` 要求 `--by user` |
 | `tier <fast\|standard\|strict> --reason … [--by user]` | 写档位，追加 `log/tier.md`；降档要求 `--by user` |
 | `status [<point>]` | 列出评审点、轮次、上限、下一轮的模式，以及各轮的 `blocking / rejected / induced / pending / delta` |
 

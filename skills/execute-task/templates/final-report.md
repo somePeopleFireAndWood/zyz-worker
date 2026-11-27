@@ -48,7 +48,6 @@
 - 覆盖 — 回归风险: (covered | not-covered: <reason>)
 - 覆盖 — 风险专项: （设计 `## 风险` 点名的每个维度一行 | n/a）
 - 评审点: （`review-round.sh status` 的摘要：每个评审点的轮次和每轮 blocking 数；到上限或提前停时用户的选择）
-- 带进实现的 blocking: （`impl-notes.md` 里每条一行：测试名 + commit/file + 核对结果；没有就写 none）
 - 汇总结论:
 - 各 lane 结论:
 - 跨 harness 交叉评审: （参与的 harness，或 `none: <reason>`；每个评审点接受 / 拒绝的发现数，以及被接受的发现落在哪里）

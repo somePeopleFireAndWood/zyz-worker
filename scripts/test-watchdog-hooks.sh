@@ -1254,7 +1254,7 @@ t22_has hooks/scripts/lib.sh 'zyz_scope_negated "$clause" && continue' "judges v
 # ---- review: every revision wrote more text than the last one, and the next
 # ---- round found its problems in that new text. §11 bounds what a revision
 # ---- may add and when the loop stops. The ledger BEHAVIOUR (cap 3, early
-# ---- stop, --induced/--pending, carried, delta) is scripts/test-review-round.sh's
+# ---- stop, --rejected/--induced/--pending, delta) is scripts/test-review-round.sh's
 # ---- job; this block pins the instructions that make the main agent and the
 # ---- reviewer feed it, on the surface that executes each rule.
 #
@@ -1387,17 +1387,46 @@ for f in "$S" "$RC" README.md docs/architecture.md; do
     conv_lacks "$f" '| standard | 2 | 3 | 3 |' "no longer caps standard design review at 2 rounds"
     conv_lacks "$f" '标准档 design 2 /' "no longer caps standard design review at 2 rounds"
 done
-# Rule 8 — stopping hands the user a diagnosis and four options.
+# Rule 8 — stopping hands the user a diagnosis and the same three options as
+# 0.33.0 (another round / residual risk / hardening task).
+#
+# §11.8: a fourth option was designed during review — "carry the blockings into
+# implementation" (`close --outcome carried`, an impl-notes.md section that
+# outranked the design body, a per-entry check at delivery) — and the user
+# removed it in PR review: when the fix is known it belongs in the design, with
+# an incremental re-review; carrying it forward starts implementation on a
+# design known to be wrong. The option's vocabulary is reverse-guarded on every
+# prompt, template and doc that could carry it, one check per file.
 conv_has "$RC" '本轮 blocking 的来源，各几条：原有漏报、上一轮修订带出（含只落地一半的）、等用户决定' "diagnoses where this round's blockings came from"
 conv_has "$RC" '结构类指要改模块划分、接口或数据模型；细节类指某个模块内部的规则' "splits what is left into structural and detail"
-conv_has "$RC" '**带着进实现**——只剩细节类时，推荐这一项' "recommends carrying detail-only leftovers"
-conv_has "$RC" 'review-round.sh close <point> --outcome carried --by user' "closes a carried point only by user"
-conv_has "$RC" '交给用户的消息同样带 §7 的诊断和四个选项' "gives a strict escalate the same diagnosis"
-conv_has "$M" '依次写诊断、剩余 blocking 清单、四个选项和你的推荐' "writes the diagnosis before the options"
-conv_has "$M" 'close <point> --outcome carried --by user' "closes a carried point only by user"
-conv_has "$S" 'close --outcome carried|residual|split --by user' "names all three user-only outcomes"
-for f in "$S" "$M" "$RC" README.md docs/architecture.md; do
-    conv_lacks "$f" '三选一' "no longer offers three options at the cap"
+conv_has "$RC" '3. **三个选项，附推荐和一句理由：**' "offers three options when stopping"
+conv_has "$RC" '真实路径上的缺陷还在减少、或者修复方案已经明确时，推荐这一项' "recommends another round when the fix is known"
+conv_has "$RC" '在这一轮里落实到设计（或代码）并做增量复审，不留给下一个阶段去补' "lands a known fix in this stage"
+conv_has "$RC" '关闭的另外两种出口都由用户决定' "names the two user-only outcomes"
+conv_has "$RC" '交给用户的消息同样带 §7 的诊断和三个选项' "gives a strict escalate the same diagnosis"
+conv_has "$M" '依次写诊断、剩余 blocking 清单、三个选项和你的推荐' "writes the diagnosis before the options"
+conv_has "$M" '再开一轮（修复方案已经明确时推荐这一项，在这一轮里落实并增量复审）' "recommends another round when the fix is known"
+conv_has "$S" '三选一：再开一轮（`grant`，一次只管一轮；修复方案已明确时推荐）、接受为遗留风险、拆成加固任务' "offers three options when stopping"
+conv_has "$S" 'close --outcome residual|split --by user' "names the two user-only outcomes"
+conv_has README.md '交用户三选一：再开一轮、接受为遗留风险、拆成加固任务' "offers three options when stopping"
+conv_has docs/architecture.md '交用户三选一（再开一轮 → `grant`；接受为遗留风险 / 拆成加固任务 → `close --outcome residual|split --by user`）' "offers three options when stopping"
+conv_has skills/execute-task/templates/decisions.md '（再开一轮 / 接受为遗留风险 / 拆成加固任务）' "records the user's choice among three"
+t6_conv_carry_re='carried|带着进实现|带进实现|四选一|四个选项|优先于设计正文|必须通过的测试'
+for f in "$S" "$M" "$RC" "$DDD" "$IMPLN" README.md docs/architecture.md docs/design/execute-task-skill-design.md \
+    skills/execute-task/references/cross-harness.md skills/execute-task/references/orchestration-mode.md \
+    skills/execute-task/references/recovery.md \
+    skills/execute-task/templates/task-status.md skills/execute-task/templates/decisions.md \
+    skills/execute-task/templates/final-report.md skills/execute-task/templates/review-report.md \
+    skills/execute-task/templates/residual-risks.md skills/execute-task/templates/cross-review-prompt.md \
+    subagents/review-agent.md agents/review-agent.md subagents/test-agent.md agents/test-agent.md \
+    subagents/implementation-agent.md agents/implementation-agent.md; do
+    if [ ! -f "$f" ]; then
+        fail "T6 $f no longer offers to carry blockings into implementation (convergence reverse guard)" "file missing"
+    elif t6_conv_hit="$(grep -nE -- "$t6_conv_carry_re" "$f" 2>/dev/null | head -2)" && [ -n "$t6_conv_hit" ]; then
+        fail "T6 $f no longer offers to carry blockings into implementation (convergence reverse guard)" "$(printf '%s' "$t6_conv_hit" | cut -c1-160 | tr '\n' '|')"
+    else
+        pass "T6 $f no longer offers to carry blockings into implementation (convergence reverse guard)"
+    fi
 done
 # Round bookkeeping the rules above depend on.
 conv_has "$M" '--induced <I> --pending <P>' "records induced + pending with the result"
@@ -1426,7 +1455,7 @@ if [ -n "$t6_conv_dir" ] && [ -d "$t6_conv_dir" ]; then
         grep -E '^- Review(-Close)?: point=design-main;' skills/execute-task/templates/task-status.md
     } > "$t6_conv_dir/task/status.md"
     t6_conv_out="$(bash hooks/scripts/review-round.sh status --task "$t6_conv_dir/task" 2>&1)"
-    if printf '%s\n' "$t6_conv_out" | grep -qF 'closed=carried@' \
+    if printf '%s\n' "$t6_conv_out" | grep -qF 'closed=residual@' \
         && printf '%s\n' "$t6_conv_out" | grep -qE 'induced=[0-9]+ pending=[0-9]+ delta=\+[0-9]+/-[0-9]+' \
         && ! printf '%s\n' "$t6_conv_out" | grep -q 'INVALID'; then
         pass "T6 task-status example ledger rows parse under review-round.sh (convergence)"
@@ -1437,8 +1466,8 @@ if [ -n "$t6_conv_dir" ] && [ -d "$t6_conv_dir" ]; then
 else
     skip "T6 task-status example ledger rows parse under review-round.sh (convergence)" "no mktemp"
 fi
-# impl-notes.md — where design review hands details and carried blockings to
-# the implementation phase.
+# impl-notes.md — where design review hands details to the implementation
+# phase. §11.8: it has exactly one section; it never overrides the design.
 if python3 - "$IMPLN" <<'PYEOF'
 import re, sys
 try:
@@ -1446,59 +1475,52 @@ try:
 except OSError:
     sys.exit(1)
 kept = re.sub(r'<!--.*?-->', '', t, flags=re.S)
-ok = re.search(r'^## 实现备注$', kept, flags=re.M) and re.search(r'^## 带进实现的 blocking$', kept, flags=re.M)
-sys.exit(0 if ok else 1)
+sys.exit(0 if re.findall(r'^## .*$', kept, flags=re.M) == ['## 实现备注'] else 1)
 PYEOF
 then
-    pass "T6 $IMPLN has both kept sections (convergence)"
+    pass "T6 $IMPLN keeps exactly one section, the implementation notes (convergence)"
 else
-    fail "T6 $IMPLN has both kept sections (convergence)"
+    fail "T6 $IMPLN keeps exactly one section, the implementation notes (convergence)"
 fi
-conv_has "$IMPLN" '- 必须通过的测试:' "writes each carried blocking as a must-pass test"
 conv_has "$S" '`decisions.md`、`impl-notes.md`、`review-report.md`' "lists the template"
 conv_has "$S" '派发只给最终态设计、`decisions.md` 和 `impl-notes.md`' "dispatches it with the design"
-conv_has "$S" '带进实现的 blocking（`impl-notes.md`）都已落地' "verifies carried blockings at delivery"
 conv_has "$M" '`decisions.md` 和 `impl-notes.md`（存在时）的路径' "puts it in the lane dispatch skeleton"
-conv_has "$M" '`impl-notes.md` 里带进实现的 blocking 逐条核对已落地' "verifies carried blockings at delivery"
 conv_has "$RC" '实现者确实需要的细节写进 `<task-dir>/impl-notes.md`' "routes implementer details to impl-notes"
 for f in subagents/implementation-agent.md agents/implementation-agent.md; do
-    conv_has "$f" '带进实现的 blocking 每条要有对应的测试并通过，在报告里逐条回应' "tests and answers each carried blocking"
+    conv_has "$f" '`impl-notes.md` 的实现备注照做，在报告里逐条回应' "follows and answers each implementation note"
+    conv_has "$f" '它不改设计，和设计冲突时停下这一块并报告主 agent' "stops on a note that conflicts with the design"
     conv_has "$f" '修它要引入新机制时不修，报告给主 agent' "does not land a normal finding that needs a new mechanism"
 done
-conv_has skills/execute-task/templates/task-status.md '`impl-notes.md` 里带进实现的 blocking 都已落地并核实' "checks carried blockings before delivery"
-conv_has skills/execute-task/templates/final-report.md '- 带进实现的 blocking:' "reports carried blockings"
+conv_has skills/execute-task/templates/task-status.md '`impl-notes.md` 的实现备注逐条有落地记录' "checks the implementation notes before delivery"
 # §11.7-1 (B1): impl-notes.md reaches the implementation REVIEW, not only the
-# lane. Without it the reviewer's contract is the design body alone, and a fix
-# made for a carried blocking — which by definition departs from the body —
-# would be reported as a contract violation. Pinned on the dispatch (main
-# agent), on the reviewer and test-agent prompts in both mirror copies, on the
-# cross-harness brief, and on the precedence wording in the template.
+# lane — "verified by the implementation review" was written in three places
+# while nothing handed the reviewer the file. Pinned on the dispatch (main
+# agent), on the reviewer and test-agent prompts in both mirror copies, and on
+# the cross-harness brief. §11.8: the notes never outrank the design, so the
+# reviewer's two-way conformance check carries no exception.
 conv_has "$M" '实现评审和汇总评审附 `impl-notes.md`（存在时）' "attaches impl-notes to the review dispatch"
 conv_has "$M" '严格档 test-agent 的派发同样附上' "attaches impl-notes to the strict-tier test-agent dispatch"
 conv_has "$S" '`decisions.md` 和 `impl-notes.md`，实现评审也拿到' "gives impl-notes to the implementation review"
 for f in subagents/review-agent.md agents/review-agent.md; do
-    conv_has "$f" '派发附了 `impl-notes.md` 时逐条核对' "checks impl-notes entry by entry"
-    conv_has "$f" '`## 带进实现的 blocking` 每条的测试是否存在并通过，缺测试或测试不过按违反合同报告' "reports a carried blocking without a passing test"
-    conv_has "$f" '后一节在它写明的范围内优先于设计正文，按它做的修复不算抵触设计' "does not report a carried fix as a design departure"
-    conv_has "$f" '任一方向按违反合同报告，写明设计章节和 `file:line`；下一条的例外除外' "scopes the two-way conformance check around impl-notes"
+    conv_has "$f" '派发附了 `impl-notes.md` 时，逐条核对 `## 实现备注` 是否落地' "checks the implementation notes entry by entry"
+    conv_has "$f" '它不改设计：某一条和设计冲突时按设计评，并报告这处冲突' "judges by the design when a note conflicts with it"
+    conv_has "$f" '任一方向按违反合同报告，写明设计章节和 `file:line`。' "keeps the two-way conformance check without exception"
+    conv_lacks "$f" '下一条的例外除外' "no exception to the two-way conformance check"
 done
 for f in subagents/test-agent.md agents/test-agent.md; do
     conv_has "$f" '派发附了 `<task-dir>/impl-notes.md` 时先读' "reads impl-notes"
-    conv_has "$f" '都写出它规定的必须通过的测试，在报告里逐条回应' "writes the must-pass test of each carried blocking"
+    conv_has "$f" '它不改设计，某一条和设计冲突时停下这一块，报告主 agent' "stops on a note that conflicts with the design"
 done
-conv_has "$IMPLN" '这一节的条目在它写明的范围内优先于设计正文的对应部分' "lets carried blockings outrank the design body in their scope"
-conv_has "$IMPLN" '这一节不改设计，设计正文仍是规格' "keeps implementation notes below the design"
-conv_has "$IMPLN" '也附给实现评审、汇总评审和严格档的 test-agent' "names who receives the file"
+conv_has "$IMPLN" '本文件不改设计，设计正文仍是规格：某一条和设计冲突时，lane 停下这一块并报告主 agent' "keeps implementation notes below the design"
+conv_has "$IMPLN" '也附给实现评审、汇总评审、跨 harness 评审和严格档的 test-agent' "names who receives the file"
 conv_has "$DDD" '发送最终态设计文档、`decisions.md` 和 `impl-notes.md`（存在时）' "sends impl-notes to implementation roles and reviews"
 conv_lacks "$DDD" '只发送最终态设计文档' "no longer sends the design document alone"
 conv_has skills/execute-task/templates/cross-review-prompt.md '实现评审和汇总评审时 `impl-notes.md` 的路径（存在时）' "names impl-notes in the cross-harness brief"
 conv_has skills/execute-task/references/cross-harness.md '实现评审和汇总评审时附 `impl-notes.md`（存在时）' "puts impl-notes in the cross-harness brief"
-# §11.7-5 (N3, N4): what "carried" means on impl / aggregate points, and the
-# fast-tier delivery checklist checks it too.
-conv_has "$RC" '实现和汇总评审点：剩余 blocking 照修，不再开评审轮' "defines carried for impl and aggregate points"
-conv_has "$RC" '设计评审点：这些条目在写明的范围内优先于设计正文' "defines carried for design points"
-conv_has skills/execute-task/templates/task-status.md '6. 有 `impl-notes.md` 时' "checks carried blockings in the fast-tier checklist"
-conv_has "$M" '有 `impl-notes.md` 时加第 6 项' "checks carried blockings at fast-tier delivery"
+# §11.7-5 is void (§11.8): the fast-tier checklist item that existed only to
+# check carried blockings is gone again.
+conv_lacks skills/execute-task/templates/task-status.md '6. 有 `impl-notes.md` 时' "no fast-tier checklist item for carried blockings"
+conv_lacks "$M" '加第 6 项' "no fast-tier checklist item for carried blockings"
 # §11.7-6 (N6, N5): doubt does not raise a tier during the re-check.
 conv_has "$RC" '拿不准：不改判，按"不会出错"处理' "does not raise the tier on doubt during the re-check"
 conv_has "$RC" '只适用于评审者第一次定级' "scopes doubt-defaults-to-blocking to the first tiering"
