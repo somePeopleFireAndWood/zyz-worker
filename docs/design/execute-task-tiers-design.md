@@ -594,3 +594,14 @@ lane 派发时，这个文件和 `decisions.md` 一起附上；实现评审、�
 | P 提示词 | `skills/execute-task/SKILL.md`、`prompts/main-agent.md`、`references/*.md`、`commands/execute-task.md`、`commands/code-development.md`；之后 `README.md`、`docs/architecture.md`、`docs/design/execute-task-skill-design.md`、`CHANGELOG.md`、`CLAUDE.md` 里对应的描述 |
 | R 角色与模板 | `subagents/{implementation,test,review}-agent.md` 及 `agents/` 镜像、`skills/execute-task/templates/*.md` |
 | S 测试 | `scripts/test-*.sh` 里的提示词锚点（先删措辞锚点，P、R 交稿后加 §12.8 的四样），跑全部套件 |
+
+### 12.10 落地时定下的几点（2026-11-27）
+
+1. **范围外情形由谁落盘**：角色写在自己的报告里，主 agent 收进 `residual-risks.md`（§12.3 的最后一句已按此改）。lane 只能改白名单、评审者只读，写不了那个文件。
+2. **watchdog 字面量的位置**：`task-pointer.sh arm`、`zyz-worker watchdog`、`user --watch`、`.zyz-worker/sessions/` 留在常驻的两份提示词里；`current-task`、会话静默、API 错误中断、`silence-sec` 只在 `references/watchdog.md`。
+3. **lane P 做的流程决定，等用户确认**（不同意时各改一两句即可恢复）：
+   - 实现评审的发现改由主 agent 裁决（原来是产物的作者裁决、主 agent 核对证据）；lane 不同意时附证据，主 agent 核对后定。与"举证在报告者一侧"一致。
+   - 删除"实现评审里没有 blocking 的一轮之后，可以额外开一轮专门落地非阻断发现"。保留"有 blocking 修复要开下一轮时可以顺带落地，前提是不加新机制"。
+   - 删除"同一发现在接受与拒绝之间反复 3 轮即升级给用户"：被拒绝的 blocking 计入轮次结果，僵持到上限或提前停就会交给用户。
+   - "确认 watchdog 已启用"改为 `task-pointer.sh show` 确认本会话解析到了任务。它发现得了指针放错位置，发现不了 hooks 被整体禁用；原来的观察器做法留在 `references/watchdog.md`。
+4. **结果**：主 agent 常驻的两份 56 KB → 22.4 KB；三个角色提示词 15.3 / 12.3 / 11.4 KB → 5.5 / 4.7 / 4.2 KB；`review-closure.md` 29.3 KB → 8.1 KB；设计文档模板 20 节 → 9 节。读提示词文字的测试检查 415 条 → 201 条（协议字面量 92、反向守卫 38、新增 71）。
