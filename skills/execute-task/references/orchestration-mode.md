@@ -56,7 +56,7 @@
 | §2 设计（全部，包括快速档的改法确认和评审循环） | `design` | 进入时写一次；每次返回主 agent 时 |
 | §3.A 第 1 步 / §3.B 第 1 步——主 agent 开始直接改动，或派发 lane / implementation-agent | `implementation`（仅在用户批准后——绝不自主；见设计→实现硬性闸门规则） | 开始改动或派发之前 |
 | 单独派发的测试运行或 test-agent（§3.A 第 1 步的自验证、§3.B 第 2 步）；lane 在内部自验证时保持 `implementation` | `testing` | 派发之前 / 运行之前 |
-| §3.A 第 2 步 / §3.B 第 3 步——工作区冻结，然后派发 review-agent | `review` | 派发之前 |
+| §3.A 第 2 步 / §3.B 第 3 步——派发 review-agent | `review` | 派发之前 |
 | 评审 → 修复循环（§3.A 第 2 步、§3.B 第 3 步） | `review`（默认保持；如果确实回到了大量实现工作，**可以**回退到 `implementation`——允许回退） | 不写盘 |
 | §3.C 汇总测试 | `testing` | 进入时 |
 | §3.C 汇总评审 | `review` | 进入时 |

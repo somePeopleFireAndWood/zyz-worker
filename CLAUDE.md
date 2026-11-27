@@ -18,6 +18,7 @@
 - `skills/execute-task/prompts/main-agent.md`
 - `skills/execute-task/templates/`
 - `skills/execute-task/references/`（按需加载的专题细则：评审收口、跨 harness、watchdog、恢复、版本控制、PR 评审、编排模式、设计文档纪律）
+- 提示词只写三类内容：流程约束、任务与完成条件、本环境的事实；不写「怎么干活」。`SKILL.md` 的 `## 范围` 一节与三个角色提示词里的同名一节逐字相同，原文在 `docs/design/execute-task-tiers-design.md` §12.3；各文件的体积上限在同一文档 §12.7，由测试守住
 - `hooks/scripts/review-round.sh` + `hooks/scripts/review-gate.sh`（分档与评审轮次：任务按风险分 `fast` / `standard` / `strict` 三档，写在 `status.md` 的 `- Tier:`；`review-round.sh` 记录每个评审点的轮次、按档位拒绝越限的轮次，`review-gate.sh` 拒绝没有记录在案的 review-agent 派发——见 `skills/execute-task/SKILL.md` `## 档位`、`## 评审收口` 与 `docs/design/execute-task-tiers-design.md`）
 - `scripts/cross-review.sh` + `skills/execute-task/templates/cross-review-prompt.md`（跨 harness 交叉评审：在评审点的设计各轮、实现第 1 轮与全量轮、汇总第 1 轮（以 `review-round.sh start` 输出的 `cross-harness=` 为准），除了 `review-agent` subagent 之外，还会在本机装着的每一个**其它** agent harness 里各起一个只读评审会话——宿主是 Claude Code 时起 Codex，宿主是 Codex 时起 Claude Code；它的发现只作参考，每一条都要先经过独立核实才能接受，也可以附上记录在案的理由予以拒绝——见 `skills/execute-task/SKILL.md` `## 跨 harness 交叉评审`）
 - `hooks/hooks.json` + `hooks/scripts/` 与 `monitors/`（watchdog 强制层：每次工具调用自动写心跳与会话活动、状态新鲜度提醒、subagent 退出门、后台 watchdog（死亡角色、会话静默、API 错误中断、无执行者、声明到点）、主 agent 停止门——见 `skills/execute-task/SKILL.md` `## Watchdog 强制层` 与 `hooks/README.md`；设计原则与长期方向「agent 主导，插件做工具与保障者」见 `docs/design/watchdog-design.md`）
