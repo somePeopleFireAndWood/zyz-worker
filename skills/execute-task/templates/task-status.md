@@ -1,6 +1,6 @@
 # 任务状态
 
-本文件只放当前状态，是唯一必需的总状态文件，文件名 `status.md` 不能改（watchdog 按它解析）。追加型记录放在别处：用户决定 → `decisions.md`；重启与恢复、档位变更、已关闭的发现 → `log/restarts.md`、`log/tier.md`、`log/review-ledger.md`；lane 报告 → `lanes/<id>.md`。
+本文件只放当前状态，是唯一必需的总状态文件，文件名 `status.md` 不能改（watchdog 按它解析）。其它记录放在别处：用户决定 → `decisions.md`；给实现者的备注和带进实现的 blocking → `impl-notes.md`；重启与恢复、档位变更、已关闭的发现 → `log/restarts.md`、`log/tier.md`、`log/review-ledger.md`；lane 报告 → `lanes/<id>.md`。
 
 ## 元数据
 
@@ -73,11 +73,12 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 
 ## 评审收口
 
-<!-- 本节只放 `review-round.sh` 写入的机器行（登记、轮次、额外轮授权、收口检查、关闭），不要手写，也不要放表格；命令、上限和闸门见 SKILL.md `## 评审收口`。到上限交用户时，用户的选择记入 `decisions.md`。真实的行由脚本追加在本节，不在注释里。`blocking` = 本轮被接受的 blocking 条数，`rejected` = 评审者报为 blocking、被裁决者拒绝或降级的条数；`passed` 关闭要求最近一轮 blocking=0 且 rejected=0。示例：
-- Review: point=design-main; stage=design; kind=main; round=2; started=1764120000; blocking=0; rejected=0; behavior=-
+<!-- 本节只放 `review-round.sh` 写入的机器行（登记、轮次、额外轮授权、收口检查、关闭），不要手写，也不要放表格；命令、上限和闸门见 SKILL.md `## 评审收口`。到上限或提前停、交用户四选一时，用户的选择记入 `decisions.md`。真实的行由脚本追加在本节，不在注释里。`blocking` = 本轮被接受的 blocking 条数，`rejected` = 评审者报为 blocking、被裁决者拒绝或降级的条数，`induced` = 本轮 blocking 里由上一轮修订带出的条数，`pending` = 这个评审点此刻仍在等用户回答的 blocking 条数（含更早轮次提出的），`delta` = design 评审点本轮评审的修订量（+增行/-删行，第 2 轮起）；`passed` 关闭要求最近一轮 blocking=0、rejected=0 且 pending 不大于 0。示例：
+- Review: point=design-main; stage=design; kind=main; round=3; started=1764120000; blocking=2; rejected=0; behavior=2; induced=1; pending=0; delta=+12/-30
 - Review-Grant: point=impl-st2; round=4; at=1764200000; reason=用户批准再开一轮：剩余 blocking 涉及数据删除
 - Review-Check: point=impl-st2; round=3; outcome=class-fix; at=1764190000; reason=同一类缺陷第三次出现，改做类级修复
-- Review-Close: point=design-main; round=2; outcome=passed; at=1764123000; reason=第 2 轮 blocking=0 且 rejected=0
+- Review-Close: point=design-main; round=3; outcome=carried; at=1764123000; reason=用户：剩余 2 条细节类带着进实现
+- Review-Close: point=impl-st1; round=2; outcome=passed; at=1764210000; reason=第 2 轮 blocking=0、rejected=0、pending=0
 -->
 
 ## 发现台账
@@ -147,7 +148,7 @@ kind：wait = 某样东西会在 at 之前推进任务（--ref 绑定后台任�
 4. 环境：长期进程在最新源文件之后启动（重启按 杀进程组 → 轮询端口空闲 → 健康检查）；非生产写入路径改动的状态做了配对的生产侧失效；被中断运行的脏数据已清理（`log/restarts.md`）。
 5. (∥) 每个 lane 持有自己在 `## 并行资源租约` 的那一行、确认连的是自己的实例；全量变绿前后都有编译干净检查；每次评审都在冻结的工作区上进行（`Frozen At`）。
 6. 归因：每个失败按 implementation-agent 的四步顺序归因；重跑只用来证明不稳定，不用来证明清白；"别人的包坏了"附 mtime 观察或所有者确认。
-7. 评审：每个已登记的评审点都有 `Review-Close`（`review-round.sh status` 核对），`residual` / `split` 的用户选择已记入 `decisions.md`；`## 发现台账` 里没有被接受却 `dispatched-to` 为空的行；严格档每满三轮有 `Review-Check`。
+7. 评审：每个已登记的评审点都有 `Review-Close`（`review-round.sh status` 核对），`carried` / `residual` / `split` 的用户选择已记入 `decisions.md`；`impl-notes.md` 里带进实现的 blocking 都已落地并核实（逐条：测试名、commit/file、通过的证据）；`## 发现台账` 里没有被接受却 `dispatched-to` 为空的行；严格档每满三轮有 `Review-Check`。
 8. 范围：本轮确立的每条规则都扫过了所有同形态位置，附逐位置结论；声称覆盖或不变量的注释与代码现状一致。
 9. 披露：最终报告 `## 最薄弱环节` 已填；移入加固的 blocking 都已落地；遗留风险清单每条字段齐全，最终报告 `## 已知风险` / `## 后续工作` 指向它；按推荐执行的决定已列给用户。
 10. 一致性：本文件与 `git log`、`lanes/*.md` 一致（`## 状态新鲜度` 已记录核对）；watchdog 已启用——没启用就直说，这里没有任何结论可以依赖它。

@@ -1249,6 +1249,188 @@ t22_has skills/execute-task/templates/cross-review-prompt.md "它按标准 \`## 
 # not license a cap in another (T7 holds the behavioral corpus).
 t22_has hooks/scripts/lib.sh "(skip|drop|omit|ignore|leave out|exclude) (the |any )?(non.blocking:)?contrived( (issue|finding|one|item|case)s?)?" "has the contrived skip-cap pattern"
 t22_has hooks/scripts/lib.sh 'zyz_scope_negated "$clause" && continue' "judges vetoes per clause"
+# ---- Review convergence (docs/design/execute-task-tiers-design.md §11, 0.34.0).
+# ---- The first standard-tier task after 0.33.0 did not converge in design
+# ---- review: every revision wrote more text than the last one, and the next
+# ---- round found its problems in that new text. §11 bounds what a revision
+# ---- may add and when the loop stops. The ledger BEHAVIOUR (cap 3, early
+# ---- stop, --induced/--pending, carried, delta) is scripts/test-review-round.sh's
+# ---- job; this block pins the instructions that make the main agent and the
+# ---- reviewer feed it, on the surface that executes each rule.
+#
+# Assertion shape notes:
+#   - Rule 2 fixes a CONTRADICTION (design-doc-discipline said "record only",
+#     review-closure said "may land with a blocking fix"), so presence greps are
+#     not enough: the reverse guard requires every surviving "可以一起落地" line
+#     to be the implementation-scoped bullet.
+#   - Rule 3's carve-out is pinned together with its limit ("改判只凭可达性证据"):
+#     the half that lets a finding become blocking, without the half that says
+#     wanting the mechanism is no reason, reads as a way around tiering.
+#   - Rule 5 REMOVED the "batch the questions to the approval gate" practice;
+#     the old literals are reverse-guarded on every file that carried them.
+#   - The template example rows are fed to the real script, so a row the
+#     ledger would flag as malformed turns this red (a grep for `induced=`
+#     would stay green on a row in the wrong order).
+conv_has() { # <file> <fixed-string> <label>
+    if grep -qF -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (convergence)"; else fail "T6 $1 $3 (convergence)" "missing: $2"; fi
+}
+conv_lacks() { # <file> <fixed-string> <label>
+    if grep -qF -- "$2" "$1" 2>/dev/null; then fail "T6 $1 $3 (convergence reverse guard)" "still present: $2"; else pass "T6 $1 $3 (convergence reverse guard)"; fi
+}
+IMPLN=skills/execute-task/templates/impl-notes.md
+# Rule 1 — a finding's tier depends on the problem, never on its fix.
+conv_has "$RC" '**等级只看问题本身。**' "tiers on the problem alone"
+conv_has "$RC" '不因为修起来要加机制就升级，也不因为修起来贵就降级' "keeps the fix out of the tier both ways"
+conv_has "$M" '等级只看问题本身、不看解法要不要加机制' "adjudicates on the problem alone"
+for f in subagents/review-agent.md agents/review-agent.md; do
+    conv_has "$f" '等级只看问题本身，解法要不要加机制不影响等级' "tiers on the problem alone"
+done
+# Rule 2 — design-review non-blocking findings stay out of the design body.
+conv_has "$RC" '**设计评审的 `non-blocking:normal`**——不进设计正文，只记入评审历史文件' "keeps design non-blocking findings out of the body"
+conv_has "$RC" '设计评审不随阻断修复把它们写进正文，也不为它们额外开一轮' "does not land them with a blocking fix or an extra round"
+conv_has "$RC" '两种落地都以不引入新机制为前提' "bounds impl-review landings to no new mechanism"
+conv_has "$DDD" '设计评审里标为 `non-blocking:normal` 的发现不进设计正文' "keeps design non-blocking findings out of the body"
+conv_has "$DDD" '它们不随阻断修复一起落地，也不为它们另开一轮' "agrees with review-closure on landing"
+conv_has "$M" '**设计评审的非阻断发现不进设计正文**' "applies the rule when revising"
+t6_conv_land="$(python3 - "$RC" "$DDD" "$S" "$M" <<'PYEOF'
+import sys
+bad = []
+for p in sys.argv[1:]:
+    try:
+        ls = open(p, encoding='utf-8').read().splitlines()
+    except OSError:
+        bad.append('%s:unreadable' % p)
+        continue
+    for n, l in enumerate(ls, 1):
+        if '可以一起落地' in l and not l.startswith('- **实现评审的 `non-blocking:normal`**'):
+            bad.append('%s:%d' % (p, n))
+print(' '.join(bad) if bad else 'ok')
+PYEOF
+)"
+if [ "$t6_conv_land" = ok ]; then
+    pass "T6 landing non-blocking findings with a blocking fix is implementation-review only (convergence reverse guard)"
+else
+    fail "T6 landing non-blocking findings with a blocking fix is implementation-review only (convergence reverse guard)" "unscoped at: $t6_conv_land"
+fi
+# Rule 3 — a non-blocking finding that needs a new mechanism is re-checked, and
+# only reachability evidence moves it.
+conv_has "$RC" '**要加新机制才能解决的非阻断发现，先重新核对等级。**' "re-checks the tier before adding a mechanism"
+conv_has "$RC" '"新机制"指新增表、接口、状态，或跨模块的规则' "defines a new mechanism"
+conv_has "$RC" '"想加这个机制"不是改判的理由，改判只凭可达性证据' "does not let the wish for a mechanism raise the tier"
+conv_has "$RC" '后续 PR 再做，不在本任务内完成' "defers the mechanism when the finding stays non-blocking"
+# Rule 4 — fix blocking findings by subtraction first.
+conv_has "$M" '**blocking 的修复优先做减法。**' "prefers subtraction"
+conv_has "$M" '会缩小用户要的范围时，你只推荐，由用户决定（A 类）' "leaves scope cuts to the user"
+# Rule 5 — ask right after adjudicating; leave the dependent parts untouched.
+conv_has "$M" '**评审裁决完马上问，依赖回答的部分不动。**' "asks right after adjudication"
+conv_has "$M" '依赖回答的部分保持原文、标为待定，不按推荐项先改' "does not pre-apply the recommendation"
+conv_has "$M" '剩下的修复全都依赖回答时，才停下等用户' "stops only when everything left depends on the answer"
+conv_has "$M" '`result --pending` 填这个评审点此刻仍在等回答的 blocking 条数' "keeps counting pending blockings until answered"
+conv_has "$M" '第 2 轮起 `--induced` 和 `--pending` 必填，没有写 0' "requires induced + pending from round 2"
+conv_has "$RC" '有档位的任务从第 2 轮起，`--induced` 和 `--pending` 都必填，没有就写 `0`' "requires induced + pending from round 2"
+conv_has "$RC" '它是当前状态，不是本轮 blocking 的子集，所以不和 `N + R` 比大小' "treats pending as a state, not a subset of this round"
+conv_has "$M" '同时列出 B 类决定和仍未回答的 A 类问题' "lists only still-open questions at the approval gate"
+conv_has "$RC" '要用户定的问题不攒到设计批准闸门' "no longer batches user questions to the gate"
+for f in "$RC" "$S" "$M"; do
+    conv_lacks "$f" '集中起来一起交给用户' "no longer batches user questions to the gate"
+    conv_lacks "$f" '集中处理改变的是提问的时机' "no longer batches user questions to the gate"
+    conv_lacks "$f" '同时列出 B 类决定和需要用户回答的 A 类问题' "no longer batches user questions to the gate"
+done
+for f in subagents/review-agent.md agents/review-agent.md; do
+    conv_has "$f" '派发里列为"等用户决定"的点不重复报告，有新的事实时除外' "does not re-report points awaiting the user"
+done
+if grep -qE '^## 等待回答的问题$' skills/execute-task/templates/decisions.md 2>/dev/null \
+    && grep -qF '整条移到 A 类' skills/execute-task/templates/decisions.md 2>/dev/null; then
+    pass "T6 decisions template tracks questions awaiting an answer (convergence)"
+else
+    fail "T6 decisions template tracks questions awaiting an answer (convergence)"
+fi
+# Rules 6–7 — standard design cap 3, and the early stop at round 2.
+conv_has "$S" '每个评审点最多 3 轮，第 2 轮不收敛提前停' "states the standard design cap + early stop in the tier table"
+conv_has "$S" '`standard` 各 3' "states the standard caps in the closure summary"
+conv_has "$RC" '| standard | 3 | 3 | 3 |' "states the standard caps"
+conv_has "$RC" '**第 2 轮不收敛就提前停**' "stops early when round 2 does not converge"
+conv_has "$RC" '取被接受的与被拒绝的之和（`blocking + rejected`）' "counts accepted + rejected blockings"
+conv_has "$M" '第 2 轮不收敛（`blocking + rejected` 不少于第 1 轮）' "hands a non-converging round 2 to the user"
+conv_has "$RC" '标准档的每一个评审点：设计、实现、汇总' "applies the early stop to every standard review point"
+conv_has README.md '标准档 design 3 / impl 3 / aggregate 3' "states the standard caps"
+conv_has docs/architecture.md '标准档 design 3 / impl 3 / aggregate 3' "states the standard caps"
+for f in "$S" "$RC" README.md docs/architecture.md; do
+    conv_lacks "$f" '每个评审点最多 2 轮' "no longer caps standard design review at 2 rounds"
+    conv_lacks "$f" '| standard | 2 | 3 | 3 |' "no longer caps standard design review at 2 rounds"
+    conv_lacks "$f" '标准档 design 2 /' "no longer caps standard design review at 2 rounds"
+done
+# Rule 8 — stopping hands the user a diagnosis and four options.
+conv_has "$RC" '本轮 blocking 的来源，各几条：原有漏报、上一轮修订带出（含只落地一半的）、等用户决定' "diagnoses where this round's blockings came from"
+conv_has "$RC" '结构类指要改模块划分、接口或数据模型；细节类指某个模块内部的规则' "splits what is left into structural and detail"
+conv_has "$RC" '**带着进实现**——只剩细节类时，推荐这一项' "recommends carrying detail-only leftovers"
+conv_has "$RC" 'review-round.sh close <point> --outcome carried --by user' "closes a carried point only by user"
+conv_has "$RC" '交给用户的消息同样带 §7 的诊断和四个选项' "gives a strict escalate the same diagnosis"
+conv_has "$M" '依次写诊断、剩余 blocking 清单、四个选项和你的推荐' "writes the diagnosis before the options"
+conv_has "$M" 'close <point> --outcome carried --by user' "closes a carried point only by user"
+conv_has "$S" 'close --outcome carried|residual|split --by user' "names all three user-only outcomes"
+for f in "$S" "$M" "$RC" README.md docs/architecture.md; do
+    conv_lacks "$f" '三选一' "no longer offers three options at the cap"
+done
+# Round bookkeeping the rules above depend on.
+conv_has "$M" '--induced <I> --pending <P>' "records induced + pending with the result"
+conv_has "$M" '要求它给每条新发现注明来源：`原有` 或 `上一轮修订带出`' "asks the reviewer for each finding's origin"
+conv_has "$RC" '[--induced I] [--pending P]' "documents the result arguments"
+for f in subagents/review-agent.md agents/review-agent.md; do
+    conv_has "$f" '每条新发现在「来源」列注明 `原有`' "marks each new finding's origin"
+done
+conv_has skills/execute-task/templates/review-report.md '| # | 等级 | 类别 | 位置与原文 | 问题 | 可达性 / 复现 | 来源 | 标注 |' "has the origin column"
+conv_has skills/execute-task/templates/cross-review-prompt.md '每条新发现在「来源」列注明 `原有`' "asks the cross-harness reviewer for the origin"
+# The template's example ledger rows must be rows the real script accepts.
+t6_conv_dir="$(mktemp -d 2>/dev/null || true)"
+if [ -n "$t6_conv_dir" ] && [ -d "$t6_conv_dir" ]; then
+    mkdir -p "$t6_conv_dir/task"
+    {
+        printf '# s\n\n## 元数据\n\n- Current Phase: design\n- Tier: standard\n\n## 评审收口\n\n'
+        grep -E '^- Review(-Close)?: point=design-main;' skills/execute-task/templates/task-status.md
+    } > "$t6_conv_dir/task/status.md"
+    t6_conv_out="$(bash hooks/scripts/review-round.sh status --task "$t6_conv_dir/task" 2>&1)"
+    if printf '%s\n' "$t6_conv_out" | grep -qF 'closed=carried@' \
+        && printf '%s\n' "$t6_conv_out" | grep -qE 'induced=[0-9]+ pending=[0-9]+ delta=\+[0-9]+/-[0-9]+' \
+        && ! printf '%s\n' "$t6_conv_out" | grep -q 'INVALID'; then
+        pass "T6 task-status example ledger rows parse under review-round.sh (convergence)"
+    else
+        fail "T6 task-status example ledger rows parse under review-round.sh (convergence)" "$(printf '%s' "$t6_conv_out" | head -5 | tr '\n' '|')"
+    fi
+    rm -rf "$t6_conv_dir"
+else
+    skip "T6 task-status example ledger rows parse under review-round.sh (convergence)" "no mktemp"
+fi
+# impl-notes.md — where design review hands details and carried blockings to
+# the implementation phase.
+if python3 - "$IMPLN" <<'PYEOF'
+import re, sys
+try:
+    t = open(sys.argv[1], encoding='utf-8').read()
+except OSError:
+    sys.exit(1)
+kept = re.sub(r'<!--.*?-->', '', t, flags=re.S)
+ok = re.search(r'^## 实现备注$', kept, flags=re.M) and re.search(r'^## 带进实现的 blocking$', kept, flags=re.M)
+sys.exit(0 if ok else 1)
+PYEOF
+then
+    pass "T6 $IMPLN has both kept sections (convergence)"
+else
+    fail "T6 $IMPLN has both kept sections (convergence)"
+fi
+conv_has "$IMPLN" '- 必须通过的测试:' "writes each carried blocking as a must-pass test"
+conv_has "$S" '`decisions.md`、`impl-notes.md`、`review-report.md`' "lists the template"
+conv_has "$S" '派发只给最终态设计、`decisions.md` 和 `impl-notes.md`' "dispatches it with the design"
+conv_has "$S" '带进实现的 blocking（`impl-notes.md`）都已落地' "verifies carried blockings at delivery"
+conv_has "$M" '`decisions.md` 和 `impl-notes.md`（存在时）的路径' "puts it in the lane dispatch skeleton"
+conv_has "$M" '`impl-notes.md` 里带进实现的 blocking 逐条核对已落地' "verifies carried blockings at delivery"
+conv_has "$RC" '实现者确实需要的细节写进 `<task-dir>/impl-notes.md`' "routes implementer details to impl-notes"
+for f in subagents/implementation-agent.md agents/implementation-agent.md; do
+    conv_has "$f" '带进实现的 blocking 每条要有对应的测试并通过，在报告里逐条回应' "tests and answers each carried blocking"
+    conv_has "$f" '修它要引入新机制时不修，报告给主 agent' "does not land a normal finding that needs a new mechanism"
+done
+conv_has skills/execute-task/templates/task-status.md '`impl-notes.md` 里带进实现的 blocking 都已落地并核实' "checks carried blockings before delivery"
+conv_has skills/execute-task/templates/final-report.md '- 带进实现的 blocking:' "reports carried blockings"
 for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json; do
     if grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE" "$m" 2>/dev/null; then
         pass "T6 $m at $EXPECTED_VERSION"

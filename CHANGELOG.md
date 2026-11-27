@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **execute-task 设计评审收敛修正。** 0.33.0 发布后的第一个标准档任务（一个六分册、约 200 KB 的数仓引擎设计）在设计评审上没有收敛：三个评审点前两轮的 blocking 数是主路径 24 → 16、注册表 12 → 14、切换 9 → 7，第 3 轮是用户授权加开的。发现本身是真问题（前两轮 82 条 blocking 里 75 条修复后会改变产品行为），但评审对象逐轮变大（设计文档 95 KB → 145 KB → 199 KB），新问题主要来自修订本身（第 3 轮先回来的 9 条 blocking 全部出在第 2 轮修订新写的规则里，其中至少 4 条能追到两条被落地的非阻断发现上）。两轮约 200 条非阻断发现全部进了设计正文：`design-doc-discipline.md` 写「只做记录」，`review-closure.md` 写「可以一起落地」，两处矛盾，主 agent 按后者执行。要用户定的 18 条 blocking 攒到了批准闸门，主 agent 先按推荐项改正文再送评审，有一个问题因此连续三轮被报。结论：设计文档是散文，没有编译器和测试来裁决，每轮修订新写的文字越多，下一轮能被挑出的问题就越多；要收敛，每轮新写的量要逐轮变小，单纯放宽轮次上限不解决问题。依据与契约见 `docs/design/execute-task-tiers-design.md` §11。
+  - **每轮修订怎么做（所有档位）。**
+    - **等级只看问题本身**：按当前设计原样实现，在声明域内的真实情况下会出错，就是 `blocking`，否则是非阻断；解法要不要加机制不影响等级。
+    - **设计评审的非阻断发现不进设计正文**：只记入评审历史文件，实现者确实需要的细节写进 `<task-dir>/impl-notes.md`。「随阻断修复一起落地」和「额外开一轮落地」只对实现评审成立，且以不引入新机制为前提；两个文件的说法现在一致。
+    - **非阻断发现要加机制才能解决时，先重新核对等级**：「新机制」指新增表、接口、状态，或跨模块的规则。核对后确实会出错的改判 `blocking`，附可达性证据，计入本轮 blocking 数；不会出错的记入遗留风险清单，后续 PR 再做。「想加这个机制」不是改判的理由。
+    - **blocking 的修复优先做减法**：减掉的是主 agent 自己加的东西时直接做；会缩小用户要的范围时只推荐，由用户决定（A 类）。
+    - **要用户定的问题，裁决完马上问；依赖回答的部分不动**：每轮裁决后用一条消息列完必须由用户定的问题（架构、关键算法、对外契约、持久化数据、用户可见行为、范围取舍），每条附推荐并写明影响设计的哪些部分，记进 `decisions.md` 新增的「等待回答的问题」，用 `expect.sh set <key> user --watch` 声明后继续。不依赖回答的修复照常做、下一轮照常开；依赖回答的部分保持原文、标为待定，派发评审时列给评审者，评审者不重复报告；用户回答后再改，改动进下一轮增量复审；剩下的修复全都依赖回答时才停下等用户。「不阻碍主路径的问题集中到批准闸门再问」的做法作废，批准闸门只列 B 类决定和仍未回答的 A 类问题。
+  - **什么时候停、停下时说什么。**
+    - **标准档设计评审上限从 2 轮改为 3 轮**（实现和汇总本来就是 3 轮）。
+    - **第 2 轮不收敛就提前停**：标准档的每一个评审点（设计、实现、汇总），第 2 轮的 blocking 数（被接受的加被拒绝的）不少于第 1 轮时，不开第 3 轮，先交给用户。
+    - **停下来问用户时带诊断，选项是四个**：诊断包括各轮 blocking 走势、各轮修订量、本轮 blocking 的来源（原有漏报、上一轮修订带出、等用户决定）、剩余 blocking 分成结构类（要改模块划分、接口或数据模型）和细节类（某个模块内部的规则）。选项是再开一轮（`grant`，一次只放一轮）、带着进实现（新增，`close --outcome carried --by user`）、接受为遗留风险、拆成加固任务。只剩细节类时主 agent 推荐「带着进实现」。严格档收口检查结论为 `escalate` 时带同样的诊断。
+  - **`review-round.sh` 的改动。**
+    - 上限表：`standard` 的 `design` 从 2 改为 3。
+    - `result` 新增 `--induced I`（本轮 blocking 里由上一轮修订带出的条数，含只落地一半的）和 `--pending P`（这个评审点此刻仍在等用户回答的 blocking 条数，含更早轮次提出的；它是当前状态，不和本轮的 `blocking + rejected` 比大小），写入 `Review` 行的 `induced=` / `pending=` 字段。有档位的任务从第 2 轮起两项都必填，没有就写 0。
+    - `start` 的提前停：生效档位是 `standard`、要开第 3 轮、第 2 轮的 `blocking + rejected` 不少于第 1 轮、且没有本轮 `grant` 时以 exit 3 拒绝；`status` 里显示 `gate=not-converging`。到上限、提前停、`escalate` 三种拒绝的输出结构相同：各轮走势、要写的诊断、四个选项各自的命令；`result` 之后下一轮开不了时当场输出同一段。
+    - `start` 的修订量：design 评审点把本轮被评审的文档（`--docs <path>...`，不给时取 `status.md` 的 `- 设计文档:`）复制到 `<task-dir>/reviews/snap/<point>/r<n>/`，从第 2 轮起输出 `delta=+<增行>/-<删行> prev=… growing=yes|no`，把与上一轮的 diff 写到 `r<n-1>-r<n>.diff` 供增量复审使用，并在 `Review` 行记 `delta=`。新增行数比上一轮多时只告警、不拒绝；没有可读的文档时跳过。修订量只在设计阶段计量。
+    - `close` 新增结局 `carried`（要求 `--by user`）；最近一轮 `pending` 大于 0 时 `close --outcome passed` 被拒绝，`start` 不因此拒绝。
+    - `status` 在每个评审点下面多显示各轮的 `blocking / rejected / induced / pending / delta`。
+  - **新文件 `<task-dir>/impl-notes.md`**（模板 `skills/execute-task/templates/impl-notes.md`），分两节：「实现备注」放设计评审里实现者需要的非阻断细节，每条注明来源发现的编号；「带进实现的 blocking」每条写成一个必须通过的测试项。它和 `decisions.md` 一起随 lane 派发，lane 在报告里逐条回应，主 agent 交付前逐条核对已落地（`task-status.md` 的交付前检查清单和 `final-report.md` 各加一项）。
+  - **提示词与模板。** 规则各写在一处：分级、非阻断发现的去向、上限与提前停、诊断与四个选项在 `references/review-closure.md`（§2、§4、§5、§7、§8、§9）；减法优先和「马上问、待定部分不动」在 `prompts/main-agent.md`（新增 `### 修订纪律`，`## 提问与自动执行` 新增一条）；`SKILL.md` 的档位表、`## 评审收口` 摘要和 §2、§4 一句话引用。review-agent 在增量轮给每条新发现注明来源（`原有` 或 `上一轮修订带出`），供主 agent 填 `--induced`，并且不重复报告派发里列为「等用户决定」的点；`review-report.md` 的发现表加「来源」列，`cross-review-prompt.md` 对跨 harness 评审者提同样的要求。implementation-agent 先读 `impl-notes.md`，带进实现的 blocking 每条要有对应的测试。为了不超体积目标，常驻文件里和别处重复的内容换成了引用：`SKILL.md` 24,998 → 25,595 字节（目标 ≤ 25 KB），`prompts/main-agent.md` 30,044 → 30,718（≤ 30 KB），`review-agent.md` 15,211 → 15,353（≤ 15 KB），`implementation-agent.md` 12,285 → 12,270（≤ 12 KB）。
+  - **测试。** `scripts/test-watchdog-hooks.sh` T6 新增一组 convergence 锚点（95 项），按规则钉住上面每条提示词表述；被有意删除的说法（集中到批准闸门再问、标准档 design 2 轮、三选一、设计阶段的「可以一起落地」）改成反向守卫；`task-status.md` 里的示例行交给真实的 `review-round.sh status` 解析。`scripts/test-review-round.sh` 新增 L 节，覆盖提前停、`--induced` / `--pending`、`carried`、快照与修订量、旧格式的行。
+  - **对旧任务的兼容。** 没有 `- Tier:` 的旧任务对新增的检查一律 fail open：不设上限、不提前停，`result` 不要求 `--induced` / `--pending`。没有 `induced=` / `pending=` / `delta=` 字段的旧 `Review` 行照常解析，值按 `-`。上限放宽和提前停只针对标准档，其余规则对严格档同样适用。进行中的标准档任务升级后，设计评审点的上限变成 3 轮，第 2 轮起的 `result` 要补上这两个参数。
+  - 文档同步：`README.md`、`docs/architecture.md`（主线流程、设计决策 h 的第 4 条和新增的第 6 条、测试套件表、成对修改清单）、`hooks/README.md`、`docs/design/watchdog-design.md`、`docs/design/execute-task-skill-design.md`。
+
 ## [0.33.0] — 2026-11-26
 
 - **execute-task 分档与评审收敛改造。** 复盘（两个重型任务的 517 条 blocking 发现，以及一批本应是中短程的任务）显示：评审循环占重型任务活跃时间的 48%–60%；32% 的 blocking 修复没有改变产品行为（测试强度 13%、文档同步 9%、证据流程 8%）；实现阶段的真缺陷第 1 轮 58 条、第 2 轮 17 条、第 3 轮及以后 4 条；收口检查 6 个该做的点只做了 1 个，有一次设计评审跑到 14 轮才被用户叫停；同量级小改动（生产代码 ≤150 行）直接开发中位约 28 分钟，走 execute-task 中位约 144 分钟。根因是停止条件为「对抗性评审者再也找不出问题」这种无界搜索、blocking 准入太宽、每轮全量复审、评审强度不随风险变化，以及能机械检查的规则只写在提示词里。设计依据与落地契约见 `docs/design/execute-task-tiers-design.md`（§10 为契约）。
