@@ -467,3 +467,11 @@ lane 派发时，这个文件和 `decisions.md` 一起附上。
    - N8：编排模式下 worker 不停下时，"裁决完马上问"的问题要等 worker 真正停下才会被编排器通知给用户。结果不会出错，只是问得晚。
    - N13：待定项在第 1 轮计入 blocking 数，第 2 轮起不再计入，提前停的比较因此偏向"已收敛"。
    - C1–C4：自报的数字和 `--by user` 脚本无法核实（同 §10.8 的 R2-N2）；用户回答后的改动可以不经复审就关闭；`- 设计文档:` 的自由文本可能碰巧解析到无关文件；从未评审的评审点也能 `close --outcome carried`。
+
+第 2 轮（增量复审，独立评审）：通过，没有 blocking，三条修复逐条核实已落地。5 条非阻断发现记为后续加固，这一轮不改：
+
+- R2-N1：文档在某一轮没被采集（超限或漏列）时，那一轮和它回来的那一轮都不计它的修订量，行上的 `delta=` 看不出是部分计量，交给增量复审的 diff 里也没有它。每次都有 `note:`，按"每轮给同一组文档"使用时不会出现。
+- R2-N2：`review-agent.md` 核对 `impl-notes.md` 时没有限定到本评审点的条目，多 lane 时可能把别的 lane 负责的条目报成缺测试；`review-report.md` 没有放核对结果的位置。
+- R2-N3：`implementation-agent.md` 没有写 `impl-notes.md` 两节与设计正文的关系，lane 靠模板里的节注释得知。
+- R2-N4：`--docs design/*.md` 会把 `*.review-history.md` 一起算进修订量和 diff。
+- R2-N5：测试缺口——`read_sources()` 的类型校验、继承未采集记录时的源文件检查、`templates/impl-notes.md` 与 `test-agent.md` 里三句关系句的锚点（评审者的 14 个变异里这 5 个存活）。
