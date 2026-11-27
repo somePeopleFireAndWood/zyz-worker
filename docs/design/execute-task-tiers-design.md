@@ -555,10 +555,10 @@ lane 派发时，这个文件和 `decisions.md` 一起附上；实现评审、�
 
 | 文件 | 内容 | 上限（字节） |
 |---|---|---|
-| `SKILL.md` | 档位、范围、用户主导权、流程各阶段、评审收口摘要、并行、watchdog 义务、编排模式要点 | 10,240 |
-| `prompts/main-agent.md` | 主 agent 每一步的操作：命令、派发里放什么、怎么提问、怎么交付。不重复 `SKILL.md` 的规则 | 8,192 |
-| `subagents/review-agent.md` | 任务、范围、等级、报告、本环境的事实 | 5,120 |
-| `subagents/implementation-agent.md`、`test-agent.md` | 任务、范围、完成条件、本环境的事实 | 各 4,096 |
+| `SKILL.md` | 档位、范围、用户主导权、流程各阶段、评审收口摘要、并行、watchdog 义务、编排模式要点 | 12,288 |
+| `prompts/main-agent.md` | 主 agent 每一步的操作：命令、派发里放什么、怎么提问、怎么交付。不重复 `SKILL.md` 的规则 | 10,240 |
+| `subagents/review-agent.md` | 任务、范围、等级、报告、本环境的事实 | 6,144 |
+| `subagents/implementation-agent.md`、`test-agent.md` | 任务、范围、完成条件、本环境的事实 | 各 5,120 |
 | `references/review-closure.md` | 评审点、轮次与模式、等级、关闭、上限与提前停、严格档收口检查、命令表 | 8,192 |
 | `references/design-doc-discipline.md`、`cross-harness.md`、`recovery.md`、`version-control.md` | 各自只留流程和本环境的事实 | 各 3,072 |
 | `references/watchdog.md`、`orchestration-mode.md` | 机制和协议说明，不改（只修悬空引用） | 不变 |
