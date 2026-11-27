@@ -95,7 +95,7 @@ esac
 
 command -v git >/dev/null 2>&1 || exit 0
 
-SAFE_RECIPE="安全的替代做法：(1) 要撤销一次临时变异，必须在变异之前先备份一份（cp <file> <file>.zyz-mut-bak），恢复时用 mv 移回，再用 git diff/cmp 核对；(2) 如果只是想查看已提交的版本，用 git show HEAD:<file>——它不会动工作区；(3) 需要临时搁置改动时，先 git diff > /tmp/<name>.patch，之后再 git apply -R。如果这次拒绝是误报，只对这一条命令设置 ZYZ_CHECKOUT_GUARD_DISABLE=1，用完立即关掉。"
+SAFE_RECIPE="安全的替代做法：(1) 要撤销自己的临时改动，必须在改之前先备份一份（cp <file> <file>.zyz-bak），恢复时用 mv 移回，再用 git diff/cmp 核对；(2) 如果只是想查看已提交的版本，用 git show HEAD:<file>——它不会动工作区；(3) 需要临时搁置改动时，先 git diff > /tmp/<name>.patch，之后再 git apply -R。如果这次拒绝是误报，只对这一条命令设置 ZYZ_CHECKOUT_GUARD_DISABLE=1，用完立即关掉。"
 
 # ---- git stash state-moving forms -------------------------------------------
 # Normalize whitespace, then look for `git stash <sub>` where sub moves state.

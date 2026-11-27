@@ -10,7 +10,8 @@
 #   T5  stop-gate-subagent + stop-gate-main behavior (smoke)
 #   T6  doc wiring + version consistency across the three manifests
 #   T7  L5 dispatch scope guard: capped-phrasing denial, continuation
-#       exemption (false-positive guard), scoping, disable switch, fail-open
+#       exemption (false-positive guard), scoping, disable switch, fail-open;
+#       the dispatch text of the plugin's own prompts passes the matcher
 #
 # Usage:
 #   bash scripts/test-watchdog-hooks.sh
@@ -666,6 +667,13 @@ ZYZ_T7_LEGIT
     else
         fail "T7 deny uses PreToolUse hookSpecificOutput shape" "$out"
     fi
+    # §12.11-5: the deny reason tells the main agent how to split a review, in
+    # the vocabulary the prompts use now (scenarios, not coverage dimensions).
+    if printf '%s' "$out" | grep -qF '按设计的场景分批' && ! printf '%s' "$out" | grep -qF '覆盖维度'; then
+        pass "T7 deny reason splits a review by scenario, not by coverage dimension"
+    else
+        fail "T7 deny reason splits a review by scenario, not by coverage dimension" "$out"
+    fi
     if [ -s "$T/runtime/scope-guard.log" ]; then
         pass "T7 blocked attempts appended to scope-guard.log"
     else
@@ -684,6 +692,133 @@ ZYZ_T7_LEGIT
     rm -rf "$SANDBOX"
 else
     skip "T3-T7 smoke tests" "no jq/python3"
+fi
+
+# ---------------------------------------------------------------------------
+# T7 (continued) — the plugin's own dispatch text must pass L5
+# ---------------------------------------------------------------------------
+# Tiers design §12.11-1: prompts/main-agent.md told the main agent to put a
+# sentence into every lane dispatch that L5 reads as a scope cap ("…一行结论…");
+# real tasks were denied for it. The text the main agent copies into a dispatch
+# is therefore run through the real matcher, `zyz_scope_cap_hit` of lib.sh, one
+# line at a time: a hit on any line fails and names the line and the phrase.
+#   - prompts/main-agent.md `## 派发 lane` and `## 评审`: what goes into a lane
+#     or review dispatch;
+#   - templates/cross-review-prompt.md: the brief of the cross-harness reviewer;
+#   - subagents/*.md: system prompts, which L5 never sees — but the main agent
+#     readily copies a sentence of a role prompt into its dispatch (the first
+#     replacement tried for the sentence above, "最终回复只给报告路径、结论和阻塞项",
+#     was a role-prompt line and trips a different pattern).
+# Each line is tried as written and, when that passes, with ` and " removed: L5
+# blanks quoted spans, and an agent rewording the line into its own dispatch
+# drops the quotes. Stricter than the hook on purpose — a continuation phrase
+# elsewhere in a real prompt would let a capped line through; the prompts should
+# not rely on that.
+t7p_scan() { # <file> [<## heading>...] -> HEAD / HIT / LINES / ERR records, tab-separated
+    local file="$1"
+    shift
+    (
+        . hooks/scripts/lib.sh 2>/dev/null || { printf 'ERR\tcannot source hooks/scripts/lib.sh\n'; exit 0; }
+        type zyz_scope_cap_hit >/dev/null 2>&1 || { printf 'ERR\tlib.sh has no zyz_scope_cap_hit\n'; exit 0; }
+        n=0
+        while IFS="$(printf '\t')" read -r kind no line; do
+            case "$kind" in
+                H) printf 'HEAD\t%s\n' "$no"; continue ;;
+                L) ;;
+                *) continue ;;
+            esac
+            n=$((n + 1))
+            hit="$(zyz_scope_cap_hit "$line")"
+            if [ -n "$hit" ]; then
+                printf 'HIT\tline %s as written matches [%s]: %s\n' "$no" "$hit" "$line"
+                continue
+            fi
+            bare="$(printf '%s' "$line" | tr -d '`"')"
+            [ "$bare" != "$line" ] || continue
+            hit="$(zyz_scope_cap_hit "$bare")"
+            [ -z "$hit" ] || printf 'HIT\tline %s with quotes removed matches [%s]: %s\n' "$no" "$hit" "$line"
+        done <<T7P_LINES
+$(T7P_HEADS="$(printf '%s\n' "$@")" awk '
+    BEGIN { n = split(ENVIRON["T7P_HEADS"], h, "\n"); for (i = 1; i <= n; i++) if (h[i] != "") { want[h[i]] = 1; any = 1 }; keep = !any }
+    /^## / { if (any) { keep = ($0 in want); if (keep) print "H\t" $0 } }
+    keep && NF { print "L\t" FNR "\t" $0 }' "$file" 2>/dev/null)
+T7P_LINES
+        printf 'LINES\t%s\n' "$n"
+    )
+}
+t7p_field() { printf '%s\n' "$1" | awk -F '\t' -v k="$2" '$1 == k { sub(/^[^\t]*\t/, ""); print }'; }
+t7p_verdict() { # <label> <scan-output> <min-lines> <headings-wanted>
+    local label="$1" out="$2" err heads lines hits
+    err="$(t7p_field "$out" ERR)"
+    heads="$(t7p_field "$out" HEAD | grep -c . || true)"
+    lines="$(t7p_field "$out" LINES)"
+    hits="$(t7p_field "$out" HIT)"
+    if [ -n "$err" ]; then
+        fail "$label" "$err"
+    elif [ "$heads" -ne "$4" ]; then
+        fail "$label" "found $heads of the $4 sections to scan"
+    elif [ -z "$lines" ] || [ "$lines" -lt "$3" ]; then
+        fail "$label" "only ${lines:-0} lines scanned, expected at least $3"
+    elif [ -n "$hits" ]; then
+        fail "$label" "$(printf '%s' "$hits" | tr '\n' '|')"
+    else
+        pass "$label"
+    fi
+}
+t7p_dir="$(mktemp -d 2>/dev/null || true)"
+if [ -n "$t7p_dir" ] && [ -d "$t7p_dir" ]; then
+    # Controls first: the scanner must see the sentence design §12.11-1 is about,
+    # only inside the sections it was asked for, and through backticks.
+    printf '## 派发 lane\n\n6. **报告路径** `<task-dir>/lanes/<id>.md`；最终消息只含报告路径、一行结论、阻塞项，不用 SendMessage 重发。\n\n## 其它\n\n只要总结论。\n' > "$t7p_dir/old.md"
+    t7p_out="$(t7p_scan "$t7p_dir/old.md" '## 派发 lane')"
+    if [ "$(t7p_field "$t7p_out" HIT)" = 'line 3 as written matches [一行结论]: 6. **报告路径** `<task-dir>/lanes/<id>.md`；最终消息只含报告路径、一行结论、阻塞项，不用 SendMessage 重发。' ] \
+        && [ "$(t7p_field "$t7p_out" LINES)" = 2 ]; then
+        pass "T7 prompt scan: the 0.33.0 lane-dispatch sentence is reported with its line and phrase, other sections are left alone"
+    else
+        fail "T7 prompt scan: the 0.33.0 lane-dispatch sentence is reported with its line and phrase, other sections are left alone" "$(printf '%s' "$t7p_out" | tr '\n' '|')"
+    fi
+    printf '最终回复只给报告路径、结论和阻塞项，各一行。\n' > "$t7p_dir/role.md"
+    t7p_out="$(t7p_scan "$t7p_dir/role.md")"
+    if [ "$(t7p_field "$t7p_out" HIT)" = 'line 1 as written matches [只给报告路径、结论]: 最终回复只给报告路径、结论和阻塞项，各一行。' ]; then
+        pass "T7 prompt scan: the first replacement tried for that sentence is reported too (a different pattern)"
+    else
+        fail "T7 prompt scan: the first replacement tried for that sentence is reported too (a different pattern)" "$(printf '%s' "$t7p_out" | tr '\n' '|')"
+    fi
+    printf '## 评审\n\n- 最终回复写 `一句话结论`。\n' > "$t7p_dir/quoted.md"
+    t7p_out="$(t7p_scan "$t7p_dir/quoted.md" '## 评审')"
+    if [ "$(t7p_field "$t7p_out" HIT)" = 'line 3 with quotes removed matches [一句话结论]: - 最终回复写 `一句话结论`。' ]; then
+        pass "T7 prompt scan: a capping phrase inside backticks is reported once the quotes are removed"
+    else
+        fail "T7 prompt scan: a capping phrase inside backticks is reported once the quotes are removed" "$(printf '%s' "$t7p_out" | tr '\n' '|')"
+    fi
+    # (in a subshell: the inner verdict must not count as a check of this suite)
+    t7p_out="$( (t7p_verdict inner "$(t7p_scan "$t7p_dir/quoted.md" '## 评审' '## 派发 lane')" 1 2) 2>&1 )"
+    case "$t7p_out" in
+        'FAIL  inner — found 1 of the 2 sections to scan') pass "T7 prompt scan: a requested section that is missing fails the scan" ;;
+        *) fail "T7 prompt scan: a requested section that is missing fails the scan" "$t7p_out" ;;
+    esac
+    # The real text. The matcher spawns one grep per pattern per clause, so the
+    # scans run side by side.
+    t7p_scan skills/execute-task/prompts/main-agent.md '## 派发 lane' > "$t7p_dir/lane" 2>/dev/null &
+    t7p_scan skills/execute-task/prompts/main-agent.md '## 评审' > "$t7p_dir/review" 2>/dev/null &
+    t7p_scan skills/execute-task/templates/cross-review-prompt.md > "$t7p_dir/cross" 2>/dev/null &
+    for t7p_role in review-agent implementation-agent test-agent; do
+        t7p_scan "subagents/$t7p_role.md" > "$t7p_dir/$t7p_role" 2>/dev/null &
+    done
+    wait
+    t7p_verdict "T7 skills/execute-task/prompts/main-agent.md: no line of the lane-dispatch section trips the L5 scope guard (§12.11-1)" \
+        "$(cat "$t7p_dir/lane" 2>/dev/null)" 10 1
+    t7p_verdict "T7 skills/execute-task/prompts/main-agent.md: no line of the review-dispatch section trips the L5 scope guard (§12.11-1)" \
+        "$(cat "$t7p_dir/review" 2>/dev/null)" 10 1
+    t7p_verdict "T7 skills/execute-task/templates/cross-review-prompt.md: no line trips the L5 scope guard (§12.11-1)" \
+        "$(cat "$t7p_dir/cross" 2>/dev/null)" 8 0
+    for t7p_role in review-agent implementation-agent test-agent; do
+        t7p_verdict "T7 subagents/$t7p_role.md: no line trips the L5 scope guard if copied into a dispatch (§12.11-1)" \
+            "$(cat "$t7p_dir/$t7p_role" 2>/dev/null)" 15 0
+    done
+    rm -rf "$t7p_dir"
+else
+    skip "T7 prompt scan against the L5 scope guard" "no mktemp"
 fi
 
 # ---------------------------------------------------------------------------

@@ -408,12 +408,16 @@ rc="$(run_rounds design-main 3)"; rc_is "$rc" 0 "B strict: rounds 1..3 need no c
 out="$(rr start design-main 2>&1)"; rc=$?
 rc_is "$rc" 3 "B strict: round 4 without a convergence check refused"
 has "$out" "check design-main --outcome" "B strict: refusal names the check command"
+has "$out" "是不是都在正常流程上、是不是在减少" "B strict: ... and asks what review-closure.md §8 asks"
+has "$out" '`## 后续对抗任务`' "B strict: ... out-of-scope cases go to the later adversarial task list"
+lacks "$out" "类级修复" "B strict: ... no class-level-fix wording (§12.11-5)"
+lacks "$out" "极端构造" "B strict: ... no contrived-construction wording (§12.11-5)"
 rr check design-main --outcome continue --reason "仍在收敛" >/dev/null
 grep -q '^- Review-Check: point=design-main; round=3; outcome=continue; at=[0-9]*; reason=仍在收敛$' "$T/status.md" \
     && pass "B strict: check row in the §10.4 format, at the latest round" || fail "B strict: check row format"
 rc="$(run_rounds design-main 3)"; rc_is "$rc" 0 "B strict: after the check, rounds 4..6 run"
 rr start design-main >/dev/null 2>&1; rc_is "$?" 3 "B strict: round 7 needs a new check (the round-3 one does not count)"
-rr check design-main --outcome class-fix --reason "类级修复" >/dev/null
+rr check design-main --outcome class-fix --reason "同一类问题一次修掉" >/dev/null
 rc="$(run_rounds design-main 3)"; rc_is "$rc" 0 "B strict: class-fix lets rounds 7..9 run"
 rr check design-main --outcome escalate --reason "交用户" >/dev/null
 out="$(rr start design-main 2>&1)"; rc=$?
@@ -863,6 +867,8 @@ out="$(GATE_TIER=strict gate zyz-worker:review-agent "review-point=design-replay
 out="$(GATE_TIER=standard gate zyz-worker:review-agent "review-point=design-replay round=4 mode=incremental")"
 denied "$out" && pass "J gate: dispatch Tier = the task tier, not the point's -> deny" || fail "J gate task tier accepted"
 has "$out" "Tier: strict" "J ... and names the point's tier"
+has "$out" "评审者从这一行得知评审点的档位" "J ... as what tells the reviewer the point's tier"
+lacks "$out" "评审清单" "J ... not as a choice of review checklist (§12.11-5)"
 rr result design-replay --blocking 1 --rejected 0 --induced 0 --pending 0 >/dev/null
 has "$(rr status design-replay)" "tier=strict" "J status shows the point's effective tier"
 rr open d2 --stage design --tier fast >/dev/null 2>&1; rc_is "$?" 2 "J --tier below the task tier -> exit 2"
@@ -943,7 +949,17 @@ has "$out" "review-round.sh start dm" "L1 ... then start"
 has "$out" "review-round.sh close dm --outcome residual --by user --reason" "L1 ... option 2: residual"
 has "$out" "review-round.sh close dm --outcome split --by user --reason" "L1 ... option 3: split"
 [ "$(printf '%s\n' "$out" | grep -c '^  ([0-9]) ')" -eq 3 ] && pass "L1 ... exactly three options" || fail "L1 option count" "$out"
-has "$out" "每条写明可达性和影响。" "L1 ... the diagnosis ends on reachability and impact"
+# §12.11-5: the diagnosis asks for what review-closure.md §7 asks for — counts
+# by origin and by structure / detail, then the list — and nothing after it.
+# Checked as whole lines between `下一步` and `选项`, so a sentence appended to
+# the diagnosis (a reworded recommendation, say) is seen.
+diag="$(printf '%s\n' "$out" | awk '/^选项：/ { on = 0 } on { print } /^下一步：/ { on = 1 }')"
+[ "$(printf '%s\n' "$diag" | grep -c .)" -eq 2 ] && pass "L1 ... the diagnosis is two lines: what to diagnose, then the list" || fail "L1 diagnosis line count" "$diag"
+printf '%s\n' "$diag" | sed -n 1p | grep -qx -- '诊断：(a) .*；(b) .*；(c) .*和细节类（某个模块内部的规则）各几条。' \
+    && pass "L1 ... the diagnosis line ends on the structure / detail counts" || fail "L1 diagnosis line ending" "$diag"
+[ "$(printf '%s\n' "$diag" | sed -n 2p)" = "清单：剩余的 blocking 逐条列出，含被拒绝而评审者仍坚持的。" ] \
+    && pass "L1 ... followed by the list of what is left, rejected-but-upheld ones included" || fail "L1 list line" "$diag"
+lacks "$out" "可达性" "L1 ... no per-finding reachability and impact write-up (§12.11-5)"
 no_fourth "$out" "L1 early-stop refusal"
 has "$(rr status dm)" "gate=not-converging" "L1 status shows gate=not-converging"
 rr grant dm --reason "用户：再开一轮" >/dev/null

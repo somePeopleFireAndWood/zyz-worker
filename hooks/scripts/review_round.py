@@ -371,8 +371,9 @@ def ask_user(point, pt, head, with_trend=True):
     lines += [
         "下一步：用一条消息把诊断交给用户（§11.3 第 8 条），给出你的建议，请用户三选一。",
         "诊断：(a) 各轮 blocking 走势和各轮修订量（上面的数字）；(b) 本轮 blocking 的来源——原有漏报、上一轮修订带出"
-        "（含只落地一半的）、等用户决定各几条；(c) 剩余 blocking 分成结构类（要改模块划分、接口或数据模型）和细节类"
-        "（某个模块内部的规则），每条写明可达性和影响。",
+        "（含只落地一半的）、等用户决定各几条；(c) 剩余 blocking 里结构类（要改模块划分、接口或数据模型）和细节类"
+        "（某个模块内部的规则）各几条。",
+        "清单：剩余的 blocking 逐条列出，含被拒绝而评审者仍坚持的。",
         "选项：",
         "  (1) 再开一轮（剩余问题涉及安全或数据、真实路径上的缺陷还在减少、或者修复方案已经明确时建议这一项）：用户批准后 "
         "`%s grant %s --reason <用户批准的原话要点>`，再 `%s start %s`" % (cli(), point, cli(), point),
@@ -440,7 +441,7 @@ def decide(st, task_tier, point, with_trend=True):
             and not any(c["round"] == n - 1 for c in pt["checks"]):
         return "needs-check", (
             "严格档开第 %d 轮之前，要在第 %d 轮之后对第 %d–%d 轮做一次收口检查（§4.5；更早做的检查不算）："
-            "看 blocking 是否在收敛、反复出现的类是否该做类级修复、剩下的是否属于极端构造（进遗留清单），然后运行 "
+            "看剩下的 blocking 是不是都在正常流程上、是不是在减少（范围外的在 residual-risks.md 的 `## 后续对抗任务` 记一行），然后运行 "
             "`%s check %s --outcome continue|class-fix|reorder|escalate --reason <依据>`，再 start。"
             % (n, n - 1, n - 3, n - 1, cli(), point))
     return "ok", ""
@@ -1317,7 +1318,7 @@ def cmd_gate(paths):
             print("deny\t" + why + "。")
             return
         if tier is not None and tier not in tiers:
-            print("deny\t评审点 %s 的生效档位是 %s，派发里要单独一行写 `Tier: %s`%s——评审者按这一行选评审清单。"
+            print("deny\t评审点 %s 的生效档位是 %s，派发里要单独一行写 `Tier: %s`%s——评审者从这一行得知评审点的档位。"
                   "生效档位见 `%s status %s` 的 tier=。"
                   % (point, tier, tier, "（现在写的是 %s）" % "、".join(tiers) if tiers else "（现在没有这一行）",
                      cli(), point))
