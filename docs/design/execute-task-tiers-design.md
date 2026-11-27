@@ -616,3 +616,5 @@ lane 派发时，这个文件和 `decisions.md` 一起附上；实现评审、�
 4. `review-agent.md` 写明汇总评审按实现评审对整份 diff 走场景。
 5. 脚本输出和文档里与新规则对不上的用词：L5 拒绝消息的"按覆盖维度拆分"、`review_round.py` 的"可达性和影响""类级修复、极端构造""评审清单"、`hooks/README.md` 的"临时变异"、`docs/architecture.md` 的 watchdog 确认方式、`design-doc-discipline.md` 说设计复审给评审历史路径而派发清单里没有这一项。
 6. 升级时还在进行中的任务，设计文档没有 `## 场景`：下一次派发评审或 lane 之前由主 agent 补上这一节。写在 `design-doc-discipline.md`。
+
+增量复审（对象 `cdc18c1`）：通过，没有 blocking。评审者按主 agent 提示词实际写了 lane、test-agent、review-agent 三种派发喂给真实的 hook，都放行。4 条非阻断发现里采纳两条：编排模式下等 `answer.md` 时不用 `user` 声明这一句，腾字节时从 `main-agent.md` 删掉后只剩 `references/watchdog.md` 有，补进 `references/orchestration-mode.md`；CHANGELOG 的体积数字和"脚本和 hook 没有改"的说法跟上这一轮。留给后续：L5 的词表对"只给出 / 只写……结论"这类近义说法仍会拒绝（主 agent 换个说法重派即可，只是多一个来回）；新加的 L5 扫描让 `test-watchdog-hooks.sh` 慢约一分钟。
