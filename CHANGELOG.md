@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **修复：设计阶段派出的角色卡住时没有任何一层叫醒主 agent（#30）。** `zyz_phase_active` 对含 `design` 的阶段返回假，本意是设计批准闸门等用户时不催主 agent；但 L3 的三处扫描都拿它当总开关，于是「设计评审进行中、任务在等一个 subagent」也一起静音了：逐角色发现不跑，声明的 `wait` 到点和 `wait --ref` 已不在都不报，会话静默也不报。实际事故里设计评审第 2 轮的 review-agent 50 多分钟没有结束，是用户问了进度主 agent 才去查。现在 design 阶段（新增 `zyz_phase_design`）：
+  - **逐角色发现照报**（静默、跟踪未对账、probe 逾期、无输出、已完成未收取）：`monitors/watchdog.sh` 主循环的条件从「本会话有任务处于活跃阶段」放宽为「活跃或 design」。
+  - **声明照兑现**：`wait` 到点叫醒主 agent 并按 `remind-sec` 再提醒，`wait --ref` 绑定的后台任务在上次 Stop 的列表里已经没有了报一次。
+  - **会话静默有条件地生效**：主 agent 上次停下时有执行者在跑（`stop-snapshot` 的执行者数 ≥ 1，或观察器看到未结束的已派发角色），此后整个会话 `silence-sec`（默认 1 小时）没有任何动静，就叫醒主 agent。有效的 `wait` / `user` 声明照常压住它。
+  - **等用户批准时保持安静**：停下时没有执行者、没有快照、或快照是 `unknown`（Codex）时不报；无执行者、状态过期（L1/L3）、L4 停止门在 design 阶段仍然不生效；`main-state.sh` 在执行者数为 0 时给用户发 `needs_input` 的兜底不变。awaiting-confirmation 阶段不变。
+  - 没有做的：给只读角色加「运行时长」信号（issue 里的第 2 种做法）。一直在调用工具却不产出的角色在任何阶段都不会触发会话静默；主 agent 想给角色设时限，派发后声明 `wait --at <预计完成时间>`，到点被叫醒。`references/watchdog.md` 的「阶段」一条和 `docs/design/watchdog-design.md` §8 写明了这一点。
+  - 测试：`test-session-silence.sh` B10c–B10i、`test-no-executor.sh` N12g–N12j 与 N16p2–N16p6；新用例在修复前的 `watchdog.sh` / `lib.sh` 上失败。
+
 ## [0.34.0] — 2026-11-28
 
 - **execute-task 设计评审收敛修正。** 0.33.0 发布后的第一个标准档任务（一个六分册、约 200 KB 的数仓引擎设计）在设计评审上没有收敛：三个评审点前两轮的 blocking 数是主路径 24 → 16、注册表 12 → 14、切换 9 → 7，第 3 轮是用户授权加开的。发现本身是真问题（前两轮 82 条 blocking 里 75 条修复后会改变产品行为），但评审对象逐轮变大（设计文档 95 KB → 145 KB → 199 KB），新问题主要来自修订本身（第 3 轮先回来的 9 条 blocking 全部出在第 2 轮修订新写的规则里，其中至少 4 条能追到两条被落地的非阻断发现上）。两轮约 200 条非阻断发现全部进了设计正文：`design-doc-discipline.md` 写「只做记录」，`review-closure.md` 写「可以一起落地」，两处矛盾，主 agent 按后者执行。要用户定的 18 条 blocking 攒到了批准闸门，主 agent 先按推荐项改正文再送评审，有一个问题因此连续三轮被报。结论：设计文档是散文，没有编译器和测试来裁决，每轮修订新写的文字越多，下一轮能被挑出的问题就越多；要收敛，每轮新写的量要逐轮变小，单纯放宽轮次上限不解决问题。依据与契约见 `docs/design/execute-task-tiers-design.md` §11。

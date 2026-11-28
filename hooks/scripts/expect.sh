@@ -25,7 +25,9 @@
 # Kinds:
 #   wait      something moves the task by <when>: a background run (give its id
 #             as --ref; the row lapses as soon as that task is gone), an outside
-#             batch job, or a scheduled re-check in the `observing` phase. Mutes
+#             batch job, a design-review role, or a scheduled re-check in the
+#             `observing` phase (honoured in active, design and observing
+#             phases). Mutes
 #             the status-stale and no-executor findings until <when>; then the
 #             watchdog wakes you, and repeats every remind-sec until you clear
 #             or move the row.

@@ -292,6 +292,39 @@ done
 write_status observing "- Expect: key=r; kind=wait; at=$((NOW + 3600)); ref=-; reason=次日对账"
 out="$(tick)"
 if [ -z "$out" ]; then pass "B10b observing with a scheduled wait -> quiet"; else fail "B10b observing" "out=[$out]"; fi
+# Design phase (#30). B10 above is the approval gate with no Stop recorded. A
+# design-review role that hangs leaves the task waiting on a subagent, not on
+# the user: the floor holds when the main agent stopped with an executor
+# running, and stays off when it stopped with none (the gate).
+write_status design
+printf '%s 1 a123 0\n' "$((NOW - 2100))" > "$ROOT/runtime/stop-snapshot"
+out="$(tick)"
+if is_silence "$out" && printf '%s' "$out" | grep -q '仍在 design 阶段' && printf '%s' "$out" | grep -q '35 分钟'; then
+    pass "B10c design, stopped with an executor running, 35 min silent -> silence finding"
+else
+    fail "B10c design with a running reviewer" "out=[$out]"
+fi
+set_activity 1500
+out="$(tick)"
+if [ -z "$out" ]; then pass "B10d ... 25 min silent (< threshold) -> quiet"; else fail "B10d design below threshold" "out=[$out]"; fi
+set_activity 2100
+printf '%s 0 - 0\n' "$((NOW - 2100))" > "$ROOT/runtime/stop-snapshot"
+out="$(tick)"
+if [ -z "$out" ]; then pass "B10e design, stopped with no executor (the approval gate) -> quiet, no no-executor finding either"; else fail "B10e design gate" "out=[$out]"; fi
+printf '%s unknown unknown 0\n' "$((NOW - 2100))" > "$ROOT/runtime/stop-snapshot"
+out="$(tick)"
+if [ -z "$out" ]; then pass "B10f design, executors unknown at the Stop (no background_tasks) -> quiet"; else fail "B10f design unknown" "out=[$out]"; fi
+write_status design "- Expect: key=q; kind=user; since=$((NOW - 60)); reason=等用户批准设计"
+printf '%s 1 a123 0\n' "$((NOW - 2100))" > "$ROOT/runtime/stop-snapshot"
+out="$(tick)"
+if [ -z "$out" ]; then pass "B10g design, executor running + a user declaration -> quiet"; else fail "B10g design user" "out=[$out]"; fi
+write_status design "- Expect: key=rev; kind=wait; at=$((NOW + 3600)); ref=a123; reason=设计评审第 2 轮"
+out="$(tick)"
+if [ -z "$out" ]; then pass "B10h design, executor running + a wait that is not due -> quiet"; else fail "B10h design wait" "out=[$out]"; fi
+write_status awaiting-confirmation
+out="$(tick)"
+if [ -z "$out" ]; then pass "B10i awaiting-confirmation stays quiet whatever the Stop recorded"; else fail "B10i awaiting-confirmation" "out=[$out]"; fi
+rm -f "$ROOT/runtime/stop-snapshot"
 write_status delivery "" '- SubTask ID: ST1
 - Committed: abc1234'
 out="$(tick)"
