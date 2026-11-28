@@ -78,6 +78,9 @@
 # - zyz_phase_active <phase>    0 when phase is implementation/testing/
 #                               review/delivery (an active execution phase);
 #                               terminal and design phases are never active.
+# - zyz_phase_design <phase>    0 for a design phase (#30): never active —
+#                               the approval gate waits on the user — but
+#                               roles are dispatched there (design review).
 # - zyz_epoch_in <file>         first line of <file> as an epoch int.
 # - zyz_cooldown_ok <marker> <sec>
 #                               0 when <sec> has elapsed since the marker's
@@ -1163,6 +1166,20 @@ zyz_phase_handoff() {
     return 1
 }
 
+zyz_phase_design() {
+    # $1 = phase string. 0 for a design phase (#30). Not an active phase: the
+    # approval gate waits on the user for as long as it takes, so L1, L4 and
+    # the no-executor finding stay off. But design review dispatches roles
+    # there, so L3 still holds the main agent to what it waits on: per-role
+    # findings, a declared `wait`, and the silence floor when it stopped with
+    # an executor running.
+    zyz_phase_terminal "${1:-}" && return 1
+    case "${1:-}" in
+        *design*) return 0 ;;
+    esac
+    return 1
+}
+
 zyz_phase_active() {
     # $1 = phase string (already lowercased and space-stripped by zyz_phase_of).
     # Returns 0 only for a genuine active EXECUTION phase.
@@ -1177,9 +1194,8 @@ zyz_phase_active() {
     # `designreview`, making the watchdog nag and — worse — making the L4 stop
     # gate block the main agent from idling at §2 step 8, the one gate the
     # workflow mandates waiting at indefinitely for human approval. The gate
-    # would push for action exactly where the prompts promise silence. Both
-    # SKILL.md `## Watchdog 强制层` and the main-agent prompt promise the
-    # watchdog stays quiet during design.
+    # would push for action exactly where the prompts promise silence. What
+    # L3 still does in a design phase is listed at zyz_phase_design (#30).
     case "${1:-}" in
         *design*) return 1 ;;
     esac

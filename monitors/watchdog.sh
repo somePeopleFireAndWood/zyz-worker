@@ -58,6 +58,9 @@
 #   subagent, teammate), no user prompt and no status write for silence-sec,
 #   and nothing declared (see scan_declarations (5)). The floor check: it
 #   needs neither the fixed-pack capability nor a role-name match.
+#   In the design phase (#30) it needs one more fact: the main agent stopped
+#   with an executor running (design review), so it is not the approval gate.
+#   Role findings and declared waits are reported in the design phase too.
 # - "... N subagents / teammates ended their turn on an API error ..." (0.32.0):
 #   StopFailure records written by hooks/scripts/api-failure.sh (see
 #   scan_failures). Each record is reported once.
@@ -193,7 +196,8 @@ notify_stuck() { # $1 = task root, $2 = short message, $3 = origin (main|subagen
 # records stored under this dir, but no hook input says which task a role was
 # dispatched FOR (records sit under the primary task), so they are
 # session-scoped: the caller runs this only while SOME task of the session is
-# active, the unharvested predicate compares against the newest status write
+# active or in design (roots_any_dispatching; design review dispatches roles
+# too, #30), the unharvested predicate compares against the newest status write
 # of ANY task ($SESSION_STATUS_MTIME), and for a multi-task session the message
 # names no owning task — the main agent decides from its dispatch record.
 # (b) The status-stale finding is about THIS task's status.md, so it needs
@@ -352,6 +356,13 @@ read_snapshot() { # <root> -> sets SNAP_EPOCH SNAP_COUNT SNAP_IDS SNAP_CRONS
 #      call by any agent, user prompt or status write of the session), no
 #      dialog is open, and the same declarations as (4) do not mute it. The
 #      floor under every other check; repeats every remind-sec.
+# Design phase (#30): (1) and (2) hold as anywhere — a declaration is honoured
+# in every phase that is not finished or awaiting confirmation. (4) never
+# applies: stopping with nothing running is what the approval gate looks
+# like. (5) applies only when the main agent stopped with something running
+# (the stop-snapshot counted an executor, or a dispatched role is open): the
+# task then waits on that, not on the user, and nobody has moved for
+# silence-sec. A `user` declaration mutes it as usual.
 # None of these is muted by main-state idle: a Stop always records idle, so
 # only an explicit declaration may mute them (or, for (5), a dialog opened
 # after the last progress). Their IMs use --origin stall so
@@ -359,13 +370,15 @@ read_snapshot() { # <root> -> sets SNAP_EPOCH SNAP_COUNT SNAP_IDS SNAP_CRONS
 # the snapshot says `unknown` (no background_tasks: Codex).
 scan_declarations() {
     local root status_file phase expect pending key at reason ref kind rest
-    local mark remind last now n
+    local mark remind last now n design
     root="$1"
     status_file="$root/status.md"
     [ -f "$status_file" ] || return 0
     phase="$(zyz_phase_of "$status_file")"
     zyz_phase_terminal "$phase" && return 0
-    zyz_phase_active "$phase" || zyz_phase_observing "$phase" || return 0
+    design=0
+    zyz_phase_design "$phase" && design=1
+    [ "$design" = 1 ] || zyz_phase_active "$phase" || zyz_phase_observing "$phase" || return 0
     now="$(zyz_now)"
     read_snapshot "$root"
     expect="$(zyz_expect_eval "$root" "$SNAP_IDS")"
@@ -468,12 +481,25 @@ ZYZ_EXPECT_EVENTS
             silent=""
         fi
     fi
+    # Design (#30): waiting on the user is the normal state there, so the
+    # no-executor finding never applies, and the silence floor applies only
+    # when the main agent stopped with something still running (the host listed
+    # an executor at that Stop, or a dispatched role is open): then the task
+    # waits on that, not on the user. It is the complement of main-state.sh's
+    # design fallback, which pages the user when that same count is zero. No
+    # snapshot, or `unknown` (Codex): quiet.
+    if [ "$design" = 1 ]; then
+        noexec=0
+        case "$SNAP_COUNT" in
+            ''|0|*[!0-9]*) [ "$SESSION_LIVE" != 0 ] || silent="" ;;
+        esac
+    fi
     [ "$noexec" = 1 ] || [ -n "$silent" ] || return 0
     # A due wait already has its own, more specific reminder above.
     printf '%s\n' "$expect" | grep -q "^due$(printf '\t')" && return 0
     pending="$(zyz_status_uncommitted "$status_file")"
     pending="${pending#*	}"
-    zyz_task_has_pending_work "$phase" "$pending" || return 0
+    [ "$design" = 1 ] || zyz_task_has_pending_work "$phase" "$pending" || return 0
     zyz_status_waiting "$status_file" && return 0
     [ "$(zyz_expect_field "$expect" mutes_noexec)" = 1 ] && return 0
     if [ "$noexec" = 1 ]; then
@@ -595,6 +621,20 @@ ZYZ_ROOTS
     return 1
 }
 
+# 0 when some task of the session is in a phase that dispatches roles: an
+# active phase, or design (#30: a stuck design-review role must be reported).
+roots_any_dispatching() {
+    local r phase
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        phase="$(zyz_phase_of "$r/status.md")"
+        if zyz_phase_active "$phase" || zyz_phase_design "$phase"; then return 0; fi
+    done <<ZYZ_ROOTS
+$roots
+ZYZ_ROOTS
+    return 1
+}
+
 while :; do
     case "${ZYZ_WATCHDOG_PARENT_PID:-}" in
         ''|*[!0-9]*) ;;
@@ -607,7 +647,7 @@ while :; do
     # escalation (notify_stuck) both read it, so it is taken before any scan.
     SESSION_PROGRESS=""
     [ -z "$roots" ] || SESSION_PROGRESS="$(zyz_roots_last_progress "$roots")"
-    if [ -n "$roots" ] && zyz_roots_any_active "$roots"; then
+    if [ -n "$roots" ] && roots_any_dispatching; then
         SESSION_STATUS_MTIME="$(zyz_roots_latest_status_mtime "$roots")"
         SESSION_LABEL="$(zyz_roots_label "$roots")"
         while IFS= read -r root; do
@@ -619,8 +659,9 @@ while :; do
 $roots
 ZYZ_WATCHDOG_ROOTS
     fi
-    # Declarations are honoured in the observing phase too, which is not an
-    # active phase. Needs SESSION_LIVE from every task's scan, so it runs after.
+    # Declarations are honoured in the observing and design phases too, which
+    # are not active phases. Needs SESSION_LIVE from every task's scan, so it
+    # runs after.
     if [ -n "$roots" ]; then
         while IFS= read -r root; do
             [ -n "$root" ] && scan_declarations "$root" </dev/null

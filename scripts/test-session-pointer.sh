@@ -611,10 +611,17 @@ check "S8 Stop gate: the unharvested clause names lanes/ first" \
 check "S8 Stop gate: no status clause for the design-phase primary" \
     "$(! printf '%s' "$out" | grep -qF "（$T1/status.md）"; echo $?)" "got [$out]"
 
-# No task of the session active -> no subagent findings at all.
+# Every task of the session in design: design review dispatches roles too, so
+# the subagent findings still fire (#30), without a status-stale finding.
 printf -- '## Metadata\n\n- Current Phase: design\n' > "$T2/status.md"
 out="$(m_wd "$D" CLAUDE_CODE_SESSION_ID="$SA")"
-check "S8 no active task in the session -> silent" "$([ -z "$out" ]; echo $?)" "got [$out]"
+check "S8 every task in design -> subagent findings still fire" \
+    "$(printf '%s' "$out" | grep -q '已静默' && ! printf '%s' "$out" | grep -q '分钟没有更新'; echo $?)" "got [$out]"
+# No task of the session active or in design -> no subagent findings at all.
+printf -- '## Metadata\n\n- Current Phase: awaiting-confirmation\n' > "$T1/status.md"
+printf -- '## Metadata\n\n- Current Phase: done\n' > "$T2/status.md"
+out="$(m_wd "$D" CLAUDE_CODE_SESSION_ID="$SA")"
+check "S8 no active or design task in the session -> silent" "$([ -z "$out" ]; echo $?)" "got [$out]"
 
 # Single-task session: wording unchanged (no note, names the task's own files).
 D="$TMP/s8single"

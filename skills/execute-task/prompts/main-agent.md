@@ -96,7 +96,7 @@ lane 交付后：
 
 | 情形 | 命令 |
 |---|---|
-| 等后台任务或外部结果 | `set <key> wait --at +90m [--ref <后台任务 id>] --reason …` |
+| 等后台任务、派出的角色或外部结果 | `set <key> wait --at +90m [--ref <后台任务 id>] --reason …` |
 | 常驻、不推进任务的后台任务 | `set <key> resident --ref <id> --reason …` |
 | 任务会长时间安静 | `tune silence-sec=<秒>` |
 | 等完了 | `clear <key>` |

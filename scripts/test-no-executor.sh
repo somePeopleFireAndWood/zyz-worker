@@ -456,6 +456,29 @@ if is_noexec_block "$out"; then pass "N12c L4: a terminal role is not"; else fai
 set_snap "$((NOW - 700))" 0
 out="$(m_wd)"
 if printf '%s' "$out" | grep -q '没有任何执行者'; then pass "N12d L3: a terminal role is not"; else fail "N12d L3 terminal role" "out=[$out]"; fi
+# #30: per-role findings are reported in the design phase too (design review
+# dispatches roles), and the gate still does not block there.
+stale_obs() { printf '{"ok":true,"state":"observed","main_heartbeat_epoch":%s,"instances":[{"instance_key":"k-stuck","role":"review-agent","terminal":false,"tracking_capability":"armed","last_liveness_epoch":%s}]}' "$NOW" "$((NOW - 1500))" > "$1/fake-observe.json"; }
+write_status design "" "$LIST_ST"; reset_runtime
+stale_obs "$ROOT"
+out="$(m_wd)"
+if printf '%s' "$out" | grep -q '角色 k-stuck（review-agent）已静默 [0-9]* 分钟'; then pass "N12g design: a dispatched role silent past role-stale-sec is reported"; else fail "N12g design stale role" "out=[$out]"; fi
+if printf '%s' "$out" | grep -q '分钟没有更新'; then fail "N12h design: no status-stale finding" "out=[$out]"; else pass "N12h design: still no status-stale finding"; fi
+out="$(m_stop)"
+if [ -z "$out" ]; then pass "N12i design: the Stop gate still does not block"; else fail "N12i design L4" "out=[$out]"; fi
+live_obs "$ROOT"; reset_runtime
+out="$(m_wd)"
+if [ -z "$out" ]; then pass "N12j design: a healthy open role -> quiet"; else fail "N12j design live role" "out=[$out]"; fi
+# No Stop recorded (the main agent's own turn died), a dispatched role still
+# open, nobody has moved for silence-sec: the floor holds in design too.
+mkdir -p "$ROOT/runtime"; printf '%s main\n' "$((NOW - 2100))" > "$ROOT/runtime/activity"
+touch -t "$(date -r $((NOW - 2400)) +%Y%m%d%H%M.%S 2>/dev/null || date -d @$((NOW - 2400)) +%Y%m%d%H%M.%S)" "$ROOT/status.md"
+out="$(ZYZ_WATCHDOG_SILENCE_SEC=1800 m_wd)"
+if printf '%s' "$out" | grep '仍在 design 阶段' | grep -q '分钟没有任何动静'; then pass "N12k design: an open dispatched role + a silent session -> silence finding"; else fail "N12k design open role silence" "out=[$out]"; fi
+rm -f "$ROOT/fake-observe.json"
+out="$(ZYZ_WATCHDOG_SILENCE_SEC=1800 m_wd)"
+if [ -z "$out" ]; then pass "N12l design: the same silence with no role open and no Stop recorded -> quiet"; else fail "N12l design nothing open" "out=[$out]"; fi
+rm -f "$ROOT/fake-observe.json"
 # Two tasks in one session: the primary (records) is in design, the second is
 # active. The live role recorded under the primary keeps BOTH quiet; without
 # it only the active task is named.
@@ -819,6 +842,27 @@ write_status implementation "- Expect: key=late; kind=wait; at=$((NOW - 30)); re
 set_snap "$((NOW - 700))" "0 - 0"
 out="$(run_wd)"
 if is_due "$out" late && ! printf '%s' "$out" | grep -q '没有任何执行者'; then pass "N16p a due wait replaces the generic no-executor line"; else fail "N16p due vs noexec" "out=[$out]"; fi
+# #30: declarations are honoured in the design phase too (a design-review role
+# the main agent waits on), while the approval gate itself stays quiet.
+write_status design "- Expect: key=rev; kind=wait; at=$((NOW - 30)); ref=a123; reason=设计评审第 2 轮" "$LIST_ST"; reset_runtime
+set_snap "$((NOW - 700))" "1 a123 0"
+out="$(run_wd)"
+if is_due "$out" rev && printf '%s' "$out" | grep -q '设计评审第 2 轮'; then pass "N16p2 design: a due wait wakes the main agent"; else fail "N16p2 design due wait" "out=[$out]"; fi
+write_status design "- Expect: key=rev; kind=wait; at=$((NOW + 3600)); ref=gone9; reason=设计评审第 2 轮" "$LIST_ST"; reset_runtime
+set_snap "$((NOW - 700))" "1 a123 0"
+out="$(run_wd)"
+if printf '%s' "$out" | grep -q '绑定的后台任务 gone9 已经不在运行了'; then pass "N16p3 design: a wait --ref whose task is gone is reported"; else fail "N16p3 design dead ref" "out=[$out]"; fi
+write_status design "- Expect: key=rev; kind=wait; at=$((NOW + 3600)); ref=a123; reason=设计评审第 2 轮" "$LIST_ST"; reset_runtime
+set_snap "$((NOW - 700))" "1 a123 0"
+out="$(run_wd)"
+if [ -z "$out" ]; then pass "N16p4 design: a wait that is not due, its task still listed -> quiet"; else fail "N16p4 design live wait" "out=[$out]"; fi
+write_status design "" "$LIST_ST"; reset_runtime
+set_snap "$((NOW - 700))" "0 - 0"
+out="$(run_wd)"
+if [ -z "$out" ]; then pass "N16p5 design: stopped with no executor (the approval gate) -> L3 quiet"; else fail "N16p5 design gate" "out=[$out]"; fi
+write_status awaiting-confirmation "- Expect: key=rev; kind=wait; at=$((NOW - 30)); ref=-; reason=x" "$LIST_ST"; reset_runtime
+out="$(run_wd)"
+if [ -z "$out" ]; then pass "N16p6 awaiting-confirmation: a due wait is still not reported"; else fail "N16p6 awaiting-confirmation" "out=[$out]"; fi
 # M9 + N2: what counts as "scheduled" for observing.
 write_status observing "" "$LIST_ST"; reset_runtime
 exp set q user --reason "等用户确认对账口径" >/dev/null
