@@ -1,6 +1,6 @@
 # 评审收口细则
 
-命令都是 `<plugin-root>/hooks/scripts/review-round.sh <cmd>`，由它写 `status.md` 的 `## 评审收口`；它以 exit 3 拒绝时照输出做。
+命令都是 `<plugin-root>/hooks/scripts/review-round.sh <cmd>`，由它写 `status.md` 的 `## 评审收口`；以 exit 3 拒绝时照输出做。
 
 ## 1. 评审点
 
@@ -48,7 +48,7 @@
 
 ## 6. 修复与等用户
 
-- `blocking` 的修复优先做减法：先看能不能删掉或收窄引出问题的东西，再考虑加规则或机制。减掉的是主 agent 自己加的东西时直接做；会缩小用户要的范围时只推荐，由用户决定。
+- `blocking` 的修复优先不做加法：先在原处解决——把写错的改对，或者删掉、收窄引出问题的东西；这两种都解决不了时才加新的规则或机制。改对和删减不分先后。减掉的是主 agent 自己加的东西时直接做；会缩小用户要的范围时只推荐，由用户决定。
 - 要用户定的问题（A 类）裁决完当轮就问：一条消息列完，每条附推荐和它影响的设计部分，记进 `decisions.md` 的 `## 等待回答的问题`，声明 `user --watch`，不停下。
 - 不依赖回答的修复照常做，下一轮照常开。依赖回答的部分保持原文：不按推荐项先改，不在设计正文里加批注，派发评审时列出这几处。用户回答后再改，改动进下一轮增量复审。剩下的修复全都依赖回答时才停下等。
 
@@ -87,6 +87,6 @@
 | `check <point> --outcome continue\|class-fix\|reorder\|escalate --reason …` | 严格档收口检查 |
 | `close <point> --outcome passed\|residual\|split [--by user] --reason …` | 关闭评审点 |
 | `tier <fast\|standard\|strict> --reason … [--by user]` | 写档位，降档要 `--by user` |
-| `status [<point>]` | 各评审点的轮次、各轮数字、下一轮能否开 |
+| `status [<point>]` | 各评审点的轮次和各轮数字 |
 
 不给 `--task <task-dir>` 时作用于本会话的主任务。

@@ -71,7 +71,7 @@ description: 当用户希望协助执行一个已确认的单个开发任务时�
 
 ## 跨 harness 交叉评审
 
-`review-round.sh start` 输出 `cross-harness=yes` 时，同一批在本机每个**其它** agent harness 里后台起一个只读评审会话（`references/cross-harness.md`）。它可选、不阻断：没装、失败或超时就只靠 review-agent 继续。它的发现只作参考：逐条对照真实产物核实，接受或附理由拒绝。
+默认只在严格档跑（含单独升到严格档的评审点），以 `review-round.sh start` 输出的 `cross-harness=yes` 为准：同一批在本机每个**其它** agent harness 里后台起一个只读评审会话（`references/cross-harness.md`）。其它档位用户明确要求时直接运行 `cross-review.sh run`。没装、失败或超时就只靠 review-agent 继续。它的发现只作参考：逐条对照真实产物核实，接受或附理由拒绝。
 
 ## 工作流
 
@@ -125,11 +125,11 @@ description: 当用户希望协助执行一个已确认的单个开发任务时�
 
 ## Watchdog 强制层
 
-插件的 hooks 和 monitor 盯着任务有没有停摆（`references/watchdog.md`）。主 agent 的义务：
+主 agent 对插件 watchdog 的义务（`references/watchdog.md`）：
 
 - 会话恢复后重新 arm 指针，没有指针就没有 watchdog。
 - `- Current Phase:` 保持准确。
-- `[zyz-worker watchdog]` 通知（角色无响应、状态过期、无执行者、会话静默、API 错误中断）是要立即执行的指令，照通知写的做。
+- `[zyz-worker watchdog]` 通知是要立即执行的指令，照通知写的做。
 - 活跃阶段结束一轮之前，有一个核实过的执行者（在跑的 subagent、后台任务或排定的唤醒），否则派发或声明。
 - 声明经 `<plugin-root>/hooks/scripts/expect.sh` 写，不手写，不手改 `runtime/`。
 
