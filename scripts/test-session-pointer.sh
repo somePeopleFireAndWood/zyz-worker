@@ -646,12 +646,15 @@ check "S8 hook-mode IM of a multi-task session names every task" \
     "$([ "$(cat "$TMP/s8-im.out" 2>/dev/null)" = "t1,t2" ]; echo $?)" "got [$(cat "$TMP/s8-im.out" 2>/dev/null)]"
 
 # ---------------------------------------------------------------------------
-# Static: the contract is documented where the main agent reads it.
+# Static: the contract is documented where the main agent reads it. Arming the
+# pointer is the first thing every task does, so both literals must be in one of
+# the two prompts the main agent always has loaded; which of the two is the
+# prompt's choice (tiers design §12.8 — tests pin the literal, not its file).
 # ---------------------------------------------------------------------------
-for f in skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md; do
-    check "S7 $f arms via task-pointer.sh" "$(grep -q 'task-pointer.sh arm' "$f"; echo $?)"
-    check "S7 $f names the per-session pointer" "$(grep -qF '.zyz-worker/sessions/<session-id>' "$f"; echo $?)"
-done
+check "S7 an always-loaded main-agent prompt arms via task-pointer.sh" \
+    "$(grep -qF 'task-pointer.sh arm' skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md 2>/dev/null; echo $?)"
+check "S7 an always-loaded main-agent prompt names the per-session pointer" \
+    "$(grep -qF '.zyz-worker/sessions/' skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md 2>/dev/null; echo $?)"
 check "S7 hooks/README.md documents task-pointer.sh" "$(grep -q 'task-pointer.sh' hooks/README.md; echo $?)"
 
 echo

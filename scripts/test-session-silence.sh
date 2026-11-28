@@ -771,13 +771,21 @@ grep -q '## 2. 设计方向：agent 主导，插件做工具与保障者' docs/d
     && pass "G1 docs/design/watchdog-design.md states the long-term direction" || fail "G1 design doc direction"
 grep -q 'api-failure.sh' hooks/README.md && grep -q '会话静默' hooks/README.md \
     && pass "G2 hooks/README.md documents api-failure.sh and session silence" || fail "G2 hooks README"
-grep -q '会话静默' skills/execute-task/SKILL.md && grep -q 'API 错误中断' skills/execute-task/SKILL.md \
-    && pass "G3 SKILL.md watchdog section names both new findings" || fail "G3 SKILL.md"
-grep -q 'silence-sec' skills/execute-task/SKILL.md && grep -q 'ZYZ_WATCHDOG_SILENCE_SEC' hooks/README.md \
+# Which execute-task prompt carries a literal is the prompt's choice (tiers
+# design §12.8 — tests pin the literal, not its file). The two finding names and
+# the tuning key may sit in SKILL.md, prompts/main-agent.md or the on-demand
+# references/watchdog.md; `user --watch` is used whenever the agent asks while it
+# keeps working, so it must be in one of the two always-loaded prompts.
+G_SKILL=skills/execute-task/SKILL.md
+G_MAIN=skills/execute-task/prompts/main-agent.md
+G_WDOG=skills/execute-task/references/watchdog.md
+grep -qF '会话静默' "$G_SKILL" "$G_MAIN" "$G_WDOG" 2>/dev/null && grep -qF 'API 错误中断' "$G_SKILL" "$G_MAIN" "$G_WDOG" 2>/dev/null \
+    && pass "G3 the main agent's prompts name both new findings" || fail "G3 finding names in the prompts"
+grep -qF 'silence-sec' "$G_SKILL" "$G_MAIN" "$G_WDOG" 2>/dev/null && grep -q 'ZYZ_WATCHDOG_SILENCE_SEC' hooks/README.md \
     && pass "G4 the silence threshold is documented where thresholds live" || fail "G4 threshold docs"
 grep -q '### 5.1 IM：只在需要人的时候发' docs/design/watchdog-design.md && grep -q '### IM 策略' hooks/README.md \
-    && grep -q 'ZYZ_NOTIFY_SESSION_NAME' docs/notify.md && grep -q 'user --watch' skills/execute-task/SKILL.md \
-    && pass "G6 the IM policy is documented (design doc, hooks README, notify.md, SKILL.md)" || fail "G6 IM policy docs"
+    && grep -q 'ZYZ_NOTIFY_SESSION_NAME' docs/notify.md && grep -qF 'user --watch' "$G_SKILL" "$G_MAIN" 2>/dev/null \
+    && pass "G6 the IM policy is documented (design doc, hooks README, notify.md, an always-loaded prompt)" || fail "G6 IM policy docs"
 ! grep -q '"idle"' docs/notify.md hooks/scripts/notify.sh \
     && pass "G7 the retired idle category is gone from the notifier and its guide" || fail "G7 idle retired"
 grep -q 'watchdog-design.md' docs/architecture.md \

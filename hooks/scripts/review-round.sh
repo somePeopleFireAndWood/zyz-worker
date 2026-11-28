@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# review-round.sh — the main agent's review-round ledger (design §10.4).
+# review-round.sh — the main agent's review-round ledger (design §10.4, §11.4).
 #
 # How many rounds a review point may run, and when a strict-tier point owes a
 # convergence check, used to live only in prompts and was mostly not done
@@ -9,7 +9,8 @@
 # then refuses a review-agent dispatch that no recorded round backs. Run by
 # the MAIN agent in its own Bash (never by a subagent). Writes only the
 # `## 评审收口` rows and the `- Tier:` line of <task-dir>/status.md (plus
-# <task-dir>/log/tier.md), atomically, after validating every input.
+# <task-dir>/log/tier.md), atomically, after validating every input, and the
+# design-document snapshots under <task-dir>/reviews/snap/ (§11.4, §11.7).
 #
 # Usage:
 #   review-round.sh open <point> --stage design|impl|aggregate [--kind main|aux]
@@ -18,31 +19,63 @@
 #             open point it re-tiers it (up only; back down needs --by user).
 #             Opening a closed point starts a new set of records and keeps
 #             the point's own tier (lowering it needs --by user).
-#   review-round.sh start <point> [--full --reason <text>]
-#             prints `round=<n> mode=full|incremental cross-harness=yes|no`;
+#   review-round.sh start <point> [--full --reason <text>] [--docs <path>...]
+#             prints `round=<n> mode=full|incremental cross-harness=yes|no`
+#             (cross-harness is yes only when the point's effective tier is
+#             strict, or the task has no Tier: design rounds, full impl
+#             rounds, aggregate round 1; fast and standard are always no);
 #             --full forces a full re-review (after a structural fix; counts
 #             as a round like any other). Exit 3 with the next step when the
-#             round is not allowed (cap reached without a grant -> hand to the
-#             user; strict tier without a convergence check after round n-1
-#             -> run `check`; an escalate check not yet granted; last round
-#             has no result; point closed).
-#   review-round.sh result <point> --blocking N [--rejected R] [--behavior M]
+#             round is not allowed: cap reached without a grant, a standard
+#             point whose round 2 reported some blockings (accepted +
+#             rejected) and no fewer than round 1 — round 2 >= max(round 1,
+#             1) — and has no grant for round 3, or an escalate check not
+#             yet granted -> hand the point to the user
+#             with the trend of the rounds and three choices (grant / close
+#             residual / close split); strict tier without a convergence
+#             check after round n-1 -> run `check`; last round has no result;
+#             point closed.
+#             A design point also measures the revision it reviews: the
+#             documents (--docs, else the `- 设计文档:` line of status.md and
+#             the nested list under it) are copied to
+#             <task-dir>/reviews/snap/<point>/r<n>/ and, from round 2 on,
+#             compared with the round before: `delta=+<added>/-<removed>
+#             prev=+<a>/-<b>|- growing=yes|no`, the diff in
+#             reviews/snap/<point>/r<n-1>-r<n>.diff. Only a document both
+#             rounds captured is compared: one this round did not capture
+#             (over 4 MiB, or not listed) while its source is still there is
+#             left out with a note; one whose source is gone counts as
+#             deleted, a new one as added. Give a point the same documents
+#             every round. More added lines than the round before is a
+#             warning only; no readable document, or a snapshot that fails,
+#             never keeps the round from starting.
+#   review-round.sh result <point> --blocking N [--rejected R] [--induced I]
+#                   [--pending P] [--behavior M]
 #             N = accepted blocking findings; R = blocking findings the
 #             reviewer reported but you rejected or downgraded (they go to
 #             the next round for review); M = accepted ones that change
-#             product behaviour (M <= N).
+#             product behaviour (M <= N); I = of this round's blockings
+#             (N + R), the ones the previous round's revision brought in
+#             (I <= N + R); P = how many blockings of this point still wait
+#             on a user answer right now, earlier rounds' included (a state,
+#             not a part of N + R). R, I and P are required from round 2 on
+#             a task with a Tier (0 when none): the row is refilled as a
+#             whole, and a count left out would read as 0.
 #   review-round.sh grant <point> --reason <text>
 #             the user approved ONE extra round (the next one).
 #   review-round.sh check <point> --outcome continue|class-fix|reorder|escalate --reason <text>
 #   review-round.sh close <point> --outcome passed|residual|split [--by user] --reason <text>
-#             passed: the latest round has a result with blocking=0 and
-#             rejected=0;
-#             residual / split: the user's choice at the cap, --by user.
+#             passed: the latest round has a result with blocking=0,
+#             rejected=0 and no pending;
+#             residual / split: the user's choice when the point is handed
+#             over, --by user.
 #   review-round.sh tier fast|standard|strict --reason <text> [--by user|agent]
 #             a downgrade needs --by user.
 #   review-round.sh status [<point>]
-#             ends with `unclosed: …` or `all review points closed` (delivery
-#             requires every registered point closed).
+#             per point: one summary line, then one line per round
+#             (blocking / rejected / induced / pending / delta); ends with
+#             `unclosed: …` or `all review points closed` (delivery requires
+#             every registered point closed).
 #   <point>: [a-z0-9-]+, e.g. design-main, design-replay, impl-st2, aggregate.
 #   --task <task-dir> picks the task; default is this session's primary task
 #   (the first line of its task pointer, as for expect.sh).
@@ -50,7 +83,9 @@
 # Caps (total rounds per point, first included):
 #             design  impl  aggregate
 #   fast        0      2       1
-#   standard    2      3       3
+#   standard    3      3       3     (round 3 needs round 2 < round 1 — or a
+#                                     round 2 that reported nothing — or a grant;
+#                                     counted as blocking + rejected)
 #   strict      -      -       -     (round n = 4, 7, 10, ... needs a Review-Check
 #                                     made at round n-1)
 # A task without a valid `- Tier:` line (from before the tiers) is recorded

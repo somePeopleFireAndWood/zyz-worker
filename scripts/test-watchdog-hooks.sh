@@ -10,7 +10,8 @@
 #   T5  stop-gate-subagent + stop-gate-main behavior (smoke)
 #   T6  doc wiring + version consistency across the three manifests
 #   T7  L5 dispatch scope guard: capped-phrasing denial, continuation
-#       exemption (false-positive guard), scoping, disable switch, fail-open
+#       exemption (false-positive guard), scoping, disable switch, fail-open;
+#       the dispatch text of the plugin's own prompts passes the matcher
 #
 # Usage:
 #   bash scripts/test-watchdog-hooks.sh
@@ -666,6 +667,13 @@ ZYZ_T7_LEGIT
     else
         fail "T7 deny uses PreToolUse hookSpecificOutput shape" "$out"
     fi
+    # §12.11-5: the deny reason tells the main agent how to split a review, in
+    # the vocabulary the prompts use now (scenarios, not coverage dimensions).
+    if printf '%s' "$out" | grep -qF '按设计的场景分批' && ! printf '%s' "$out" | grep -qF '覆盖维度'; then
+        pass "T7 deny reason splits a review by scenario, not by coverage dimension"
+    else
+        fail "T7 deny reason splits a review by scenario, not by coverage dimension" "$out"
+    fi
     if [ -s "$T/runtime/scope-guard.log" ]; then
         pass "T7 blocked attempts appended to scope-guard.log"
     else
@@ -687,22 +695,174 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# T7 (continued) — the plugin's own dispatch text must pass L5
+# ---------------------------------------------------------------------------
+# Tiers design §12.11-1: prompts/main-agent.md told the main agent to put a
+# sentence into every lane dispatch that L5 reads as a scope cap ("…一行结论…");
+# real tasks were denied for it. The text the main agent copies into a dispatch
+# is therefore run through the real matcher, `zyz_scope_cap_hit` of lib.sh, one
+# line at a time: a hit on any line fails and names the line and the phrase.
+#   - prompts/main-agent.md `## 派发 lane` and `## 评审`: what goes into a lane
+#     or review dispatch;
+#   - templates/cross-review-prompt.md: the brief of the cross-harness reviewer;
+#   - subagents/*.md: system prompts, which L5 never sees — but the main agent
+#     readily copies a sentence of a role prompt into its dispatch (the first
+#     replacement tried for the sentence above, "最终回复只给报告路径、结论和阻塞项",
+#     was a role-prompt line and trips a different pattern).
+# Each line is tried as written and, when that passes, with ` and " removed: L5
+# blanks quoted spans, and an agent rewording the line into its own dispatch
+# drops the quotes. Stricter than the hook on purpose — a continuation phrase
+# elsewhere in a real prompt would let a capped line through; the prompts should
+# not rely on that.
+t7p_scan() { # <file> [<## heading>...] -> HEAD / HIT / LINES / ERR records, tab-separated
+    local file="$1"
+    shift
+    (
+        . hooks/scripts/lib.sh 2>/dev/null || { printf 'ERR\tcannot source hooks/scripts/lib.sh\n'; exit 0; }
+        type zyz_scope_cap_hit >/dev/null 2>&1 || { printf 'ERR\tlib.sh has no zyz_scope_cap_hit\n'; exit 0; }
+        n=0
+        while IFS="$(printf '\t')" read -r kind no line; do
+            case "$kind" in
+                H) printf 'HEAD\t%s\n' "$no"; continue ;;
+                L) ;;
+                *) continue ;;
+            esac
+            n=$((n + 1))
+            hit="$(zyz_scope_cap_hit "$line")"
+            if [ -n "$hit" ]; then
+                printf 'HIT\tline %s as written matches [%s]: %s\n' "$no" "$hit" "$line"
+                continue
+            fi
+            bare="$(printf '%s' "$line" | tr -d '`"')"
+            [ "$bare" != "$line" ] || continue
+            hit="$(zyz_scope_cap_hit "$bare")"
+            [ -z "$hit" ] || printf 'HIT\tline %s with quotes removed matches [%s]: %s\n' "$no" "$hit" "$line"
+        done <<T7P_LINES
+$(T7P_HEADS="$(printf '%s\n' "$@")" awk '
+    BEGIN { n = split(ENVIRON["T7P_HEADS"], h, "\n"); for (i = 1; i <= n; i++) if (h[i] != "") { want[h[i]] = 1; any = 1 }; keep = !any }
+    /^## / { if (any) { keep = ($0 in want); if (keep) print "H\t" $0 } }
+    keep && NF { print "L\t" FNR "\t" $0 }' "$file" 2>/dev/null)
+T7P_LINES
+        printf 'LINES\t%s\n' "$n"
+    )
+}
+t7p_field() { printf '%s\n' "$1" | awk -F '\t' -v k="$2" '$1 == k { sub(/^[^\t]*\t/, ""); print }'; }
+t7p_verdict() { # <label> <scan-output> <min-lines> <headings-wanted>
+    local label="$1" out="$2" err heads lines hits
+    err="$(t7p_field "$out" ERR)"
+    heads="$(t7p_field "$out" HEAD | grep -c . || true)"
+    lines="$(t7p_field "$out" LINES)"
+    hits="$(t7p_field "$out" HIT)"
+    if [ -n "$err" ]; then
+        fail "$label" "$err"
+    elif [ "$heads" -ne "$4" ]; then
+        fail "$label" "found $heads of the $4 sections to scan"
+    elif [ -z "$lines" ] || [ "$lines" -lt "$3" ]; then
+        fail "$label" "only ${lines:-0} lines scanned, expected at least $3"
+    elif [ -n "$hits" ]; then
+        fail "$label" "$(printf '%s' "$hits" | tr '\n' '|')"
+    else
+        pass "$label"
+    fi
+}
+t7p_dir="$(mktemp -d 2>/dev/null || true)"
+if [ -n "$t7p_dir" ] && [ -d "$t7p_dir" ]; then
+    # Controls first: the scanner must see the sentence design §12.11-1 is about,
+    # only inside the sections it was asked for, and through backticks.
+    printf '## 派发 lane\n\n6. **报告路径** `<task-dir>/lanes/<id>.md`；最终消息只含报告路径、一行结论、阻塞项，不用 SendMessage 重发。\n\n## 其它\n\n只要总结论。\n' > "$t7p_dir/old.md"
+    t7p_out="$(t7p_scan "$t7p_dir/old.md" '## 派发 lane')"
+    if [ "$(t7p_field "$t7p_out" HIT)" = 'line 3 as written matches [一行结论]: 6. **报告路径** `<task-dir>/lanes/<id>.md`；最终消息只含报告路径、一行结论、阻塞项，不用 SendMessage 重发。' ] \
+        && [ "$(t7p_field "$t7p_out" LINES)" = 2 ]; then
+        pass "T7 prompt scan: the 0.33.0 lane-dispatch sentence is reported with its line and phrase, other sections are left alone"
+    else
+        fail "T7 prompt scan: the 0.33.0 lane-dispatch sentence is reported with its line and phrase, other sections are left alone" "$(printf '%s' "$t7p_out" | tr '\n' '|')"
+    fi
+    printf '最终回复只给报告路径、结论和阻塞项，各一行。\n' > "$t7p_dir/role.md"
+    t7p_out="$(t7p_scan "$t7p_dir/role.md")"
+    if [ "$(t7p_field "$t7p_out" HIT)" = 'line 1 as written matches [只给报告路径、结论]: 最终回复只给报告路径、结论和阻塞项，各一行。' ]; then
+        pass "T7 prompt scan: the first replacement tried for that sentence is reported too (a different pattern)"
+    else
+        fail "T7 prompt scan: the first replacement tried for that sentence is reported too (a different pattern)" "$(printf '%s' "$t7p_out" | tr '\n' '|')"
+    fi
+    printf '## 评审\n\n- 最终回复写 `一句话结论`。\n' > "$t7p_dir/quoted.md"
+    t7p_out="$(t7p_scan "$t7p_dir/quoted.md" '## 评审')"
+    if [ "$(t7p_field "$t7p_out" HIT)" = 'line 3 with quotes removed matches [一句话结论]: - 最终回复写 `一句话结论`。' ]; then
+        pass "T7 prompt scan: a capping phrase inside backticks is reported once the quotes are removed"
+    else
+        fail "T7 prompt scan: a capping phrase inside backticks is reported once the quotes are removed" "$(printf '%s' "$t7p_out" | tr '\n' '|')"
+    fi
+    # (in a subshell: the inner verdict must not count as a check of this suite)
+    t7p_out="$( (t7p_verdict inner "$(t7p_scan "$t7p_dir/quoted.md" '## 评审' '## 派发 lane')" 1 2) 2>&1 )"
+    case "$t7p_out" in
+        'FAIL  inner — found 1 of the 2 sections to scan') pass "T7 prompt scan: a requested section that is missing fails the scan" ;;
+        *) fail "T7 prompt scan: a requested section that is missing fails the scan" "$t7p_out" ;;
+    esac
+    # The real text. The matcher spawns one grep per pattern per clause, so the
+    # scans run side by side.
+    t7p_scan skills/execute-task/prompts/main-agent.md '## 派发 lane' > "$t7p_dir/lane" 2>/dev/null &
+    t7p_scan skills/execute-task/prompts/main-agent.md '## 评审' > "$t7p_dir/review" 2>/dev/null &
+    t7p_scan skills/execute-task/templates/cross-review-prompt.md > "$t7p_dir/cross" 2>/dev/null &
+    for t7p_role in review-agent implementation-agent test-agent; do
+        t7p_scan "subagents/$t7p_role.md" > "$t7p_dir/$t7p_role" 2>/dev/null &
+    done
+    wait
+    t7p_verdict "T7 skills/execute-task/prompts/main-agent.md: no line of the lane-dispatch section trips the L5 scope guard (§12.11-1)" \
+        "$(cat "$t7p_dir/lane" 2>/dev/null)" 10 1
+    t7p_verdict "T7 skills/execute-task/prompts/main-agent.md: no line of the review-dispatch section trips the L5 scope guard (§12.11-1)" \
+        "$(cat "$t7p_dir/review" 2>/dev/null)" 10 1
+    t7p_verdict "T7 skills/execute-task/templates/cross-review-prompt.md: no line trips the L5 scope guard (§12.11-1)" \
+        "$(cat "$t7p_dir/cross" 2>/dev/null)" 8 0
+    for t7p_role in review-agent implementation-agent test-agent; do
+        t7p_verdict "T7 subagents/$t7p_role.md: no line trips the L5 scope guard if copied into a dispatch (§12.11-1)" \
+            "$(cat "$t7p_dir/$t7p_role" 2>/dev/null)" 15 0
+    done
+    rm -rf "$t7p_dir"
+else
+    skip "T7 prompt scan against the L5 scope guard" "no mktemp"
+fi
+
+# ---------------------------------------------------------------------------
 # T6 — doc wiring + version consistency
 # ---------------------------------------------------------------------------
+# What this group reads in the execute-task prompts (tiers design §12.8).
+# Prompt wording belongs to the prompt lanes: the anchors that pinned whole
+# sentences of a rule were removed with the rules §12.6 deleted (coverage
+# dimensions, the edit-discipline detail, doubt-defaults-to-blocking, the six
+# residual-risk fields …); a rule that stays gets at most one short anchor,
+# never a sentence. What is left here:
+#   - literals a script or hook parses or prints (section headings the hooks
+#     name, the `- Tier:` row, the `## 评审收口` rows, the watchdog prefix);
+#   - reverse guards for things that were removed on purpose and must not come
+#     back: the standard design cap of 2 rounds, carrying blockings into
+#     implementation (§11.8), the how-to vocabulary of §12.6;
+#   - the §12.7 size caps, the `## 范围` section repeated byte for byte, and the
+#     short anchors (the §12.8 block near the end of this group);
+#   - hooks/README.md, the hook lexicon in lib.sh, and the manifest versions.
+# hook / watchdog / review-round BEHAVIOUR is tested elsewhere and untouched.
+S=skills/execute-task/SKILL.md
+M=skills/execute-task/prompts/main-agent.md
+RC=skills/execute-task/references/review-closure.md
+DDD=skills/execute-task/references/design-doc-discipline.md
+IMPLN=skills/execute-task/templates/impl-notes.md
 if grep -qE '^## Watchdog 强制层$' skills/execute-task/SKILL.md 2>/dev/null; then
     pass "T6 SKILL.md has Watchdog Enforcement section"
 else
     fail "T6 SKILL.md has Watchdog Enforcement section"
 fi
-if grep -q 'current-task' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 SKILL.md documents current-task pointer"
+# Watchdog literals: which prompt carries one is the prompt's choice, as long as
+# the main agent has it. What every task needs (the notification prefix it must
+# act on) has to be in one of the two prompts that are always loaded, SKILL.md
+# or prompts/main-agent.md; the shared fallback pointer may also live in the
+# on-demand reference.
+if grep -qF 'current-task' "$S" "$M" skills/execute-task/references/watchdog.md 2>/dev/null; then
+    pass "T6 the shared current-task pointer is documented (SKILL.md, main-agent.md or references/watchdog.md)"
 else
-    fail "T6 SKILL.md documents current-task pointer"
+    fail "T6 the shared current-task pointer is documented (SKILL.md, main-agent.md or references/watchdog.md)"
 fi
-if grep -q 'zyz-worker watchdog' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
-    pass "T6 main-agent.md handles watchdog messages"
+if grep -qF 'zyz-worker watchdog' "$S" "$M" 2>/dev/null; then
+    pass "T6 an always-loaded main-agent prompt handles watchdog messages (SKILL.md or main-agent.md)"
 else
-    fail "T6 main-agent.md handles watchdog messages"
+    fail "T6 an always-loaded main-agent prompt handles watchdog messages (SKILL.md or main-agent.md)"
 fi
 if grep -q 'stop-gate-main' hooks/README.md 2>/dev/null && grep -q 'watchdog.sh' hooks/README.md 2>/dev/null \
     && grep -q 'dispatch-scope-guard' hooks/README.md 2>/dev/null; then
@@ -710,364 +870,6 @@ if grep -q 'stop-gate-main' hooks/README.md 2>/dev/null && grep -q 'watchdog.sh'
 else
     fail "T6 hooks/README.md documents scripts"
 fi
-# Anti-degradation prompt rules (L1) and review coverage registration (L2).
-if grep -q '绝不拿范围换交付' skills/execute-task/prompts/main-agent.md 2>/dev/null \
-    && grep -q '绝不拿范围换交付' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 anti-degradation recovery rule in prompt + SKILL"
-else
-    fail "T6 anti-degradation recovery rule in prompt + SKILL"
-fi
-for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -q '覆盖维度必须登记，不可省略' "$f" 2>/dev/null; then
-        pass "T6 $f requires dimension registration"
-    else
-        fail "T6 $f requires dimension registration"
-    fi
-done
-if grep -q '## 覆盖维度' skills/execute-task/templates/review-report.md 2>/dev/null; then
-    pass "T6 review-report template has Coverage Dimensions"
-else
-    fail "T6 review-report template has Coverage Dimensions"
-fi
-if grep -q '覆盖 — 设计一致性' skills/execute-task/templates/task-status.md 2>/dev/null; then
-    pass "T6 task-status template registers review coverage"
-else
-    fail "T6 task-status template registers review coverage"
-fi
-if grep -q '每一个覆盖维度' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 delivery gate checks coverage dimensions"
-else
-    fail "T6 delivery gate checks coverage dimensions"
-fi
-if grep -q '覆盖 — 设计一致性' skills/execute-task/templates/final-report.md 2>/dev/null; then
-    pass "T6 final report registers review coverage"
-else
-    fail "T6 final report registers review coverage"
-fi
-if grep -q '登记了每个覆盖维度' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 per-SubTask Reviewed flag requires registration"
-else
-    fail "T6 per-SubTask Reviewed flag requires registration"
-fi
-if grep -q '分期交付不是漏洞' skills/execute-task/prompts/main-agent.md 2>/dev/null \
-    && grep -q '未收齐的分步交付' skills/execute-task/templates/task-status.md 2>/dev/null; then
-    pass "T6 staged-installment follow-through tracked"
-else
-    fail "T6 staged-installment follow-through tracked"
-fi
-# ---- Issue #20: design docs record the final design; repairs edit or delete
-# ---- the wrong text instead of appending annotations.
-#
-# Assertion shape notes (these are anti-deletion guards over PROSE, so each
-# one pins the property that a plausible mutation would break):
-#   - The heading greps are ANCHORED (`^## …$`). The unanchored form was a
-#     no-op for main-agent.md, whose own cross-references at :18 and :159
-#     contain the literal `## 设计文档编辑纪律` in backticks —
-#     so deleting the real heading left the check green.
-#   - The self-check-rule ban grep includes the NEGATION inside the matched
-#     literal (`不要把…` / `绝不把…`). Matching only the noun phrase let the
-#     rule be inverted ("务必把…自检规则写进设计文档") with a green suite.
-#   - Tiers rework (docs/design/execute-task-tiers-design.md §7, §10.2): the
-#     rule body now lives ONLY in references/design-doc-discipline.md (one rule,
-#     one owning file). SKILL.md keeps the heading plus a two-clause summary;
-#     main-agent.md dropped its copy of the section on purpose and only points
-#     at the reference, so the per-file content checks target the reference and
-#     main-agent.md is pinned on the pointer instead of the heading.
-DDD=skills/execute-task/references/design-doc-discipline.md
-if grep -qE '^## 设计文档编辑纪律$' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF '纠正类发现就地改或删' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF '缺失类发现补上规格' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF 'references/design-doc-discipline.md' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 SKILL.md keeps the edit-discipline heading + summary + pointer (#20)"
-else
-    fail "T6 SKILL.md keeps the edit-discipline heading + summary + pointer (#20)"
-fi
-if grep -qE '^## 编辑纪律$' "$DDD" 2>/dev/null; then
-    pass "T6 $DDD has the edit-discipline section heading (#20)"
-else
-    fail "T6 $DDD has the edit-discipline section heading (#20)"
-fi
-if grep -qF '`SKILL.md` `## 设计文档编辑纪律`（细则 `references/design-doc-discipline.md`）' skills/execute-task/prompts/main-agent.md 2>/dev/null \
-    && ! grep -qE '^## 设计文档编辑纪律$' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
-    pass "T6 main-agent.md points at the edit discipline instead of restating it (#20)"
-else
-    fail "T6 main-agent.md points at the edit discipline instead of restating it (#20)"
-fi
-# Both halves of the repair-shape rule must be present, not just the heading:
-# (a) edit/delete rather than annotate, (b) length holds flat or shrinks.
-for f in "$DDD"; do
-    if grep -qE '绝不在旁边追加(解释性)?(注释|批注)' "$f" 2>/dev/null \
-        && grep -qE '(文档长度保持不变或变短|文档篇幅持平或缩小)' "$f" 2>/dev/null; then
-        pass "T6 $f states repair shape + no-growth (#20)"
-    else
-        fail "T6 $f states repair shape + no-growth (#20)"
-    fi
-    # The no-growth rule must NOT read as a license to under-specify: a finding
-    # naming something MISSING is fixed by adding the missing spec.
-    if grep -qE '补上(\*\*)?缺失的规格' "$f" 2>/dev/null \
-        && grep -qF '这种增长是预期之中的' "$f" 2>/dev/null; then
-        pass "T6 $f carves out additive findings from no-growth (#20)"
-    else
-        fail "T6 $f carves out additive findings from no-growth (#20)"
-    fi
-done
-# Document-text self-check rules stay OUT of the design document. Polarity is
-# inside the matched literal so the rule cannot be inverted silently.
-for f in "$DDD"; do
-    if grep -qE '(不要|绝不)把针对文档文字的自检规则写进设计文档' "$f" 2>/dev/null; then
-        pass "T6 $f bans document-text self-check rules in the design doc (#20)"
-    else
-        fail "T6 $f bans document-text self-check rules in the design doc (#20)"
-    fi
-done
-# #20 rec 2: the design.md vs review-history responsibility boundary, in BOTH
-# of its carriers (the skill's table — moved with the rule body into
-# references/design-doc-discipline.md — and the plugin design-doc mirror).
-if grep -q '| 文件 | 职责 | 读者 |' "$DDD" 2>/dev/null \
-    && grep -q 'review-history.md`（其同级文件）' "$DDD" 2>/dev/null; then
-    pass "T6 $DDD carries the design/review-history responsibility table (#20)"
-else
-    fail "T6 $DDD carries the design/review-history responsibility table (#20)"
-fi
-if grep -q '### 设计文档的修改形态' docs/design/execute-task-skill-design.md 2>/dev/null; then
-    pass "T6 plugin design doc mirrors the edit-discipline section (#20)"
-else
-    fail "T6 plugin design doc mirrors the edit-discipline section (#20)"
-fi
-if grep -qE '^\*\*f\) 设计文档只记终态' docs/architecture.md 2>/dev/null \
-    && grep -q '改设计阶段的文档纪律' docs/architecture.md 2>/dev/null; then
-    pass "T6 architecture records mechanism f + its coupling-point row (#20)"
-else
-    fail "T6 architecture records mechanism f + its coupling-point row (#20)"
-fi
-# The template note wraps across lines, so match on the whitespace-collapsed
-# file rather than per line (a line-oriented grep silently missed it).
-dd_tmpl_flat="$(tr '\n' ' ' < skills/execute-task/templates/design-doc.md 2>/dev/null | tr -s ' ')"
-if printf '%s' "$dd_tmpl_flat" | grep -qE '绝不 ?在它旁边追加注释' \
-    && printf '%s' "$dd_tmpl_flat" | grep -qF '缺失的规格可以随时补上' \
-    && printf '%s' "$dd_tmpl_flat" | grep -qF '读完即删除本注释'; then
-    pass "T6 design-doc template carries the edit-discipline note (#20)"
-else
-    fail "T6 design-doc template carries the edit-discipline note (#20)"
-fi
-# reviewAgent calibration, in BOTH mirror copies. Body byte-equality of the
-# pair is T14's job further down THIS file (and T10's in
-# scripts/test-orchestration-helpers.sh); presence per copy is this block's.
-for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -q '文档卫生类发现不阻断' "$f" 2>/dev/null \
-        && grep -qF '不要让这类发现挡住 `no-changes-needed`' "$f" 2>/dev/null; then
-        pass "T6 $f calibrates doc-hygiene findings non-blocking (#20)"
-    else
-        fail "T6 $f calibrates doc-hygiene findings non-blocking (#20)"
-    fi
-    # The calibration must NOT read as a license to report fewer findings —
-    # that would collide with the "never batch findings" hard limit and the L5
-    # dispatch-scope-guard's anti-scope-reduction posture.
-    # (Tiers rework dropped the intensifier "绝不" per §10.2; the negation
-    # stays inside the matched literal.)
-    if grep -qF '是结论，不是少报的许可' "$f" 2>/dev/null; then
-        pass "T6 $f states non-blocking is a verdict, not less reporting (#20)"
-    else
-        fail "T6 $f states non-blocking is a verdict, not less reporting (#20)"
-    fi
-done
-# The non-blocking destination needs an OWNING RULE, not just a status-file
-# slot: an orphaned template field is filled by nobody. After the tiers rework
-# the single owner is the review-history rule in design-doc-discipline.md
-# (main-agent.md's old design-workflow step 5 restated it and was removed).
-for f in "$DDD"; do
-    if grep -q '记入评审历史的非阻断发现' "$f" 2>/dev/null; then
-        pass "T6 $f owns the non-blocking recording rule (#20)"
-    else
-        fail "T6 $f owns the non-blocking recording rule (#20)"
-    fi
-done
-if grep -qi 'non-blocking' skills/execute-task/templates/review-report.md 2>/dev/null \
-    && grep -q '记入评审历史的非阻断发现' skills/execute-task/templates/task-status.md 2>/dev/null; then
-    pass "T6 review-report + task-status record non-blocking findings (#20)"
-else
-    fail "T6 review-report + task-status record non-blocking findings (#20)"
-fi
-# ---- User Design Authority: the user's design leads in BOTH phases, and any
-# ---- change to it needs the user's PRIOR agreement.
-if grep -qE '^## 用户设计主导权$' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qE '^## 用户设计主导权$' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
-    pass "T6 User Design Authority section in SKILL + prompt"
-else
-    fail "T6 User Design Authority section in SKILL + prompt"
-fi
-# The precedence clause is the load-bearing half: without it the standing
-# "do not ask the user by default" posture swallows the new rule.
-if grep -qF '优先于下文"默认不询问用户"' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF '这一条在两个阶段都始终优先' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
-    pass "T6 design-authority outranks the no-ask default"
-else
-    fail "T6 design-authority outranks the no-ask default"
-fi
-# Environment prep (build env / deps / images / containers) needs no approval;
-# the agent only chooses local vs container, then executes.
-if grep -qF '环境准备默认无需批准' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF '环境准备默认无需批准' skills/execute-task/prompts/main-agent.md 2>/dev/null \
-    && grep -qF '本地直接构建运行还是在容器中执行更合适' subagents/implementation-agent.md 2>/dev/null \
-    && grep -qF '本地直接构建运行还是在容器中执行更合适' agents/implementation-agent.md 2>/dev/null; then
-    pass "T6 environment prep runs without asking (local vs container)"
-else
-    fail "T6 environment prep runs without asking (local vs container)"
-fi
-# Design phase: the main agent organizes, it does not originate the design.
-if grep -qF '不自己发起设计' skills/execute-task/SKILL.md 2>/dev/null \
-    && grep -qF '设计不由你发起' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
-    pass "T6 main agent organizes rather than originates the design"
-else
-    fail "T6 main agent organizes rather than originates the design"
-fi
-# Implementation fidelity, stated for every executing role.
-if grep -qE '^#### 3\.0\.0 严格按设计文档实现$' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 SKILL has the implement-exactly section (§3.0.0)"
-else
-    fail "T6 SKILL has the implement-exactly section (§3.0.0)"
-fi
-for f in subagents/implementation-agent.md agents/implementation-agent.md; do
-    if grep -qF '一样不丢，一处不违' "$f" 2>/dev/null \
-        && grep -qF '先实现后报告就是违规' "$f" 2>/dev/null; then
-        pass "T6 $f requires exact design fidelity"
-    else
-        fail "T6 $f requires exact design fidelity"
-    fi
-done
-for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -qF '双向、逐元素地核对' "$f" 2>/dev/null; then
-        pass "T6 $f audits design conformance both ways"
-    else
-        fail "T6 $f audits design conformance both ways"
-    fi
-done
-for f in subagents/test-agent.md agents/test-agent.md subagents/implementation-agent.md agents/implementation-agent.md; do
-    if grep -qF '这需要用户事先同意' "$f" 2>/dev/null; then
-        pass "T6 $f routes design changes to the user"
-    else
-        fail "T6 $f routes design changes to the user"
-    fi
-done
-# The design-doc template opens with a KEPT banner (not scaffolding) naming the
-# user as the designer, so every task's design.md carries it to its readers.
-if printf '%s' "$dd_tmpl_flat" | grep -qF '用户是本文档的设计者' \
-    && printf '%s' "$dd_tmpl_flat" | grep -qF '一样不丢，一处不违背'; then
-    pass "T6 design-doc template opens with the user-is-designer banner"
-else
-    fail "T6 design-doc template opens with the user-is-designer banner"
-fi
-# The banner must sit OUTSIDE the delete-on-read scaffolding comment, or it
-# vanishes from every filled document.
-if python3 - <<'PYEOF'
-import sys
-t = open('skills/execute-task/templates/design-doc.md').read()
-b = t.find('用户是本文档的设计者')
-c = t.find('-->')
-sys.exit(0 if b > c > -1 else 1)
-PYEOF
-then
-    pass "T6 user-is-designer banner is kept content, not scaffolding"
-else
-    fail "T6 user-is-designer banner is kept content, not scaffolding"
-fi
-# The hazard is the EDIT SHAPE (appending instead of rewriting), not the mere
-# existence of a summary. An earlier revision of this section blamed "being a
-# second description", which mis-states #20: that issue explicitly RECOMMENDS a
-# second carrier (the review-history file) and its verified fix was a pure
-# deletion, not a merge of duplicate surfaces. Pin the causal claim so the
-# wrong one cannot creep back.
-if grep -qE '有人\*\*追加\*\*一句更正，而不是重写' "$DDD" 2>/dev/null \
-    && ! grep -qE '同一(个|份)?设计的第二(份|种)描述|second description of the same design' "$DDD" skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 summary staleness is attributed to append-instead-of-rewrite"
-else
-    fail "T6 summary staleness is attributed to append-instead-of-rewrite"
-fi
-# ---- Quick Review: the user's approval surface in every design document.
-# Anchored per line against the template file, not the flattened copy: the
-# Scope Boundary comment cross-references `### 需要你关注的细节` in backticks,
-# so an unanchored match stayed green with the real subsection heading deleted.
-dd_tmpl=skills/execute-task/templates/design-doc.md
-if grep -qE '^## 快速审阅$' "$dd_tmpl" 2>/dev/null \
-    && grep -qE '^### 设计摘要$' "$dd_tmpl" 2>/dev/null \
-    && grep -qE '^### 需要你关注的细节$' "$dd_tmpl" 2>/dev/null; then
-    pass "T6 design-doc template has Quick Review with both subsections"
-else
-    fail "T6 design-doc template has Quick Review with both subsections"
-fi
-# Quick Review must sit ABOVE the body it summarizes (it is the section the user
-# reads to approve), and OUTSIDE the delete-on-read scaffolding.
-if python3 - <<'PYEOF'
-import sys
-t = open('skills/execute-task/templates/design-doc.md').read()
-q, b, c = t.find('## 快速审阅'), t.find('## 背景'), t.find('-->')
-sys.exit(0 if -1 < c < q < b else 1)
-PYEOF
-then
-    pass "T6 Quick Review sits above the body and outside the scaffolding"
-else
-    fail "T6 Quick Review sits above the body and outside the scaffolding"
-fi
-# The body-wins precedence AND the regenerate-from-body repair shape: without
-# the second half, a caught divergence gets patched one sentence at a time,
-# which is the accumulation #20 documents.
-# NOTE: the repair-shape grep is anchored to "the summary ... from the body"
-# wording (`根据正文…重新生成摘要中受影响的部分` / `根据正文当前的样子**重新推导**`). A loose /re-deriv|regenerat/ matched unrelated lines (reviewAgent's
-# "re-deriving it co-signs", the lane owning "regenerating shared build
-# artifacts") and stayed green with the rule deleted — a self-satisfying
-# assertion of exactly the kind the no-op checklist names.
-if grep -qF '以正文为准' "$DDD" 2>/dev/null \
-    && grep -qF '根据正文重新生成摘要中受影响的部分' "$DDD" 2>/dev/null; then
-    pass "T6 $DDD states body-wins + regenerate-from-body"
-else
-    fail "T6 $DDD states body-wins + regenerate-from-body"
-fi
-# Tiers §4.3: Quick Review drift is not a review finding; the main agent
-# regenerates it mechanically before the approval gate.
-if grep -qF '**快速审阅不进入评审。**' "$DDD" 2>/dev/null; then
-    pass "T6 $DDD keeps Quick Review drift out of review (tiers)"
-else
-    fail "T6 $DDD keeps Quick Review drift out of review (tiers)"
-fi
-if printf '%s' "$dd_tmpl_flat" | grep -qF '以正文为准' \
-    && printf '%s' "$dd_tmpl_flat" | grep -qF '根据正文当前的样子**重新推导**受影响的部分'; then
-    pass "T6 design-doc template states body-wins + regenerate-from-body"
-else
-    fail "T6 design-doc template states body-wins + regenerate-from-body"
-fi
-# Tiers §4.3 deliberately REMOVED the reviewer's Quick-Review/body consistency
-# audit (doc-sync drift no longer enters review; the main agent regenerates the
-# summary before approval — pinned on main-agent.md just below). Reverse guard:
-# the reviewer prompt states it does not audit it, and the old audit wording
-# (`…仍然准确描述正文`, still a token worth guarding) is gone.
-for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -qF '设计评审里不检查 `## 快速审阅` 与正文的一致性' "$f" 2>/dev/null \
-        && ! grep -qE '快速审阅.{0,40}仍然准确描述正文' "$f" 2>/dev/null; then
-        pass "T6 $f no longer audits Quick Review drift (tiers reverse guard)"
-    else
-        fail "T6 $f no longer audits Quick Review drift (tiers reverse guard)"
-    fi
-done
-if grep -qF '保持 `## 快速审阅` 为最新' skills/execute-task/prompts/main-agent.md 2>/dev/null \
-    && grep -qF '根据正文当前的样子重新生成受影响的部分' skills/execute-task/prompts/main-agent.md 2>/dev/null; then
-    pass "T6 main-agent owns keeping Quick Review current"
-else
-    fail "T6 main-agent owns keeping Quick Review current"
-fi
-if grep -qF '引导用户去看 `## 快速审阅`' skills/execute-task/SKILL.md 2>/dev/null; then
-    pass "T6 approval gate points the user at Quick Review"
-else
-    fail "T6 approval gate points the user at Quick Review"
-fi
-# Tiers §7 / §10.6: append-only user decisions (design-change requests among
-# them) moved from status.md into <task-dir>/decisions.md.
-if grep -qF '设计变更请求' skills/execute-task/templates/decisions.md 2>/dev/null \
-    && grep -qE '^## B 类：按推荐执行的决定$' skills/execute-task/templates/decisions.md 2>/dev/null; then
-    pass "T6 decisions template records design-change requests + B-class decisions"
-else
-    fail "T6 decisions template records design-change requests + B-class decisions"
-fi
-
 # L5 must treat the new blocking/non-blocking vocabulary as a scope cap; the
 # change minted that vocabulary, so "report only blocking findings" became a
 # sanctioned-looking way to ask for less.
@@ -1077,128 +879,14 @@ if grep -qE '\(high\.severity\|high\.priority\|blocker\|blocking\|critical\|p0\|
 else
     fail "T6 L5 cap lexicon covers blocking/non-blocking vocabulary (#20)"
 fi
-# ---- Issue #22: review loops close on what reaches the artifact. Findings are
-# ---- tiered against the design's declared domain; contrived ones go to the
-# ---- residual-risk register instead of reopening the loop.
-#
-# Assertion shape notes. Each rule is pinned on the surface that EXECUTES it
-# (review-agent for tiering, the workflow steps for closure), not only in the
-# SKILL.md section that explains it: a rule stated in SKILL.md and inverted in
-# the reviewer prompt would otherwise stay green. Headings are anchored
-# (main-agent.md and SKILL.md cross-reference `## 评审收口` in
-# backticks). Negative greps keep the old closure wording (English, and its
-# plausible Chinese renderings) from coming back at any workflow step.
 t22_has() { # <file> <fixed-string> <label>
     if grep -qF -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (#22)"; else fail "T6 $1 $3 (#22)" "missing: $2"; fi
 }
-RC=skills/execute-task/references/review-closure.md
-for f in skills/execute-task/SKILL.md skills/execute-task/prompts/main-agent.md "$RC"; do
-    if [ "$f" = "$RC" ]; then
-        :  # the reference is titled `# 评审收口细则`; no `##` heading to pin
-    elif grep -qE '^## 评审收口$' "$f" 2>/dev/null; then
-        pass "T6 $f has the review-convergence section heading (#22)"
-    else
-        fail "T6 $f has the review-convergence section heading (#22)"
-    fi
-    # The pre-#22 closure forms: "until reviewAgent says no changes are needed"
-    # and "closes when reviewAgent reports `no-changes-needed`" read as "until
-    # the reviewer has nothing left to say" — the loop the issue reported.
-    if grep -qiE 'until (the )?(review-agent|reviewagent) (reports|says) no changes|closes when (the )?(review-agent|reviewagent) (reports|says) `no-changes-needed`|直到 ?(review-agent|reviewagent) ?(报告|说|表示) ?(无需|不需要|没有需要)(修改|改动|更改)|直到 ?(review-agent|reviewagent) ?(报告|说) ?`no-changes-needed`|(review-agent|reviewagent) ?(报告|说) ?`no-changes-needed` ?时(即|就)?(关闭|收口)' "$f" 2>/dev/null; then
-        fail "T6 $f carries no pre-#22 closure wording (#22)" "$(grep -niE 'until (the )?(review-agent|reviewagent) (reports|says) no changes|closes when (the )?(review-agent|reviewagent) (reports|says) `no-changes-needed`|直到 ?(review-agent|reviewagent) ?(报告|说|表示) ?(无需|不需要|没有需要)(修改|改动|更改)|直到 ?(review-agent|reviewagent) ?(报告|说) ?`no-changes-needed`|(review-agent|reviewagent) ?(报告|说) ?`no-changes-needed` ?时(即|就)?(关闭|收口)' "$f" | head -3)"
-    else
-        pass "T6 $f carries no pre-#22 closure wording (#22)"
-    fi
-done
-# Tiers rework: the closure detail moved from SKILL.md into
-# references/review-closure.md ($RC); §10.2 dropped intensifiers ("绝不"), and
-# doubt-defaults-to-blocking now hinges on reachability (§4.3). The
-# convergence check became strict-tier only, every 3 rounds from round 3, and
-# is script-enforced; the normal-fix extra round now counts toward the cap.
-S=skills/execute-task/SKILL.md
-t22_has "$RC" "reviewAgent 本轮自己的报告是 \`no-changes-needed\`" "closes on reviewAgent's own zero-blocking report"
-t22_has "$RC" "拒绝或降级一条 reviewAgent 的阻断发现，本身不会关闭评审点" "keeps the reviewer re-check of rejections/downgrades"
-t22_has "$RC" "没有标为 \`requires-user-decision\` 的发现在等待用户回答" "holds the point open on a pending user decision"
-t22_has "$RC" "可达性不清楚，就按 \`blocking\` 处理" "defaults reachability doubt to blocking"
-t22_has "$RC" "\"拿不准\"不能用来给证据缺口升级" "keeps evidence gaps out of the doubt default"
-t22_has "$RC" "等级改变的是处置，不改变报告" "keeps reporting full"
-t22_has "$RC" "把评审者判为 \`blocking\` 的发现降级，要把那份证据写进处置" "demands evidence for a downgrade"
-t22_has "$RC" "**并且**没有任何当前调用方能触达它" "makes contrived a conjunction"
-t22_has "$RC" "\`non-blocking:contrived\`——不在本评审循环内修复" "never lands contrived findings in the loop"
-t22_has "$RC" "额外开一轮专门落地已接受的 \`non-blocking:normal\` 发现；这一轮照常 \`start\`、计入轮次上限" "bounds the normal-fix round by the round cap"
-t22_has "$RC" "从第 3 轮起，每满 3 轮做一次收口检查" "triggers the strict-tier convergence check every 3 rounds"
-t22_has "$RC" "只有当它的每一个产生者都落在该条目已经排查过的调用点之内时" "re-checks reachability per variant"
-t22_has "$RC" "威胁模型和每一条范围外条款都由用户决定" "reserves the scope boundary to the user"
-t22_has "$RC" "不能因为今天的调用方恰好满足它，就把它算作 \`contrived\`" "keeps unstated premises a user question"
-t22_has "$S" "并不算收窄目标" "states contrived deferral is not goal narrowing"
-t22_has "$S" "让一项域内需求没有得到满足，无论给它贴了什么等级标签，都是在收窄目标" "keeps in-domain deferral as goal narrowing"
-t22_has "$S" "每条移入加固 SubTask 的阻断发现都已落地" "verifies moved findings at delivery"
-t22_has skills/execute-task/prompts/main-agent.md "**等级不收窄派发。**" "keeps tiers from narrowing a dispatch"
-t22_has skills/execute-task/prompts/main-agent.md "全量轮里这种限缩会被 L5 拒绝" "ties the tier rule to the L5 scope guard"
-t22_has skills/execute-task/prompts/main-agent.md "拒绝或降级一个 reviewAgent 的阻断发现，本身并不能关闭评审点" "keeps the reviewer re-check"
-for f in subagents/review-agent.md agents/review-agent.md; do
-    if grep -qE '^## 发现分级$' "$f" 2>/dev/null; then pass "T6 $f has the finding-tiers heading (#22)"; else fail "T6 $f has the finding-tiers heading (#22)"; fi
-    t22_has "$f" "当且仅当你报告了至少一条 \`blocking\` 发现时，\`结果\` 为 \`changes-requested\`；只有非阻断发现时，结果为 \`no-changes-needed\`" "ties Result to blocking findings both ways"
-    t22_has "$f" "在 \`blocking\` 和 \`contrived\` 之间存疑时，报告 \`blocking\`" "defaults doubt to blocking"
-    t22_has "$f" "两者都做不到，它就是 \`blocking\`" "does not default an untraced producer to contrived"
-    t22_has "$f" "分级改变的是一条发现的去向，不改变你是否报告它" "tiers without narrowing the report"
-    t22_has "$f" "把它报告为 \`blocking\` + \`requires-user-decision\`" "keeps unresolved scope questions blocking"
-    t22_has "$f" "recurring: <class>" "marks recurring classes"
-done
-t22_has subagents/implementation-agent.md "\`non-blocking:contrived\`——不要在这个循环里修复它" "leaves contrived findings to the register"
-t22_has agents/implementation-agent.md "\`non-blocking:contrived\`——不要在这个循环里修复它" "leaves contrived findings to the register"
-t22_has subagents/test-agent.md "不要在这个循环里为它修改测试" "leaves contrived findings to the register"
-t22_has agents/test-agent.md "不要在这个循环里为它修改测试" "leaves contrived findings to the register"
-# ---- Tiers rework (docs/design/execute-task-tiers-design.md §10): pin the
-# ---- prompt surfaces that tell the main agent and the reviewer to drive the
-# ---- round ledger. The ledger/gate BEHAVIOUR is scripts/test-review-round.sh's
-# ---- job; these only guard the instructions against silent deletion. Each
-# ---- literal carries the command or field shape the scripts actually parse.
-tier_has() { # <file> <fixed-string> <label>
-    if grep -qF -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (tiers)"; else fail "T6 $1 $3 (tiers)" "missing: $2"; fi
-}
-tier_heading() { # <file> <anchored-ERE> <label>
-    if grep -qE -- "$2" "$1" 2>/dev/null; then pass "T6 $1 $3 (tiers)"; else fail "T6 $1 $3 (tiers)" "missing heading: $2"; fi
-}
-M=skills/execute-task/prompts/main-agent.md
-tier_heading "$S" '^## 档位$' "has the tier section"
-tier_heading "$S" '^## 并行模型$' "has the parallel-model section"
-tier_has "$S" '- Tier: fast|standard|strict' "names the Tier status row"
-tier_has "$S" 'review-point=<id> round=<n> mode=<full|incremental>' "states the review dispatch marker"
-tier_has "$S" '另起一行 `Tier: <评审点生效档位>`' "states the dispatch tier line"
-tier_has "$S" '上一轮先 `result` 再开新一轮' "records a round's result before the next start"
-tier_has "$S" '--point <id> --round <n> --mode <start 输出的 mode>' "passes the round to cross-review.sh"
-tier_has "$S" '结论 `escalate` 时交用户，批准继续后 `grant`' "routes a strict escalate through grant"
-# Old rule deliberately removed: the fast tier writes change-note.md, not a design doc.
-if grep -qF '无论任务大小' "$S" 2>/dev/null; then
-    fail "T6 $S no longer demands a design doc regardless of task size (tiers reverse guard)"
-else
-    pass "T6 $S no longer demands a design doc regardless of task size (tiers reverse guard)"
-fi
-tier_has "$M" 'review-point=<id> round=<n> mode=<full|incremental>' "states the review dispatch marker"
-tier_has "$M" 'Tier: <fast|standard|strict>' "states the dispatch tier line"
-tier_has "$M" '上一轮已 `result` 后运行 `review-round.sh start <point>`' "records a round's result before the next start"
-tier_has "$M" '--point <id> --round <n> --mode <m>' "passes the round to cross-review.sh"
-tier_has "$M" 'review-round.sh close <point> --outcome passed' "closes a passed point through the script"
-tier_has "$M" 'close <point> --outcome residual --by user' "closes at-cap residuals only by user"
-tier_has "$M" '用户同意继续后 `grant` 放行下一轮' "routes a strict escalate through grant"
-tier_has "$M" 'review-round.sh tier <fast|standard|strict> --reason' "writes the tier through the script"
-tier_heading "$M" '^### 实现中发现偏离$' "owns the deviation decision table"
-tier_has "$RC" 'review-round.sh close <point> --outcome residual --by user' "closes at-cap residuals only by user"
-tier_has "$RC" '`--tier` 只能比任务级 `- Tier:` 更严' "allows per-point tier raises only"
-tier_has skills/execute-task/references/recovery.md '**增量复审不属于缩范围。**' "keeps incremental re-review out of scope reduction"
-for f in subagents/review-agent.md agents/review-agent.md; do
-    tier_heading "$f" '^## 按档位的评审范围$' "has the per-tier review scope"
-    tier_has "$f" 'review-point=<id> round=<n> mode=<full|incremental>' "echoes the dispatch marker"
-    tier_has "$f" '档位单独一行 `Tier: <fast|standard|strict>`' "reads the dispatch tier line"
-    tier_has "$f" '这是规定的范围，不是缩范围' "scopes incremental rounds without narrowing"
-    tier_has "$f" '`blocking` 只有三类' "admits blocking on three classes only"
-done
-tier_heading skills/execute-task/templates/review-report.md '^## 补证请求$' "has the evidence-request table"
-tier_heading skills/execute-task/templates/review-report.md '^## 修复落地核实$' "has the fix-landed table"
-tier_heading skills/execute-task/templates/design-doc.md '^## 关键机制$' "has the critical-mechanisms section"
-tier_heading skills/execute-task/templates/design-doc.md '^## 评审点划分$' "has the review-point split"
-tier_has skills/execute-task/templates/change-note.md '- 负对照:' "asks for the negative control"
-tier_has skills/execute-task/templates/change-note.md '- 回滚方式:' "asks for the rollback"
+# L5: the contrived cap lines exist as PATTERNS (not just a comment mentioning
+# the word), and vetoes are judged per clause — a negation in one sentence must
+# not license a cap in another (T7 holds the behavioral corpus).
+t22_has hooks/scripts/lib.sh "(skip|drop|omit|ignore|leave out|exclude) (the |any )?(non.blocking:)?contrived( (issue|finding|one|item|case)s?)?" "has the contrived skip-cap pattern"
+t22_has hooks/scripts/lib.sh 'zyz_scope_negated "$clause" && continue' "judges vetoes per clause"
 # review_round.py and the gate read the first non-comment `- Tier:` line, and
 # `tier` inserts it under `- Current Phase:` — the template must keep that order.
 if python3 - <<'PYEOF'
@@ -1213,42 +901,315 @@ then
 else
     fail "T6 task-status template puts the single - Tier: row right under - Current Phase: (tiers)"
 fi
-rr_tmpl=skills/execute-task/templates/residual-risks.md
-for field in Origin Tier Reproduction Impact 'Hardening Plan' Status; do
-    if grep -q "^- $field:" "$rr_tmpl" 2>/dev/null; then
-        pass "T6 residual-risks template carries the $field field (#22)"
-    else
-        fail "T6 residual-risks template carries the $field field (#22)"
-    fi
-done
-# The Scope Boundary heading must sit OUTSIDE every HTML comment, or a filled
-# document drops it together with the scaffolding.
-if python3 - <<'PYEOF'
-import re, sys
-t = open('skills/execute-task/templates/design-doc.md').read()
-stripped = re.sub(r'<!--.*?-->', '', t, flags=re.S)
-sys.exit(0 if re.search(r'^## 范围边界$', stripped, flags=re.M) else 1)
-PYEOF
-then
-    pass "T6 design-doc template has a kept Scope Boundary section (#22)"
-else
-    fail "T6 design-doc template has a kept Scope Boundary section (#22)"
-fi
-t22_has skills/execute-task/templates/design-doc.md "威胁模型和每一条范围外条款都是**用户**的决定" "reserves the scope boundary to the user"
 if grep -qE '^## 评审收口$' skills/execute-task/templates/task-status.md 2>/dev/null; then
     pass "T6 task-status template has the review-convergence section (#22)"
 else
     fail "T6 task-status template has the review-convergence section (#22)"
 fi
-t22_has skills/execute-task/templates/task-status.md "收口检查" "records convergence checks"
-t22_has skills/execute-task/templates/final-report.md "遗留风险清单" "reports the residual-risk register"
-t22_has skills/execute-task/templates/review-report.md "当且仅当下面至少有一个发现是 \`blocking\` 时为 \`changes-requested\`" "ties Status to blocking findings"
-t22_has skills/execute-task/templates/cross-review-prompt.md "它按标准 \`## 发现分级\` 定的级别" "asks the cross-harness reviewer for a tier per finding"
-# L5: the contrived cap lines exist as PATTERNS (not just a comment mentioning
-# the word), and vetoes are judged per clause — a negation in one sentence must
-# not license a cap in another (T7 holds the behavioral corpus).
-t22_has hooks/scripts/lib.sh "(skip|drop|omit|ignore|leave out|exclude) (the |any )?(non.blocking:)?contrived( (issue|finding|one|item|case)s?)?" "has the contrived skip-cap pattern"
-t22_has hooks/scripts/lib.sh 'zyz_scope_negated "$clause" && continue' "judges vetoes per clause"
+conv_lacks() { # <file> <fixed-string> <label>
+    if grep -qF -- "$2" "$1" 2>/dev/null; then fail "T6 $1 $3 (convergence reverse guard)" "still present: $2"; else pass "T6 $1 $3 (convergence reverse guard)"; fi
+}
+# Standard-tier design review is capped at 3 rounds (§11.3-6); the old cap of 2
+# must not come back in any of its three spellings.
+for f in "$S" "$RC" README.md docs/architecture.md; do
+    conv_lacks "$f" '每个评审点最多 2 轮' "no longer caps standard design review at 2 rounds"
+    conv_lacks "$f" '| standard | 2 | 3 | 3 |' "no longer caps standard design review at 2 rounds"
+    conv_lacks "$f" '标准档 design 2 /' "no longer caps standard design review at 2 rounds"
+done
+# §11.8: a fourth option was designed during review — "carry the blockings into
+# implementation" (`close --outcome carried`, an impl-notes.md section that
+# outranked the design body, a per-entry check at delivery) — and the user
+# removed it in PR review: when the fix is known it belongs in the design, with
+# an incremental re-review; carrying it forward starts implementation on a
+# design known to be wrong. The option's vocabulary is reverse-guarded on every
+# prompt, template and doc that could carry it, one check per file.
+t6_conv_carry_re='carried|带着进实现|带进实现|四选一|四个选项|优先于设计正文|必须通过的测试'
+for f in "$S" "$M" "$RC" "$DDD" "$IMPLN" README.md docs/architecture.md docs/design/execute-task-skill-design.md \
+    skills/execute-task/references/cross-harness.md skills/execute-task/references/orchestration-mode.md \
+    skills/execute-task/references/recovery.md \
+    skills/execute-task/templates/task-status.md skills/execute-task/templates/decisions.md \
+    skills/execute-task/templates/final-report.md skills/execute-task/templates/review-report.md \
+    skills/execute-task/templates/residual-risks.md skills/execute-task/templates/cross-review-prompt.md \
+    subagents/review-agent.md agents/review-agent.md subagents/test-agent.md agents/test-agent.md \
+    subagents/implementation-agent.md agents/implementation-agent.md; do
+    if [ ! -f "$f" ]; then
+        fail "T6 $f no longer offers to carry blockings into implementation (convergence reverse guard)" "file missing"
+    elif t6_conv_hit="$(grep -nE -- "$t6_conv_carry_re" "$f" 2>/dev/null | head -2)" && [ -n "$t6_conv_hit" ]; then
+        fail "T6 $f no longer offers to carry blockings into implementation (convergence reverse guard)" "$(printf '%s' "$t6_conv_hit" | cut -c1-160 | tr '\n' '|')"
+    else
+        pass "T6 $f no longer offers to carry blockings into implementation (convergence reverse guard)"
+    fi
+done
+# §11.7-5 is void (§11.8): the fast-tier checklist item that existed only to
+# check carried blockings is gone again.
+conv_lacks skills/execute-task/templates/task-status.md '6. 有 `impl-notes.md` 时' "no fast-tier checklist item for carried blockings"
+conv_lacks "$M" '加第 6 项' "no fast-tier checklist item for carried blockings"
+# The template's example ledger rows must be rows the real script accepts.
+t6_conv_dir="$(mktemp -d 2>/dev/null || true)"
+if [ -n "$t6_conv_dir" ] && [ -d "$t6_conv_dir" ]; then
+    mkdir -p "$t6_conv_dir/task"
+    {
+        printf '# s\n\n## 元数据\n\n- Current Phase: design\n- Tier: standard\n\n## 评审收口\n\n'
+        grep -E '^- Review(-Close)?: point=design-main;' skills/execute-task/templates/task-status.md
+    } > "$t6_conv_dir/task/status.md"
+    t6_conv_out="$(bash hooks/scripts/review-round.sh status --task "$t6_conv_dir/task" 2>&1)"
+    if printf '%s\n' "$t6_conv_out" | grep -qF 'closed=residual@' \
+        && printf '%s\n' "$t6_conv_out" | grep -qE 'induced=[0-9]+ pending=[0-9]+ delta=\+[0-9]+/-[0-9]+' \
+        && ! printf '%s\n' "$t6_conv_out" | grep -q 'INVALID'; then
+        pass "T6 task-status example ledger rows parse under review-round.sh (convergence)"
+    else
+        fail "T6 task-status example ledger rows parse under review-round.sh (convergence)" "$(printf '%s' "$t6_conv_out" | head -5 | tr '\n' '|')"
+    fi
+    rm -rf "$t6_conv_dir"
+else
+    skip "T6 task-status example ledger rows parse under review-round.sh (convergence)" "no mktemp"
+fi
+# impl-notes.md — where design review hands details to the implementation
+# phase. §11.8: it has exactly one section; it never overrides the design.
+if python3 - "$IMPLN" <<'PYEOF'
+import re, sys
+try:
+    t = open(sys.argv[1], encoding='utf-8').read()
+except OSError:
+    sys.exit(1)
+kept = re.sub(r'<!--.*?-->', '', t, flags=re.S)
+sys.exit(0 if re.findall(r'^## .*$', kept, flags=re.M) == ['## 实现备注'] else 1)
+PYEOF
+then
+    pass "T6 $IMPLN keeps exactly one section, the implementation notes (convergence)"
+else
+    fail "T6 $IMPLN keeps exactly one section, the implementation notes (convergence)"
+fi
+# ---- Tiers design §12.8: what a prompt test may guard -----------------------
+# Four things, and nothing else: (1) literals a script parses or prints (the
+# checks above, the watchdog literals, the status-template rows just below);
+# (2) the size caps of §12.7; (3) the `## 范围` section, byte-identical wherever
+# it is repeated; (4) ONE short anchor per rule the prompts keep, 40 at most.
+# An anchor is a script literal where the rule has one (a command, a flag, a
+# heading another file reads), otherwise the few characters of the rule least
+# likely to be reworded — never a sentence. A rule that is rewritten keeps its
+# anchor; a rule that is deleted takes its anchor with it. Do not grow this list
+# back into wording anchors: prompt wording belongs to whoever edits the prompt.
+RA=subagents/review-agent.md
+IA=subagents/implementation-agent.md
+TA=subagents/test-agent.md
+REF=skills/execute-task/references
+TPL=skills/execute-task/templates
+
+# (1) The sections and rows of the status template that hooks parse: expect.sh
+# and the watchdog read the single `## Agent State`, lib.sh the SubTask rows,
+# review_round.py `## 元数据`, `- 设计文档:` and `## 评审收口`.
+if p_out="$(python3 - "$TPL/task-status.md" <<'PYEOF'
+import re, sys
+try:
+    t = open(sys.argv[1], encoding='utf-8').read()
+except OSError as e:
+    print('cannot read: %s' % e); sys.exit(1)
+kept = re.sub(r'<!--.*?-->', '', t, flags=re.S)
+heads = re.findall(r'^## .*$', kept, flags=re.M)
+bad = [h for h in ('## 元数据', '## Agent State', '## SubTasks', '## 评审收口') if heads.count(h) != 1]
+bad += [r for r in ('- 设计文档:', '- Current Phase:', '- SubTask ID:', '- Committed:')
+        if not re.search(r'^' + re.escape(r), kept, flags=re.M)]
+if t.count('## Agent State') != 1:
+    bad.append('`## Agent State` appears %d times (comments included)' % t.count('## Agent State'))
+if bad:
+    print('missing or repeated: ' + ', '.join(bad)); sys.exit(1)
+PYEOF
+)"; then
+    pass "T6 task-status template keeps the sections and rows the hooks parse (§12.7)"
+else
+    fail "T6 task-status template keeps the sections and rows the hooks parse (§12.7)" "$p_out"
+fi
+
+# (2) Size caps, in bytes. agents/ mirrors carry a frontmatter block on top of
+# the subagents/ body and must fit the same cap.
+p_cap() { # <file> <max-bytes>
+    local n
+    if [ ! -f "$1" ]; then fail "T6 $1 stays within $2 bytes (§12.7)" "file missing"; return; fi
+    n="$(wc -c < "$1" | tr -d '[:space:]')"
+    if [ -z "$n" ] || [ "$n" -eq 0 ]; then
+        fail "T6 $1 stays within $2 bytes (§12.7)" "empty"
+    elif [ "$n" -le "$2" ]; then
+        pass "T6 $1 stays within $2 bytes (§12.7)"
+    else
+        fail "T6 $1 stays within $2 bytes (§12.7)" "is $n bytes, $((n - $2)) over"
+    fi
+}
+p_cap "$S" 12288
+p_cap "$M" 10240
+p_cap "$RA" 6144
+p_cap agents/review-agent.md 6144
+p_cap "$IA" 5120
+p_cap agents/implementation-agent.md 5120
+p_cap "$TA" 5120
+p_cap agents/test-agent.md 5120
+p_cap "$RC" 8192
+p_cap "$DDD" 3072
+p_cap "$REF/cross-harness.md" 3072
+p_cap "$REF/recovery.md" 3072
+p_cap "$REF/version-control.md" 3072
+p_cap "$TPL/task-status.md" 5120
+p_cap "$TPL/review-report.md" 3072
+p_cap "$TPL/design-doc.md" 3072
+p_cap "$TPL/cross-review-prompt.md" 3072
+
+# (3) The scope rule is written once, in the code block of design §12.3, and
+# repeated verbatim in SKILL.md and the three role prompts (agents/ follows by
+# the T14 mirror check). Compared as bytes, from the `## 范围` heading up to the
+# next `## ` heading; only the blank lines at the end are ignored.
+for f in "$S" "$RA" "$IA" "$TA"; do
+    if p_out="$(python3 - "$f" docs/design/execute-task-tiers-design.md <<'PYEOF'
+import re, sys
+def die(msg):
+    print(msg); sys.exit(1)
+try:
+    text = open(sys.argv[1], 'rb').read()
+    design = open(sys.argv[2], 'rb').read()
+except OSError as e:
+    die('cannot read: %s' % e)
+head = '## 范围'.encode('utf-8')
+i = design.find(b'\n### 12.3 ')
+j = design.find(b'\n### 12.4 ', i + 1) if i >= 0 else -1
+m = re.compile(br'^```markdown\n(.*?)^```[ \t]*$', re.S | re.M).search(design, i) if i >= 0 else None
+if not m or j < 0 or m.end() > j:
+    die('design §12.3 has no ```markdown block')
+want = m.group(1).rstrip(b'\n')
+if not want.startswith(head + b'\n') or len(want) < 600:
+    die('the block of design §12.3 is not the scope section (%d bytes)' % len(want))
+starts = [x.start() for x in re.finditer(b'^' + re.escape(head) + b'$', text, re.M)]
+if len(starts) != 1:
+    die('%d `## 范围` headings, expected 1' % len(starts))
+nxt = re.compile(br'^## ', re.M).search(text, starts[0] + len(head))
+got = text[starts[0]:nxt.start() if nxt else len(text)].rstrip(b'\n')
+if got != want:
+    k = next((n for n, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+    die('differs from design §12.3 at byte %d of the section (%d vs %d bytes): …%s…' % (
+        k, len(got), len(want), got[max(0, k - 24):k + 24].decode('utf-8', 'replace').replace('\n', ' ')))
+PYEOF
+    )"; then
+        pass "T6 $f repeats the scope section of design §12.3 byte for byte"
+    else
+        fail "T6 $f repeats the scope section of design §12.3 byte for byte" "$p_out"
+    fi
+done
+
+# (4) Short anchors, one per kept rule. F = fixed string, E = ERE; every pattern
+# of an anchor must be found on some line of the file.
+P_RULES=0
+p_rule() { # <label> <file> <F|E> <pattern> [<F|E> <pattern>]...
+    local label="$1" file="$2" kind pat
+    shift 2
+    P_RULES=$((P_RULES + 1))
+    if [ ! -f "$file" ]; then fail "T6 rule anchor: $label ($file)" "file missing"; return; fi
+    if [ "$#" -lt 2 ] || [ $(($# % 2)) -ne 0 ]; then fail "T6 rule anchor: $label ($file)" "malformed anchor: $# pattern arguments"; return; fi
+    while [ "$#" -ge 2 ]; do
+        kind="$1"; pat="$2"; shift 2
+        case "$kind" in
+            E) grep -qE -- "$pat" "$file" 2>/dev/null || { fail "T6 rule anchor: $label ($file)" "no line matches: $pat"; return; } ;;
+            F) grep -qF -- "$pat" "$file" 2>/dev/null || { fail "T6 rule anchor: $label ($file)" "missing: $pat"; return; } ;;
+            *) fail "T6 rule anchor: $label ($file)" "malformed anchor: kind [$kind]"; return ;;
+        esac
+    done
+    pass "T6 rule anchor: $label ($file)"
+}
+p_rule_in_each() { # <label> <fixed-string> <file>...  — one anchor, the literal in every file
+    local label="$1" pat="$2" f
+    shift 2
+    P_RULES=$((P_RULES + 1))
+    for f in "$@"; do
+        grep -qF -- "$pat" "$f" 2>/dev/null || { fail "T6 rule anchor: $label" "missing in $f: $pat"; return; }
+    done
+    pass "T6 rule anchor: $label"
+}
+p_sections() { # <label> <file> <exact|has> <heading>... — `## ` headings outside HTML comments
+    local label="$1" file="$2" out
+    shift 2
+    P_RULES=$((P_RULES + 1))
+    if out="$(python3 - "$file" "$@" <<'PYEOF'
+import re, sys
+try:
+    t = open(sys.argv[1], encoding='utf-8').read()
+except OSError as e:
+    print('cannot read: %s' % e); sys.exit(1)
+heads = re.findall(r'^## .*$', re.sub(r'<!--.*?-->', '', t, flags=re.S), flags=re.M)
+want = sys.argv[3:]
+ok = heads == want if sys.argv[2] == 'exact' else all(heads.count(h) == 1 for h in want)
+if not ok:
+    print('sections are: ' + ' | '.join(heads)); sys.exit(1)
+PYEOF
+    )"; then pass "T6 rule anchor: $label ($file)"; else fail "T6 rule anchor: $label ($file)" "$out"; fi
+}
+# -- what the reviewer does, and what counts as blocking (§12.4, §12.5)
+p_rule "a full round walks every scenario of the design" "$RA" E 'mode=full.*## 场景'
+p_rule "a blocking finding names the flow and the step that fails" "$RA" F '出错的那一步'
+p_rule "the burden of proof is on whoever reports blocking" "$RC" F '举证'
+p_rule "the grade looks at the problem, not at the size of the fix" "$RC" F '只看问题本身'
+p_rule "the result follows the blocking findings, both ways" "$RA" E 'changes-requested.*no-changes-needed'
+p_rule "findings carry one of the three grade literals" "$RA" F 'non-blocking:normal' F 'non-blocking:contrived'
+p_rule "an incremental round has its own three tasks" "$RA" F 'mode=incremental'
+p_rule "from round 2 a new finding names where it came from" "$RA" F '上一轮修订带出'
+# -- convergence (§11, kept by §12.5)
+p_rule "design-review non-blocking findings stay out of the design body" "$RC" F '不进设计正文'
+p_rule "the grade is re-checked before a mechanism is added" "$RC" F '重新核对等级'
+p_rule "a blocking fix adds nothing new when fixing in place will do" "$RC" F '优先不做加法'
+p_rule "a question for the user is asked in the round it is adjudicated" "$RC" F '当轮就问'
+p_rule "what depends on the answer keeps its text until the user answers" "$RC" F '保持原文'
+p_rule "standard tier stops early when round 2 does not converge" "$RC" E '不为零.*不少于第 1 轮'
+p_rule "a stopped point goes to the user with three options" "$RC" F 'grant <point>' F '--outcome residual --by user' F '--outcome split --by user'
+p_rule "every round dispatches a fresh review-agent" "$S" E '新派发.*SendMessage'
+# -- the commands that drive the ledger (literals review-round.sh / the gate read)
+p_rule "the tier is the status file's Tier row" "$S" F '- Tier:'
+p_rule "the tier is written through the script" "$M" F 'review-round.sh tier '
+p_rule "a review dispatch carries the marker and the Tier line" "$M" F 'review-point=<id> round=<n> mode=<full|incremental>' F 'Tier: <fast|standard|strict>'
+p_rule "a round's result records rejected, induced and pending" "$M" E 'review-round\.sh result .*--rejected.*--induced.*--pending'
+p_rule "the cross-harness run follows start's verdict and gets the round" "$M" E 'cross-harness=yes.*cross-review\.sh run .*--point .*--round .*--mode'
+# -- the user decides the design
+p_rule "the user's goal is not narrowed" "$S" F '不收窄'
+p_rule "a design decision needs the user's approval" "$S" F '经用户批准'
+p_rule "the design approval gate is a hard stop" "$S" F '硬性停止点'
+p_rule_in_each "the approval is recorded before implementation starts" '设计批准记录' "$S" "$TPL/task-status.md"
+p_rule "a question is plain text plus an expect.sh declaration" "$M" E 'AskUserQuestion.*expect\.sh set <key> user'
+p_rule "key mechanisms are listed for the user's review, in any tier" "$DDD" E '## 关键机制.*任何档位'
+p_rule "strict tier: test-agent writes the tests of the key mechanisms" "$S" E '## 关键机制.*test-agent'
+p_sections "the design template keeps the sections the flow reads" "$TPL/design-doc.md" has \
+    '## 快速审阅' '## 范围边界' '## 场景' '## 发生时再查' '## 关键机制' '## 拆分' '## 测试计划'
+p_sections "the residual list is two sections, one line per entry" "$TPL/residual-risks.md" exact \
+    '## 后续对抗任务' '## 接受的遗留问题'
+# -- done conditions and the shared tree
+p_rule "the main agent does not review an implementation itself" "$S" F '不亲自评审'
+p_rule "a new test fails on the code before the change" "$IA" E '改动前.*负对照'
+p_rule "every scenario has a test" "$IA" F '## 场景'
+p_rule "test-agent leaves implementation code alone" "$TA" F '不改实现代码'
+p_rule_in_each "roles never discard others' work in the shared tree" 'git restore <file>' "$RA" "$IA" "$TA"
+p_rule "every test category is registered ran or skipped" "$S" E '## 最终汇总测试.*skipped'
+p_rule "a stuck role is re-dispatched with the same scope" "$S" F '相同范围'
+p_rule "done is written only after the user confirms" "$S" E 'awaiting-confirmation.*`done`'
+if [ "$P_RULES" -le 40 ]; then
+    pass "T6 rule anchors stay within the §12.8 budget ($P_RULES of 40)"
+else
+    fail "T6 rule anchors stay within the §12.8 budget ($P_RULES of 40)" "drop one before adding one"
+fi
+
+# Reverse guards for §12.6: the how-to rules were deleted, not moved. Their
+# vocabulary must not come back into the prompts an agent always reads — one
+# check per file. Role prompts and the design template also must not go back to
+# calling `## 关键机制` a strict-tier-only section (it is the user's review list).
+p_gone='变异|空转|覆盖维度|独立复现|拿不准时按|升级总是允许'
+for f in "$S" "$M" "$RC" "$RA" "$IA" "$TA" agents/review-agent.md agents/implementation-agent.md agents/test-agent.md \
+    "$TPL/design-doc.md"; do
+    case "$f" in
+        subagents/*|agents/*) p_re="$p_gone|只在严格档填" ;;
+        "$TPL/design-doc.md") p_re='只在严格档填' ;;
+        *) p_re="$p_gone" ;;
+    esac
+    if [ ! -f "$f" ]; then
+        fail "T6 $f carries none of the deleted how-to vocabulary (§12.6 reverse guard)" "file missing"
+    elif p_out="$(grep -nE -- "$p_re" "$f" 2>/dev/null | head -2 | tr '\n' '|')" && [ -n "$p_out" ]; then
+        fail "T6 $f carries none of the deleted how-to vocabulary (§12.6 reverse guard)" "$p_out"
+    else
+        pass "T6 $f carries none of the deleted how-to vocabulary (§12.6 reverse guard)"
+    fi
+done
 for m in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json; do
     if grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$EXPECTED_VERSION_RE" "$m" 2>/dev/null; then
         pass "T6 $m at $EXPECTED_VERSION"
@@ -1974,9 +1935,6 @@ t14_mirror_pair() { # agents path, subagents path, role label
 t14_mirror_pair agents/implementation-agent.md subagents/implementation-agent.md implementation-agent
 t14_mirror_pair agents/test-agent.md subagents/test-agent.md test-agent
 t14_mirror_pair agents/review-agent.md subagents/review-agent.md review-agent
-for f in agents/implementation-agent.md agents/test-agent.md subagents/implementation-agent.md subagents/test-agent.md; do
-    if grep -qi 'skeleton\|骨架' "$f" && grep -qi 'incremental\|增量' "$f"; then pass "T14 $f requires early skeleton and incremental disk output"; else fail "T14 $f requires early skeleton and incremental disk output"; fi
-done
 
 # ---------------------------------------------------------------------------
 # T15--T21 pathname-era block retired by T166.
