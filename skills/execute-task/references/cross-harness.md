@@ -6,7 +6,7 @@
 
 默认只在严格档跑，含单独升到严格档的评审点和没有 `- Tier:` 的旧任务。以 `review-round.sh start` 输出的 `cross-harness=yes|no` 为准：严格档的设计评审各轮、实现评审第 1 轮和 `--full` 开的全量轮、汇总评审第 1 轮是 `yes`；快速档和标准档一律 `no`。
 
-其它档位用户明确要求时，直接运行下面的命令（它不看档位）。`ZYZ_CROSS_REVIEW=off` 时一律不跑。
+其它档位用户明确要求时，直接运行下面的命令（它不看档位；实现评审的增量轮要加 `ZYZ_CROSS_REVIEW_FORCE=1`）。`ZYZ_CROSS_REVIEW=off` 时一律不跑。
 
 ## 怎么跑
 
@@ -21,7 +21,7 @@
 - 评审会话只读，不跑测试，读的是实时工作树：它跑完之前被评审的文件不改。
 - 一个评审者可能跑几十分钟。不让 review-agent 的派发等它；超时由 `ZYZ_CROSS_REVIEW_TIMEOUT` 控制（秒，默认 2400，低于 1200 的值会被提到 1200）。
 - 平台没有后台工具调用时以分离方式启动，stdout 重定向到文件。
-- 其它调节项：`ZYZ_CROSS_REVIEW=auto|off|<harness 列表>`；`ZYZ_CROSS_REVIEW_MCP`（默认 `none`）；`ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS`；`ZYZ_CROSS_REVIEW_FORCE=1` 让实现评审的增量轮也跑。`cross-review.sh detect` 显示会选中哪些 harness。
+- 其它调节项：`ZYZ_CROSS_REVIEW=auto|off|<harness 列表>`；`ZYZ_CROSS_REVIEW_MCP`（默认 `none`）；`ZYZ_CROSS_REVIEW_CODEX_ARGS` / `ZYZ_CROSS_REVIEW_CLAUDE_ARGS`。`cross-review.sh detect` 显示会选中哪些 harness。
 
 ## 没跑成
 
