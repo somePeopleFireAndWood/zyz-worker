@@ -23,11 +23,11 @@ trap 'tmux kill-session -t "$TEST_SESSION" >/dev/null 2>&1 || true; rm -rf "$TMP
 pass=0
 fail=0
 skipped=0
-EXPECTED_VERSION="0.33.0"
+EXPECTED_VERSION="0.34.0"
 # Release-specific mutation sentinel: a base-version bump alone also changes
 # the cache path, but the approved candidate-install procedure explicitly
 # requires a fresh cachebuster so a stale same-base cache can never be reused.
-PREVIOUS_CODEX_CACHEBUSTER="20261123102506"
+PREVIOUS_CODEX_CACHEBUSTER="20261126160124"
 
 ok() { pass=$((pass + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf 'FAIL  %s\n' "$1" >&2; }

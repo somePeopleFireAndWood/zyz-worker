@@ -1,7 +1,7 @@
 {
   "name": "zyz-worker",
   "description": "面向 Claude Code 与 Codex 的设计先行代码开发工作流：由专职 agent 完成需求、设计、实现、测试与评审。",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "author": {
     "name": "yu",
     "url": "https://github.com/somePeopleFireAndWood"
