@@ -618,3 +618,11 @@ lane 派发时，这个文件和 `decisions.md` 一起附上；实现评审、�
 6. 升级时还在进行中的任务，设计文档没有 `## 场景`：下一次派发评审或 lane 之前由主 agent 补上这一节。写在 `design-doc-discipline.md`。
 
 增量复审（对象 `cdc18c1`）：通过，没有 blocking。评审者按主 agent 提示词实际写了 lane、test-agent、review-agent 三种派发喂给真实的 hook，都放行。4 条非阻断发现里采纳两条：编排模式下等 `answer.md` 时不用 `user` 声明这一句，腾字节时从 `main-agent.md` 删掉后只剩 `references/watchdog.md` 有，补进 `references/orchestration-mode.md`；CHANGELOG 的体积数字和"脚本和 hook 没有改"的说法跟上这一轮。留给后续：L5 的词表对"只给出 / 只写……结论"这类近义说法仍会拒绝（主 agent 换个说法重派即可，只是多一个来回）；新加的 L5 扫描让 `test-watchdog-hooks.sh` 慢约一分钟。
+
+### 12.12 两处调整（2026-11-28，用户决定）
+
+1. **跨 harness 评审默认只在严格档开启。** 快速档和标准档默认只有 review-agent 评审。
+   - `review-round.sh start` 输出的 `cross-harness=` 按评审点的生效档位算：`strict`（以及没有 `- Tier:` 的旧任务，它们按严格档的旧行为执行）沿用原来的规则——设计各轮、实现第 1 轮和 `--full` 开的全量轮、汇总第 1 轮是 `yes`；`fast` 和 `standard` 一律 `no`。单个评审点升到严格档（`open <point> --tier strict`）后，这个评审点按严格档算。
+   - 其它档位用户明确要求时，主 agent 直接运行 `cross-review.sh run`（它不看档位），不为此加新的开关。`ZYZ_CROSS_REVIEW=off` 仍然一律不跑。
+   - §3 档位表"跨 harness"一行、§10.4 的 `cross-harness` 规则、§10.8 第 7 条里关于快速档和标准档的部分随之作废。
+2. **"优先做减法"改成"优先不做加法"（§11.2 第 4 条）。** 原来的说法照字面读，会让该直接改对的地方也去找东西删。要的是修订不新增评审面：blocking 的修复先在原处解决——把写错的改对，或者删掉、收窄引出问题的东西；这两种都解决不了时才加新的规则或机制。改对和删减之间不分先后。会缩小用户要的范围时只推荐、由用户决定，这一点不变。
