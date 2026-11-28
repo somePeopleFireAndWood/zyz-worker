@@ -317,13 +317,19 @@ def round_mode(n, forced):
 
 
 def cross_harness(tier, stage, mode, n):
-    """design: every round (none on fast); impl: full rounds (round 1 and
-    `start --full`); aggregate: round 1 only, a forced full round too
-    (§10.8-7)."""
+    """On by default only under the strict tier (§12.12-1); <tier> is the
+    point's effective tier. A task without a tier keeps the strict rule: it
+    runs as it did before the tiers. fast and standard: never — when the user
+    asks for one there, the main agent runs cross-review.sh itself, which does
+    not look at the tier. Under the strict rule — design: every round; impl:
+    full rounds (round 1 and `start --full`); aggregate: round 1 only, a
+    forced full round too (§10.8-7)."""
     if os.environ.get("ZYZ_CROSS_REVIEW", "auto") in ("off", "OFF", "0", "false", "no", "none"):
         return "no"
+    if tier in ("fast", "standard"):
+        return "no"
     if stage == "design":
-        return "no" if tier == "fast" else "yes"
+        return "yes"
     if stage == "aggregate":
         return "yes" if n == 1 else "no"
     return "yes" if mode == "full" else "no"
@@ -734,7 +740,7 @@ def take_snapshot(task_dir, point, n, docs, notes, prev_delta):
         info.append("diff=" + diff_path)
         if growing:
             notes.append("note: 第 %d 轮评审的修订新增 %d 行，多于上一轮的 %d 行——修订量在变大。设计评审要收敛，每轮新写的量"
-                         "要逐轮变小（§11.1）：修复优先做减法，非阻断发现不进设计正文。这是告警，不拦截。"
+                         "要逐轮变小（§11.1）：修复优先在原处解决（改对或删减），不加新机制；非阻断发现不进设计正文。这是告警，不拦截。"
                          % (n, added, prev_delta[0]))
         return (added, removed), info + notes
     except Exception as e:  # noqa: BLE001 — fail open, see the docstring

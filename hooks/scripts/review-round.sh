@@ -20,7 +20,10 @@
 #             Opening a closed point starts a new set of records and keeps
 #             the point's own tier (lowering it needs --by user).
 #   review-round.sh start <point> [--full --reason <text>] [--docs <path>...]
-#             prints `round=<n> mode=full|incremental cross-harness=yes|no`;
+#             prints `round=<n> mode=full|incremental cross-harness=yes|no`
+#             (cross-harness is yes only when the point's effective tier is
+#             strict, or the task has no Tier: design rounds, full impl
+#             rounds, aggregate round 1; fast and standard are always no);
 #             --full forces a full re-review (after a structural fix; counts
 #             as a round like any other). Exit 3 with the next step when the
 #             round is not allowed: cap reached without a grant, a standard

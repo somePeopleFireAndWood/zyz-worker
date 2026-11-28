@@ -1151,7 +1151,7 @@ p_rule "from round 2 a new finding names where it came from" "$RA" F '上一轮�
 # -- convergence (§11, kept by §12.5)
 p_rule "design-review non-blocking findings stay out of the design body" "$RC" F '不进设计正文'
 p_rule "the grade is re-checked before a mechanism is added" "$RC" F '重新核对等级'
-p_rule "a blocking fix prefers subtraction" "$RC" F '做减法'
+p_rule "a blocking fix adds nothing new when fixing in place will do" "$RC" F '优先不做加法'
 p_rule "a question for the user is asked in the round it is adjudicated" "$RC" F '当轮就问'
 p_rule "what depends on the answer keeps its text until the user answers" "$RC" F '保持原文'
 p_rule "standard tier stops early when round 2 does not converge" "$RC" E '不为零.*不少于第 1 轮'

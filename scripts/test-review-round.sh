@@ -474,26 +474,68 @@ rr start esc >/dev/null 2>&1; rc_is "$?" 0 "B strict: a later non-escalate check
 # startline <point> [blocking]: the first line of start (a design point adds
 # lines about its snapshot, section L), then a result.
 startline() { rr start "$1" 2>&1 | head -1; rr result "$1" --blocking "${2:-1}" --rejected 0 --induced 0 --pending 0 >/dev/null 2>&1; }
+# §12.12-1: cross-harness review is on by default only under the strict tier
+# (and on a task without a tier, which runs as before the tiers). Standard and
+# fast are `no` on every round of every stage; a single point raised to strict
+# follows the strict rule, in `start` and in `status` alike.
 mk_status "$T" "- Tier: standard"
 for p in d:design i:impl a:aggregate; do rr open "${p%%:*}" --stage "${p#*:}" >/dev/null; done
-[ "$(startline d)" = "round=1 mode=full cross-harness=yes" ] && pass "C standard design r1: full, cross-harness" || fail "C standard design r1"
-[ "$(startline d)" = "round=2 mode=incremental cross-harness=yes" ] && pass "C standard design r2: incremental, cross-harness stays" || fail "C standard design r2"
-[ "$(startline i)" = "round=1 mode=full cross-harness=yes" ] && pass "C impl r1: full, cross-harness" || fail "C impl r1"
-[ "$(startline i)" = "round=2 mode=incremental cross-harness=no" ] && pass "C impl r2: incremental, no cross-harness" || fail "C impl r2"
-[ "$(startline a 2)" = "round=1 mode=full cross-harness=yes" ] && pass "C aggregate r1: cross-harness" || fail "C aggregate r1"
-[ "$(startline a)" = "round=2 mode=incremental cross-harness=no" ] && pass "C aggregate r2: no cross-harness" || fail "C aggregate r2"
-[ "$(rr start a --full --reason "结构改了" 2>&1)" = "round=3 mode=full cross-harness=no" ] && pass "C aggregate forced full round: still no cross-harness (§10.8-7)" || fail "C aggregate forced full"
+[ "$(startline d)" = "round=1 mode=full cross-harness=no" ] && pass "C standard design r1: full, no cross-harness (§12.12-1)" || fail "C standard design r1"
+[ "$(startline d)" = "round=2 mode=incremental cross-harness=no" ] && pass "C standard design r2: incremental, no cross-harness" || fail "C standard design r2"
+has "$(rr status d)" "next=3 mode=incremental cross-harness=no" "C status agrees for a standard design point"
+[ "$(startline i)" = "round=1 mode=full cross-harness=no" ] && pass "C standard impl r1: full, no cross-harness (§12.12-1)" || fail "C standard impl r1"
+[ "$(startline i)" = "round=2 mode=incremental cross-harness=no" ] && pass "C standard impl r2: incremental, no cross-harness" || fail "C standard impl r2"
+[ "$(startline a 2)" = "round=1 mode=full cross-harness=no" ] && pass "C standard aggregate r1: no cross-harness (§12.12-1)" || fail "C standard aggregate r1"
+[ "$(startline a)" = "round=2 mode=incremental cross-harness=no" ] && pass "C standard aggregate r2: no cross-harness" || fail "C standard aggregate r2"
+[ "$(rr start a --full --reason "结构改了" 2>&1)" = "round=3 mode=full cross-harness=no" ] && pass "C standard aggregate forced full round: no cross-harness" || fail "C standard aggregate forced full"
 rr result a --blocking 1 --rejected 0 --induced 0 --pending 0 >/dev/null
 has "$(rr status a)" "next=4 mode=incremental cross-harness=no" "C status agrees for aggregate"
+# ... a single point raised to strict on that standard task
+rr open ds --stage design --tier strict >/dev/null; rr open is --stage impl --tier strict >/dev/null
+[ "$(startline ds)" = "round=1 mode=full cross-harness=yes" ] && pass "C standard task, design point raised to strict: r1 cross-harness" || fail "C raised design r1"
+[ "$(startline ds)" = "round=2 mode=incremental cross-harness=yes" ] && pass "C ... r2 too (design: every round)" || fail "C raised design r2"
+has "$(rr status ds)" "tier=strict round=2" "C ... status shows the point's effective tier"
+has "$(rr status ds)" "next=3 mode=incremental cross-harness=yes" "C ... and computes cross-harness from it, not from the task tier"
+[ "$(startline is)" = "round=1 mode=full cross-harness=yes" ] && pass "C standard task, impl point raised to strict: r1 cross-harness" || fail "C raised impl r1"
+[ "$(startline is)" = "round=2 mode=incremental cross-harness=no" ] && pass "C ... its incremental round: none" || fail "C raised impl r2"
+has "$(rr status i)" "tier=standard" "C ... the other points of the task stay standard"
+has "$(rr status i)" "cross-harness=no" "C ... and stay without cross-harness"
+# strict: the rule as it was
 mk_status "$T" "- Tier: strict"
-rr open d --stage design >/dev/null; startline d >/dev/null; startline d >/dev/null
+for p in d:design i:impl a:aggregate; do rr open "${p%%:*}" --stage "${p#*:}" >/dev/null; done
+[ "$(startline d)" = "round=1 mode=full cross-harness=yes" ] && pass "C strict design r1: full, cross-harness" || fail "C strict design r1"
+[ "$(startline d)" = "round=2 mode=incremental cross-harness=yes" ] && pass "C strict design r2: incremental, cross-harness stays" || fail "C strict design r2"
 [ "$(startline d)" = "round=3 mode=incremental cross-harness=yes" ] && pass "C strict design r3: cross-harness" || fail "C strict design r3"
+has "$(rr status d)" "next=4 mode=incremental cross-harness=yes" "C status agrees for a strict design point"
+[ "$(startline i)" = "round=1 mode=full cross-harness=yes" ] && pass "C strict impl r1: full, cross-harness" || fail "C strict impl r1"
+[ "$(startline i)" = "round=2 mode=incremental cross-harness=no" ] && pass "C strict impl r2: incremental, no cross-harness" || fail "C strict impl r2"
+[ "$(rr start i --full --reason "结构改了" 2>&1)" = "round=3 mode=full cross-harness=yes" ] && pass "C strict impl forced full round: cross-harness" || fail "C strict impl forced full"
+[ "$(startline a 2)" = "round=1 mode=full cross-harness=yes" ] && pass "C strict aggregate r1: cross-harness" || fail "C strict aggregate r1"
+[ "$(startline a)" = "round=2 mode=incremental cross-harness=no" ] && pass "C strict aggregate r2: no cross-harness" || fail "C strict aggregate r2"
+[ "$(rr start a --full --reason "结构改了" 2>&1)" = "round=3 mode=full cross-harness=no" ] && pass "C strict aggregate forced full round: still no cross-harness (§10.8-7)" || fail "C strict aggregate forced full"
+# ZYZ_CROSS_REVIEW=off wins on a round that would be `yes`
+rr open off --stage design >/dev/null
+[ "$(ZYZ_CROSS_REVIEW=off bash "$RR" --task "$T" start off 2>&1 | head -1)" = "round=1 mode=full cross-harness=no" ] \
+    && pass "C ZYZ_CROSS_REVIEW=off -> cross-harness=no on a strict design round" || fail "C ZYZ_CROSS_REVIEW=off"
+has "$(ZYZ_CROSS_REVIEW=off bash "$RR" --task "$T" status off 2>&1)" "next=2 mode=incremental cross-harness=no" "C ... in status too"
+has "$(rr status off)" "next=2 mode=incremental cross-harness=yes" "C ... and only while it is set"
+# a task from before the tiers (no `- Tier:`): the strict rule
+mk_status "$T" ""
+for p in d:design i:impl a:aggregate; do rr open "${p%%:*}" --stage "${p#*:}" >/dev/null; done
+[ "$(startline d)" = "round=1 mode=full cross-harness=yes" ] && pass "C no tier (legacy task) design r1: cross-harness" || fail "C legacy design r1"
+[ "$(startline d)" = "round=2 mode=incremental cross-harness=yes" ] && pass "C no tier design r2: cross-harness stays" || fail "C legacy design r2"
+[ "$(startline i)" = "round=1 mode=full cross-harness=yes" ] && pass "C no tier impl r1: cross-harness" || fail "C legacy impl r1"
+[ "$(startline i)" = "round=2 mode=incremental cross-harness=no" ] && pass "C no tier impl r2: no cross-harness" || fail "C legacy impl r2"
+[ "$(startline a)" = "round=1 mode=full cross-harness=yes" ] && pass "C no tier aggregate r1: cross-harness" || fail "C legacy aggregate r1"
+has "$(rr status d)" "tier=none" "C ... status shows no tier"
+has "$(rr status d)" "next=3 mode=incremental cross-harness=yes" "C ... and agrees"
+# fast: never
 mk_status "$T" "- Tier: fast"
 rr open d --stage design >/dev/null; rr grant d --reason "用户要设计评审" >/dev/null
 [ "$(startline d)" = "round=1 mode=full cross-harness=no" ] && pass "C fast design (granted): no cross-harness" || fail "C fast design granted"
-rr open i --stage impl >/dev/null
-[ "$(ZYZ_CROSS_REVIEW=off bash "$RR" --task "$T" start i 2>&1)" = "round=1 mode=full cross-harness=no" ] \
-    && pass "C ZYZ_CROSS_REVIEW=off -> cross-harness=no" || fail "C ZYZ_CROSS_REVIEW=off"
+rr open i --stage impl >/dev/null; rr open a --stage aggregate >/dev/null
+[ "$(startline i)" = "round=1 mode=full cross-harness=no" ] && pass "C fast impl r1: no cross-harness (§12.12-1)" || fail "C fast impl r1"
+[ "$(startline a)" = "round=1 mode=full cross-harness=no" ] && pass "C fast aggregate r1: no cross-harness (§12.12-1)" || fail "C fast aggregate r1"
 
 # ---------------------------------------------------------------------------
 # D — tasks without a Tier: no cap, recorded as usual (fail open)
@@ -797,7 +839,7 @@ rr start impl-main >/dev/null; rr result impl-main --blocking 2 >/dev/null
 rr start impl-main --full >/dev/null 2>&1; rc_is "$?" 2 "J --full needs --reason"
 rr start impl-main --reason x >/dev/null 2>&1; rc_is "$?" 2 "J --reason without --full -> exit 2"
 out="$(rr start impl-main --full --reason "结构改了")"
-[ "$out" = "round=2 mode=full cross-harness=yes" ] && pass "J start --full: round 2 full, impl full round gets cross-harness" || fail "J start --full" "$out"
+[ "$out" = "round=2 mode=full cross-harness=no" ] && pass "J start --full: round 2 full (standard tier: no cross-harness)" || fail "J start --full" "$out"
 out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=full")"; [ -z "$out" ] && pass "J gate: forced-full round with mode=full -> allow" || fail "J gate forced full" "$out"
 out="$(gate zyz-worker:review-agent "review-point=impl-main round=2 mode=incremental")"
 denied "$out" && pass "J gate: forced-full round marked incremental -> deny" || fail "J gate forced incremental"
@@ -847,7 +889,7 @@ rr start other >/dev/null 2>&1; rc_is "$?" 3 "J a closed point under its cap sti
 # reopen: a new set of records, the old ones kept
 rr open impl-main >/dev/null; rc_is "$?" 0 "J reopen a closed point (stage taken from its records)"
 [ "$(grep -c '^- Review: point=impl-main; stage=impl; kind=main; round=0;' "$T/status.md")" -eq 2 ] && pass "J reopen appends a new round=0 row, history kept" || fail "J reopen row"
-out="$(rr start impl-main)"; [ "$out" = "round=1 mode=full cross-harness=yes" ] && pass "J reopened point counts from round 1" || fail "J reopen start" "$out"
+out="$(rr start impl-main)"; [ "$out" = "round=1 mode=full cross-harness=no" ] && pass "J reopened point counts from round 1" || fail "J reopen start" "$out"
 out="$(gate zyz-worker:review-agent "review-point=impl-main round=1 mode=full")"; [ -z "$out" ] && pass "J gate follows the newest set of records" || fail "J gate reopen" "$out"
 rr result impl-main --blocking 3 >/dev/null
 rc="$(run_rounds impl-main 2)"; rc_is "$rc" 0 "J reopened point gets its own cap (rounds 2..3)"
@@ -906,7 +948,9 @@ close_passed up
 rr open up --tier strict >/dev/null; rc_is "$?" 0 "J reopen with a higher --tier needs no --by user"
 mk_status "$T" "- Tier: fast"
 rr open dz --stage design --tier standard >/dev/null
-[ "$(rr start dz | head -1)" = "round=1 mode=full cross-harness=yes" ] && pass "J fast task, standard design point: allowed, with cross-harness" || fail "J fast task standard point"
+[ "$(rr start dz | head -1)" = "round=1 mode=full cross-harness=no" ] && pass "J fast task, standard design point: allowed, without cross-harness (§12.12-1)" || fail "J fast task standard point"
+rr open dy --stage design --tier strict >/dev/null
+[ "$(rr start dy | head -1)" = "round=1 mode=full cross-harness=yes" ] && pass "J fast task, design point raised to strict: cross-harness" || fail "J fast task strict point"
 mk_status "$T" ""
 rr open dz --stage design --tier strict >/dev/null 2>&1; rc_is "$?" 2 "J --tier on a task without a Tier -> exit 2"
 
@@ -1226,6 +1270,8 @@ rc_is "$rc" 0 "L4 a growing revision does not refuse the round"
 [ "$(printf '%s\n' "$out" | sed -n 2p)" = "delta=+9/-0 prev=+8/-0 growing=yes" ] && pass "L4 round 4: more added lines than the round before -> growing=yes" || fail "L4 round 4 delta line" "$out"
 has "$out" "note: 第 4 轮评审的修订新增 9 行，多于上一轮的 8 行" "L4 ... with a one-line warning"
 has "$out" "修订量在变大" "L4 ... that the revision is growing"
+has "$out" "修复优先在原处解决（改对或删减），不加新机制；非阻断发现不进设计正文。这是告警，不拦截。" "L4 ... and what keeps it small: fix in place, add no mechanism (§12.12-2)"
+lacks "$out" "做减法" "L4 ... not as 'prefer subtraction' (§12.12-2)"
 rr result dm --blocking 2 --rejected 0 --induced 2 --pending 1 >/dev/null
 out="$(rr status)"
 has "$out" "  r1 blocking=6 rejected=0 induced=- pending=- delta=-
@@ -1294,8 +1340,8 @@ has "$out" "note: 没有找到可读的设计文档" "L4 ... same note"
 mk_docs "$T" "design/main.md" standard
 lines "$T/design/main.md" 1 5
 rr open im --stage impl >/dev/null; rr open ag --stage aggregate >/dev/null
-[ "$(rr start im)" = "round=1 mode=full cross-harness=yes" ] && pass "L4 an impl point prints the round line only" || fail "L4 impl output"
-[ "$(rr start ag)" = "round=1 mode=full cross-harness=yes" ] && pass "L4 an aggregate point prints the round line only" || fail "L4 aggregate output"
+[ "$(rr start im)" = "round=1 mode=full cross-harness=no" ] && pass "L4 an impl point prints the round line only" || fail "L4 impl output"
+[ "$(rr start ag)" = "round=1 mode=full cross-harness=no" ] && pass "L4 an aggregate point prints the round line only" || fail "L4 aggregate output"
 [ ! -e "$SNAP" ] && pass "L4 ... and takes no snapshot" || fail "L4 non-design snapshot"
 rr result im --blocking 2 >/dev/null
 out="$(rr start im --docs design/main.md)"; rc=$?
@@ -1309,7 +1355,7 @@ lines "$T/design/main.md" 1 5
 rr open dm --stage design >/dev/null
 out="$(rr start dm 2>&1)"; rc=$?
 rc_is "$rc" 0 "L4 snapshot failure: the round still starts (fail open)"
-has "$out" "round=1 mode=full cross-harness=yes" "L4 ... the round line is printed"
+has "$out" "round=1 mode=full cross-harness=no" "L4 ... the round line is printed"
 has "$out" "note: 设计文档快照失败" "L4 ... with a note"
 grep -q '^- Review: point=dm; .*round=1;' "$T/status.md" && pass "L4 ... and the round is recorded" || fail "L4 fail-open row"
 rm -f "$T/reviews"
@@ -1661,7 +1707,8 @@ for f in "$RR" "$GATE"; do [ -x "$f" ] && pass "K executable: ${f#"$ROOT"/}" || 
 for w in review-round.sh review-gate.sh ZYZ_REVIEW_GATE_DISABLE "mode=incremental" "Review-Grant" \
          "--induced" "--pending" "not-converging" "reviews/snap" "--docs" "growing=yes|no" "三选一" \
          "只比较两轮都采集到的文档" "sources.json" '`--rejected`、`--induced`、`--pending` 三个都必填' "嵌套列表" \
-         '`blocking + rejected` 不为零、且不少于第 1 轮' "第 2 轮 ≥ max(第 1 轮, 1)"; do
+         '`blocking + rejected` 不为零、且不少于第 1 轮' "第 2 轮 ≥ max(第 1 轮, 1)" \
+         '生效档位是 `fast` 或 `standard` 时一律 `no`'; do
     grep -q -- "$w" "$ROOT/hooks/README.md" && pass "K hooks/README.md documents $w" || fail "K README lacks $w"
 done
 
@@ -1685,6 +1732,7 @@ for f in hooks/README.md docs/design/watchdog-design.md hooks/scripts/review-rou
         || pass "K $f does not mention the removed fourth choice"
 done
 grep -q 'outcome=<passed|residual|split>' "$ROOT/hooks/README.md" && pass "K hooks/README.md gives the three Review-Close outcomes" || fail "K README Review-Close outcomes"
+bash "$RR" 2>&1 | grep -q 'fast and standard are always no' && pass "K review-round.sh usage says cross-harness is strict-only" || fail "K usage cross-harness wording"
 bash "$RR" 2>&1 | grep -q 'round 2 >= max(round 1,' && pass "K review-round.sh usage states the early stop with the zero exception" || fail "K usage early-stop wording"
 
 echo
